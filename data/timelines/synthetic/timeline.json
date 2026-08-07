@@ -1,0 +1,6708 @@
+{
+  "version": 2,
+  "track": {
+    "id": "synthetic",
+    "duration": 210,
+    "sampleRate": 48000
+  },
+  "grid": {
+    "hopSeconds": 0.1,
+    "frames": 2100
+  },
+  "beats": [
+    0,
+    0.5,
+    1,
+    1.5,
+    2,
+    2.5,
+    3,
+    3.5,
+    4,
+    4.5,
+    5,
+    5.5,
+    6,
+    6.5,
+    7,
+    7.5,
+    8,
+    8.5,
+    9,
+    9.5,
+    10,
+    10.5,
+    11,
+    11.5,
+    12,
+    12.5,
+    13,
+    13.5,
+    14,
+    14.5,
+    15,
+    15.5,
+    16,
+    16.5,
+    17,
+    17.5,
+    18,
+    18.5,
+    19,
+    19.5,
+    20,
+    20.5,
+    21,
+    21.5,
+    22,
+    22.5,
+    23,
+    23.5,
+    24,
+    24.5,
+    25,
+    25.5,
+    26,
+    26.5,
+    27,
+    27.5,
+    28,
+    28.5,
+    29,
+    29.5,
+    30,
+    30.5,
+    31,
+    31.5,
+    32,
+    32.5,
+    33,
+    33.5,
+    34,
+    34.5,
+    35,
+    35.5,
+    36,
+    36.5,
+    37,
+    37.5,
+    38,
+    38.5,
+    39,
+    39.5,
+    40,
+    40.5,
+    41,
+    41.5,
+    42,
+    42.5,
+    43,
+    43.5,
+    44,
+    44.5,
+    45,
+    45.5,
+    46,
+    46.5,
+    47,
+    47.5,
+    48,
+    48.5,
+    49,
+    49.5,
+    50,
+    50.5,
+    51,
+    51.5,
+    52,
+    52.5,
+    53,
+    53.5,
+    54,
+    54.5,
+    55,
+    55.5,
+    56,
+    56.5,
+    57,
+    57.5,
+    58,
+    58.5,
+    59,
+    59.5,
+    60,
+    60.5,
+    61,
+    61.5,
+    62,
+    62.5,
+    63,
+    63.5,
+    64,
+    64.5,
+    65,
+    65.5,
+    66,
+    66.5,
+    67,
+    67.5,
+    68,
+    68.5,
+    69,
+    69.5,
+    70,
+    70.5,
+    71,
+    71.5,
+    72,
+    72.5,
+    73,
+    73.5,
+    74,
+    74.5,
+    75,
+    75.5,
+    76,
+    76.5,
+    77,
+    77.5,
+    78,
+    78.5,
+    79,
+    79.5,
+    80,
+    80.5,
+    81,
+    81.5,
+    82,
+    82.5,
+    83,
+    83.5,
+    84,
+    84.5,
+    85,
+    85.5,
+    86,
+    86.5,
+    87,
+    87.5,
+    88,
+    88.5,
+    89,
+    89.5,
+    90,
+    90.5,
+    91,
+    91.5,
+    92,
+    92.5,
+    93,
+    93.5,
+    94,
+    94.5,
+    95,
+    95.5,
+    96,
+    96.5,
+    97,
+    97.5,
+    98,
+    98.5,
+    99,
+    99.5,
+    100,
+    100.5,
+    101,
+    101.5,
+    102,
+    102.5,
+    103,
+    103.5,
+    104,
+    104.5,
+    105,
+    105.5,
+    106,
+    106.5,
+    107,
+    107.5,
+    108,
+    108.5,
+    109,
+    109.5,
+    110,
+    110.5,
+    111,
+    111.5,
+    112,
+    112.5,
+    113,
+    113.5,
+    114,
+    114.5,
+    115,
+    115.5,
+    116,
+    116.5,
+    117,
+    117.5,
+    118,
+    118.5,
+    119,
+    119.5,
+    120,
+    120.5,
+    121,
+    121.5,
+    122,
+    122.5,
+    123,
+    123.5,
+    124,
+    124.5,
+    125,
+    125.5,
+    126,
+    126.5,
+    127,
+    127.5,
+    128,
+    128.5,
+    129,
+    129.5,
+    130,
+    130.5,
+    131,
+    131.5,
+    132,
+    132.5,
+    133,
+    133.5,
+    134,
+    134.5,
+    135,
+    135.5,
+    136,
+    136.5,
+    137,
+    137.5,
+    138,
+    138.5,
+    139,
+    139.5,
+    140,
+    140.5,
+    141,
+    141.5,
+    142,
+    142.5,
+    143,
+    143.5,
+    144,
+    144.5,
+    145,
+    145.5,
+    146,
+    146.5,
+    147,
+    147.5,
+    148,
+    148.5,
+    149,
+    149.5,
+    150,
+    150.5,
+    151,
+    151.5,
+    152,
+    152.5,
+    153,
+    153.5,
+    154,
+    154.5,
+    155,
+    155.5,
+    156,
+    156.5,
+    157,
+    157.5,
+    158,
+    158.5,
+    159,
+    159.5,
+    160,
+    160.5,
+    161,
+    161.5,
+    162,
+    162.5,
+    163,
+    163.5,
+    164,
+    164.5,
+    165,
+    165.5,
+    166,
+    166.5,
+    167,
+    167.5,
+    168,
+    168.5,
+    169,
+    169.5,
+    170,
+    170.5,
+    171,
+    171.5,
+    172,
+    172.5,
+    173,
+    173.5,
+    174,
+    174.5,
+    175,
+    175.5,
+    176,
+    176.5,
+    177,
+    177.5,
+    178,
+    178.5,
+    179,
+    179.5,
+    180,
+    180.5,
+    181,
+    181.5,
+    182,
+    182.5,
+    183,
+    183.5,
+    184,
+    184.5,
+    185,
+    185.5,
+    186,
+    186.5,
+    187,
+    187.5,
+    188,
+    188.5,
+    189,
+    189.5,
+    190,
+    190.5,
+    191,
+    191.5,
+    192,
+    192.5,
+    193,
+    193.5,
+    194,
+    194.5,
+    195,
+    195.5,
+    196,
+    196.5,
+    197,
+    197.5,
+    198,
+    198.5,
+    199,
+    199.5,
+    200,
+    200.5,
+    201,
+    201.5,
+    202,
+    202.5,
+    203,
+    203.5,
+    204,
+    204.5,
+    205,
+    205.5,
+    206,
+    206.5,
+    207,
+    207.5,
+    208,
+    208.5,
+    209,
+    209.5
+  ],
+  "downbeats": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+    16,
+    18,
+    20,
+    22,
+    24,
+    26,
+    28,
+    30,
+    32,
+    34,
+    36,
+    38,
+    40,
+    42,
+    44,
+    46,
+    48,
+    50,
+    52,
+    54,
+    56,
+    58,
+    60,
+    62,
+    64,
+    66,
+    68,
+    70,
+    72,
+    74,
+    76,
+    78,
+    80,
+    82,
+    84,
+    86,
+    88,
+    90,
+    92,
+    94,
+    96,
+    98,
+    100,
+    102,
+    104,
+    106,
+    108,
+    110,
+    112,
+    114,
+    116,
+    118,
+    120,
+    122,
+    124,
+    126,
+    128,
+    130,
+    132,
+    134,
+    136,
+    138,
+    140,
+    142,
+    144,
+    146,
+    148,
+    150,
+    152,
+    154,
+    156,
+    158,
+    160,
+    162,
+    164,
+    166,
+    168,
+    170,
+    172,
+    174,
+    176,
+    178,
+    180,
+    182,
+    184,
+    186,
+    188,
+    190,
+    192,
+    194,
+    196,
+    198,
+    200,
+    202,
+    204,
+    206,
+    208
+  ],
+  "tempo": 120,
+  "segments": [
+    {
+      "start": 0,
+      "end": 16,
+      "label": "intro",
+      "confidence": 0.803
+    },
+    {
+      "start": 16,
+      "end": 56,
+      "label": "verse",
+      "confidence": 0.91
+    },
+    {
+      "start": 56,
+      "end": 88,
+      "label": "chorus",
+      "confidence": 0.754
+    },
+    {
+      "start": 88,
+      "end": 128,
+      "label": "verse",
+      "confidence": 0.946
+    },
+    {
+      "start": 128,
+      "end": 160,
+      "label": "chorus",
+      "confidence": 0.705
+    },
+    {
+      "start": 160,
+      "end": 184,
+      "label": "bridge",
+      "confidence": 0.901
+    },
+    {
+      "start": 184,
+      "end": 206,
+      "label": "chorus",
+      "confidence": 0.721
+    },
+    {
+      "start": 206,
+      "end": 210,
+      "label": "outro",
+      "confidence": 0.875
+    }
+  ],
+  "segmentSimilarity": [
+    [
+      1,
+      0.104,
+      0.268,
+      0.218,
+      0.191,
+      0.172,
+      0.228,
+      0.107
+    ],
+    [
+      0.104,
+      1,
+      0.272,
+      0.909,
+      0.236,
+      0.26,
+      0.295,
+      0.297
+    ],
+    [
+      0.268,
+      0.272,
+      1,
+      0.214,
+      0.892,
+      0.297,
+      0.926,
+      0.19
+    ],
+    [
+      0.218,
+      0.909,
+      0.214,
+      1,
+      0.297,
+      0.262,
+      0.109,
+      0.126
+    ],
+    [
+      0.191,
+      0.236,
+      0.892,
+      0.297,
+      1,
+      0.169,
+      0.935,
+      0.142
+    ],
+    [
+      0.172,
+      0.26,
+      0.297,
+      0.262,
+      0.169,
+      1,
+      0.111,
+      0.214
+    ],
+    [
+      0.228,
+      0.295,
+      0.926,
+      0.109,
+      0.935,
+      0.111,
+      1,
+      0.159
+    ],
+    [
+      0.107,
+      0.297,
+      0.19,
+      0.126,
+      0.142,
+      0.214,
+      0.159,
+      1
+    ]
+  ],
+  "channels": [
+    {
+      "name": "stems",
+      "dims": 4,
+      "offset": 0
+    },
+    {
+      "name": "latent",
+      "dims": 64,
+      "offset": 4
+    },
+    {
+      "name": "novelty4",
+      "dims": 1,
+      "offset": 68
+    },
+    {
+      "name": "novelty16",
+      "dims": 1,
+      "offset": 69
+    },
+    {
+      "name": "actChorus",
+      "dims": 1,
+      "offset": 70
+    },
+    {
+      "name": "recurTime",
+      "dims": 1,
+      "offset": 71
+    },
+    {
+      "name": "recurStr",
+      "dims": 1,
+      "offset": 72
+    }
+  ],
+  "events": [
+    {
+      "t": 15.989,
+      "kind": "vocal",
+      "strength": 0.599
+    },
+    {
+      "t": 16,
+      "kind": "kick",
+      "strength": 0.798
+    },
+    {
+      "t": 16,
+      "kind": "hat",
+      "strength": 0.61
+    },
+    {
+      "t": 16.5,
+      "kind": "snare",
+      "strength": 0.857
+    },
+    {
+      "t": 16.5,
+      "kind": "hat",
+      "strength": 0.761
+    },
+    {
+      "t": 17,
+      "kind": "kick",
+      "strength": 0.91
+    },
+    {
+      "t": 17,
+      "kind": "hat",
+      "strength": 0.755
+    },
+    {
+      "t": 17.5,
+      "kind": "snare",
+      "strength": 0.919
+    },
+    {
+      "t": 17.5,
+      "kind": "hat",
+      "strength": 0.759
+    },
+    {
+      "t": 18,
+      "kind": "kick",
+      "strength": 0.935
+    },
+    {
+      "t": 18,
+      "kind": "hat",
+      "strength": 0.713
+    },
+    {
+      "t": 18.5,
+      "kind": "snare",
+      "strength": 0.91
+    },
+    {
+      "t": 18.5,
+      "kind": "hat",
+      "strength": 0.688
+    },
+    {
+      "t": 19,
+      "kind": "kick",
+      "strength": 0.862
+    },
+    {
+      "t": 19,
+      "kind": "hat",
+      "strength": 0.74
+    },
+    {
+      "t": 19.5,
+      "kind": "snare",
+      "strength": 0.913
+    },
+    {
+      "t": 19.5,
+      "kind": "hat",
+      "strength": 0.704
+    },
+    {
+      "t": 20,
+      "kind": "kick",
+      "strength": 0.946
+    },
+    {
+      "t": 20,
+      "kind": "hat",
+      "strength": 0.672
+    },
+    {
+      "t": 20.006,
+      "kind": "vocal",
+      "strength": 0.806
+    },
+    {
+      "t": 20.5,
+      "kind": "snare",
+      "strength": 0.872
+    },
+    {
+      "t": 20.5,
+      "kind": "hat",
+      "strength": 0.682
+    },
+    {
+      "t": 21,
+      "kind": "kick",
+      "strength": 0.876
+    },
+    {
+      "t": 21,
+      "kind": "hat",
+      "strength": 0.72
+    },
+    {
+      "t": 21.5,
+      "kind": "snare",
+      "strength": 0.875
+    },
+    {
+      "t": 21.5,
+      "kind": "hat",
+      "strength": 0.671
+    },
+    {
+      "t": 22,
+      "kind": "kick",
+      "strength": 0.951
+    },
+    {
+      "t": 22,
+      "kind": "hat",
+      "strength": 0.738
+    },
+    {
+      "t": 22.5,
+      "kind": "snare",
+      "strength": 0.917
+    },
+    {
+      "t": 22.5,
+      "kind": "hat",
+      "strength": 0.708
+    },
+    {
+      "t": 23,
+      "kind": "kick",
+      "strength": 0.867
+    },
+    {
+      "t": 23,
+      "kind": "hat",
+      "strength": 0.726
+    },
+    {
+      "t": 23.5,
+      "kind": "snare",
+      "strength": 0.907
+    },
+    {
+      "t": 23.5,
+      "kind": "hat",
+      "strength": 0.699
+    },
+    {
+      "t": 24,
+      "kind": "kick",
+      "strength": 0.938
+    },
+    {
+      "t": 24,
+      "kind": "hat",
+      "strength": 0.668
+    },
+    {
+      "t": 24,
+      "kind": "bass",
+      "strength": 0.739
+    },
+    {
+      "t": 24.001,
+      "kind": "vocal",
+      "strength": 0.755
+    },
+    {
+      "t": 24.5,
+      "kind": "snare",
+      "strength": 0.925
+    },
+    {
+      "t": 24.5,
+      "kind": "hat",
+      "strength": 0.703
+    },
+    {
+      "t": 25,
+      "kind": "kick",
+      "strength": 0.854
+    },
+    {
+      "t": 25,
+      "kind": "hat",
+      "strength": 0.717
+    },
+    {
+      "t": 25,
+      "kind": "bass",
+      "strength": 0.655
+    },
+    {
+      "t": 25.5,
+      "kind": "snare",
+      "strength": 0.917
+    },
+    {
+      "t": 25.5,
+      "kind": "hat",
+      "strength": 0.734
+    },
+    {
+      "t": 26,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 26,
+      "kind": "hat",
+      "strength": 0.749
+    },
+    {
+      "t": 26,
+      "kind": "bass",
+      "strength": 0.889
+    },
+    {
+      "t": 26.5,
+      "kind": "snare",
+      "strength": 0.895
+    },
+    {
+      "t": 26.5,
+      "kind": "hat",
+      "strength": 0.673
+    },
+    {
+      "t": 27,
+      "kind": "kick",
+      "strength": 0.888
+    },
+    {
+      "t": 27,
+      "kind": "hat",
+      "strength": 0.702
+    },
+    {
+      "t": 27,
+      "kind": "bass",
+      "strength": 0.635
+    },
+    {
+      "t": 27.5,
+      "kind": "snare",
+      "strength": 0.855
+    },
+    {
+      "t": 27.5,
+      "kind": "hat",
+      "strength": 0.707
+    },
+    {
+      "t": 27.992,
+      "kind": "vocal",
+      "strength": 0.798
+    },
+    {
+      "t": 28,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 28,
+      "kind": "hat",
+      "strength": 0.73
+    },
+    {
+      "t": 28,
+      "kind": "bass",
+      "strength": 0.865
+    },
+    {
+      "t": 28.5,
+      "kind": "snare",
+      "strength": 0.872
+    },
+    {
+      "t": 28.5,
+      "kind": "hat",
+      "strength": 0.697
+    },
+    {
+      "t": 29,
+      "kind": "kick",
+      "strength": 0.879
+    },
+    {
+      "t": 29,
+      "kind": "hat",
+      "strength": 0.681
+    },
+    {
+      "t": 29,
+      "kind": "bass",
+      "strength": 0.637
+    },
+    {
+      "t": 29.5,
+      "kind": "snare",
+      "strength": 0.926
+    },
+    {
+      "t": 29.5,
+      "kind": "hat",
+      "strength": 0.681
+    },
+    {
+      "t": 30,
+      "kind": "kick",
+      "strength": 0.945
+    },
+    {
+      "t": 30,
+      "kind": "hat",
+      "strength": 0.725
+    },
+    {
+      "t": 30,
+      "kind": "bass",
+      "strength": 0.902
+    },
+    {
+      "t": 30.5,
+      "kind": "snare",
+      "strength": 0.918
+    },
+    {
+      "t": 30.5,
+      "kind": "hat",
+      "strength": 0.742
+    },
+    {
+      "t": 31,
+      "kind": "kick",
+      "strength": 0.869
+    },
+    {
+      "t": 31,
+      "kind": "hat",
+      "strength": 0.738
+    },
+    {
+      "t": 31,
+      "kind": "bass",
+      "strength": 0.657
+    },
+    {
+      "t": 31.5,
+      "kind": "snare",
+      "strength": 0.867
+    },
+    {
+      "t": 31.5,
+      "kind": "hat",
+      "strength": 0.751
+    },
+    {
+      "t": 31.981,
+      "kind": "vocal",
+      "strength": 0.785
+    },
+    {
+      "t": 32,
+      "kind": "kick",
+      "strength": 0.959
+    },
+    {
+      "t": 32,
+      "kind": "hat",
+      "strength": 0.719
+    },
+    {
+      "t": 32,
+      "kind": "bass",
+      "strength": 0.866
+    },
+    {
+      "t": 32.5,
+      "kind": "snare",
+      "strength": 0.872
+    },
+    {
+      "t": 32.5,
+      "kind": "hat",
+      "strength": 0.741
+    },
+    {
+      "t": 33,
+      "kind": "kick",
+      "strength": 0.889
+    },
+    {
+      "t": 33,
+      "kind": "hat",
+      "strength": 0.693
+    },
+    {
+      "t": 33,
+      "kind": "bass",
+      "strength": 0.651
+    },
+    {
+      "t": 33.5,
+      "kind": "snare",
+      "strength": 0.854
+    },
+    {
+      "t": 33.5,
+      "kind": "hat",
+      "strength": 0.732
+    },
+    {
+      "t": 34,
+      "kind": "kick",
+      "strength": 0.941
+    },
+    {
+      "t": 34,
+      "kind": "hat",
+      "strength": 0.744
+    },
+    {
+      "t": 34,
+      "kind": "bass",
+      "strength": 0.886
+    },
+    {
+      "t": 34.5,
+      "kind": "snare",
+      "strength": 0.892
+    },
+    {
+      "t": 34.5,
+      "kind": "hat",
+      "strength": 0.695
+    },
+    {
+      "t": 35,
+      "kind": "kick",
+      "strength": 0.851
+    },
+    {
+      "t": 35,
+      "kind": "hat",
+      "strength": 0.698
+    },
+    {
+      "t": 35,
+      "kind": "bass",
+      "strength": 0.67
+    },
+    {
+      "t": 35.5,
+      "kind": "snare",
+      "strength": 0.898
+    },
+    {
+      "t": 35.5,
+      "kind": "hat",
+      "strength": 0.74
+    },
+    {
+      "t": 35.985,
+      "kind": "vocal",
+      "strength": 0.775
+    },
+    {
+      "t": 36,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 36,
+      "kind": "hat",
+      "strength": 0.68
+    },
+    {
+      "t": 36,
+      "kind": "bass",
+      "strength": 0.898
+    },
+    {
+      "t": 36.5,
+      "kind": "snare",
+      "strength": 0.863
+    },
+    {
+      "t": 36.5,
+      "kind": "hat",
+      "strength": 0.718
+    },
+    {
+      "t": 37,
+      "kind": "kick",
+      "strength": 0.86
+    },
+    {
+      "t": 37,
+      "kind": "hat",
+      "strength": 0.738
+    },
+    {
+      "t": 37,
+      "kind": "bass",
+      "strength": 0.643
+    },
+    {
+      "t": 37.5,
+      "kind": "snare",
+      "strength": 0.85
+    },
+    {
+      "t": 37.5,
+      "kind": "hat",
+      "strength": 0.765
+    },
+    {
+      "t": 38,
+      "kind": "kick",
+      "strength": 0.984
+    },
+    {
+      "t": 38,
+      "kind": "hat",
+      "strength": 0.734
+    },
+    {
+      "t": 38,
+      "kind": "bass",
+      "strength": 0.862
+    },
+    {
+      "t": 38.5,
+      "kind": "snare",
+      "strength": 0.908
+    },
+    {
+      "t": 38.5,
+      "kind": "hat",
+      "strength": 0.736
+    },
+    {
+      "t": 39,
+      "kind": "kick",
+      "strength": 0.845
+    },
+    {
+      "t": 39,
+      "kind": "hat",
+      "strength": 0.698
+    },
+    {
+      "t": 39,
+      "kind": "bass",
+      "strength": 0.616
+    },
+    {
+      "t": 39.5,
+      "kind": "snare",
+      "strength": 0.863
+    },
+    {
+      "t": 39.5,
+      "kind": "hat",
+      "strength": 0.702
+    },
+    {
+      "t": 39.985,
+      "kind": "vocal",
+      "strength": 0.767
+    },
+    {
+      "t": 40,
+      "kind": "kick",
+      "strength": 0.949
+    },
+    {
+      "t": 40,
+      "kind": "hat",
+      "strength": 0.729
+    },
+    {
+      "t": 40,
+      "kind": "bass",
+      "strength": 0.854
+    },
+    {
+      "t": 40.5,
+      "kind": "snare",
+      "strength": 0.865
+    },
+    {
+      "t": 40.5,
+      "kind": "hat",
+      "strength": 0.678
+    },
+    {
+      "t": 41,
+      "kind": "kick",
+      "strength": 0.848
+    },
+    {
+      "t": 41,
+      "kind": "hat",
+      "strength": 0.725
+    },
+    {
+      "t": 41,
+      "kind": "bass",
+      "strength": 0.625
+    },
+    {
+      "t": 41.5,
+      "kind": "snare",
+      "strength": 0.923
+    },
+    {
+      "t": 41.5,
+      "kind": "hat",
+      "strength": 0.723
+    },
+    {
+      "t": 42,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 42,
+      "kind": "hat",
+      "strength": 0.726
+    },
+    {
+      "t": 42,
+      "kind": "bass",
+      "strength": 0.865
+    },
+    {
+      "t": 42.5,
+      "kind": "snare",
+      "strength": 0.896
+    },
+    {
+      "t": 42.5,
+      "kind": "hat",
+      "strength": 0.666
+    },
+    {
+      "t": 43,
+      "kind": "kick",
+      "strength": 0.892
+    },
+    {
+      "t": 43,
+      "kind": "hat",
+      "strength": 0.699
+    },
+    {
+      "t": 43,
+      "kind": "bass",
+      "strength": 0.643
+    },
+    {
+      "t": 43.5,
+      "kind": "snare",
+      "strength": 0.892
+    },
+    {
+      "t": 43.5,
+      "kind": "hat",
+      "strength": 0.754
+    },
+    {
+      "t": 44,
+      "kind": "kick",
+      "strength": 0.996
+    },
+    {
+      "t": 44,
+      "kind": "hat",
+      "strength": 0.753
+    },
+    {
+      "t": 44,
+      "kind": "bass",
+      "strength": 0.881
+    },
+    {
+      "t": 44.018,
+      "kind": "vocal",
+      "strength": 0.752
+    },
+    {
+      "t": 44.5,
+      "kind": "snare",
+      "strength": 0.884
+    },
+    {
+      "t": 44.5,
+      "kind": "hat",
+      "strength": 0.697
+    },
+    {
+      "t": 45,
+      "kind": "kick",
+      "strength": 0.905
+    },
+    {
+      "t": 45,
+      "kind": "hat",
+      "strength": 0.669
+    },
+    {
+      "t": 45,
+      "kind": "bass",
+      "strength": 0.651
+    },
+    {
+      "t": 45.5,
+      "kind": "snare",
+      "strength": 0.907
+    },
+    {
+      "t": 45.5,
+      "kind": "hat",
+      "strength": 0.721
+    },
+    {
+      "t": 46,
+      "kind": "kick",
+      "strength": 0.995
+    },
+    {
+      "t": 46,
+      "kind": "hat",
+      "strength": 0.727
+    },
+    {
+      "t": 46,
+      "kind": "bass",
+      "strength": 0.881
+    },
+    {
+      "t": 46.5,
+      "kind": "snare",
+      "strength": 0.856
+    },
+    {
+      "t": 46.5,
+      "kind": "hat",
+      "strength": 0.73
+    },
+    {
+      "t": 47,
+      "kind": "kick",
+      "strength": 0.874
+    },
+    {
+      "t": 47,
+      "kind": "hat",
+      "strength": 0.673
+    },
+    {
+      "t": 47,
+      "kind": "bass",
+      "strength": 0.653
+    },
+    {
+      "t": 47.5,
+      "kind": "snare",
+      "strength": 0.926
+    },
+    {
+      "t": 47.5,
+      "kind": "hat",
+      "strength": 0.707
+    },
+    {
+      "t": 47.993,
+      "kind": "vocal",
+      "strength": 0.808
+    },
+    {
+      "t": 48,
+      "kind": "kick",
+      "strength": 0.985
+    },
+    {
+      "t": 48,
+      "kind": "hat",
+      "strength": 0.721
+    },
+    {
+      "t": 48,
+      "kind": "bass",
+      "strength": 0.901
+    },
+    {
+      "t": 48.5,
+      "kind": "snare",
+      "strength": 0.886
+    },
+    {
+      "t": 48.5,
+      "kind": "hat",
+      "strength": 0.703
+    },
+    {
+      "t": 49,
+      "kind": "kick",
+      "strength": 0.874
+    },
+    {
+      "t": 49,
+      "kind": "hat",
+      "strength": 0.725
+    },
+    {
+      "t": 49,
+      "kind": "bass",
+      "strength": 0.668
+    },
+    {
+      "t": 49.5,
+      "kind": "snare",
+      "strength": 0.867
+    },
+    {
+      "t": 49.5,
+      "kind": "hat",
+      "strength": 0.685
+    },
+    {
+      "t": 50,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 50,
+      "kind": "hat",
+      "strength": 0.682
+    },
+    {
+      "t": 50,
+      "kind": "bass",
+      "strength": 0.877
+    },
+    {
+      "t": 50.5,
+      "kind": "snare",
+      "strength": 0.924
+    },
+    {
+      "t": 50.5,
+      "kind": "hat",
+      "strength": 0.685
+    },
+    {
+      "t": 51,
+      "kind": "kick",
+      "strength": 0.885
+    },
+    {
+      "t": 51,
+      "kind": "hat",
+      "strength": 0.681
+    },
+    {
+      "t": 51,
+      "kind": "bass",
+      "strength": 0.667
+    },
+    {
+      "t": 51.5,
+      "kind": "snare",
+      "strength": 0.903
+    },
+    {
+      "t": 51.5,
+      "kind": "hat",
+      "strength": 0.736
+    },
+    {
+      "t": 51.999,
+      "kind": "vocal",
+      "strength": 0.816
+    },
+    {
+      "t": 52,
+      "kind": "kick",
+      "strength": 0.945
+    },
+    {
+      "t": 52,
+      "kind": "hat",
+      "strength": 0.686
+    },
+    {
+      "t": 52,
+      "kind": "bass",
+      "strength": 0.903
+    },
+    {
+      "t": 52.5,
+      "kind": "snare",
+      "strength": 0.9
+    },
+    {
+      "t": 52.5,
+      "kind": "hat",
+      "strength": 0.682
+    },
+    {
+      "t": 53,
+      "kind": "kick",
+      "strength": 0.873
+    },
+    {
+      "t": 53,
+      "kind": "hat",
+      "strength": 0.712
+    },
+    {
+      "t": 53,
+      "kind": "bass",
+      "strength": 0.654
+    },
+    {
+      "t": 53.5,
+      "kind": "snare",
+      "strength": 0.853
+    },
+    {
+      "t": 53.5,
+      "kind": "hat",
+      "strength": 0.687
+    },
+    {
+      "t": 54,
+      "kind": "kick",
+      "strength": 0.945
+    },
+    {
+      "t": 54,
+      "kind": "hat",
+      "strength": 0.743
+    },
+    {
+      "t": 54,
+      "kind": "bass",
+      "strength": 0.861
+    },
+    {
+      "t": 54.5,
+      "kind": "snare",
+      "strength": 0.862
+    },
+    {
+      "t": 54.5,
+      "kind": "hat",
+      "strength": 0.685
+    },
+    {
+      "t": 55,
+      "kind": "kick",
+      "strength": 0.859
+    },
+    {
+      "t": 55,
+      "kind": "hat",
+      "strength": 0.721
+    },
+    {
+      "t": 55,
+      "kind": "bass",
+      "strength": 0.619
+    },
+    {
+      "t": 55.5,
+      "kind": "snare",
+      "strength": 0.926
+    },
+    {
+      "t": 55.5,
+      "kind": "hat",
+      "strength": 0.723
+    },
+    {
+      "t": 55.99,
+      "kind": "vocal",
+      "strength": 0.913
+    },
+    {
+      "t": 56,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 56,
+      "kind": "hat",
+      "strength": 0.804
+    },
+    {
+      "t": 56,
+      "kind": "bass",
+      "strength": 0.997
+    },
+    {
+      "t": 56.25,
+      "kind": "hat",
+      "strength": 0.615
+    },
+    {
+      "t": 56.5,
+      "kind": "snare",
+      "strength": 0.962
+    },
+    {
+      "t": 56.5,
+      "kind": "hat",
+      "strength": 0.757
+    },
+    {
+      "t": 56.75,
+      "kind": "hat",
+      "strength": 0.609
+    },
+    {
+      "t": 57,
+      "kind": "kick",
+      "strength": 0.968
+    },
+    {
+      "t": 57,
+      "kind": "hat",
+      "strength": 0.798
+    },
+    {
+      "t": 57,
+      "kind": "bass",
+      "strength": 0.708
+    },
+    {
+      "t": 57.25,
+      "kind": "kick",
+      "strength": 0.716
+    },
+    {
+      "t": 57.25,
+      "kind": "hat",
+      "strength": 0.628
+    },
+    {
+      "t": 57.5,
+      "kind": "snare",
+      "strength": 0.981
+    },
+    {
+      "t": 57.5,
+      "kind": "hat",
+      "strength": 0.798
+    },
+    {
+      "t": 57.75,
+      "kind": "hat",
+      "strength": 0.609
+    },
+    {
+      "t": 57.75,
+      "kind": "bass",
+      "strength": 0.647
+    },
+    {
+      "t": 58,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 58,
+      "kind": "hat",
+      "strength": 0.846
+    },
+    {
+      "t": 58,
+      "kind": "bass",
+      "strength": 0.973
+    },
+    {
+      "t": 58.25,
+      "kind": "hat",
+      "strength": 0.63
+    },
+    {
+      "t": 58.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 58.5,
+      "kind": "hat",
+      "strength": 0.822
+    },
+    {
+      "t": 58.75,
+      "kind": "hat",
+      "strength": 0.648
+    },
+    {
+      "t": 59,
+      "kind": "kick",
+      "strength": 0.981
+    },
+    {
+      "t": 59,
+      "kind": "hat",
+      "strength": 0.756
+    },
+    {
+      "t": 59,
+      "kind": "bass",
+      "strength": 0.734
+    },
+    {
+      "t": 59.25,
+      "kind": "kick",
+      "strength": 0.769
+    },
+    {
+      "t": 59.25,
+      "kind": "hat",
+      "strength": 0.592
+    },
+    {
+      "t": 59.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 59.5,
+      "kind": "hat",
+      "strength": 0.827
+    },
+    {
+      "t": 59.75,
+      "kind": "hat",
+      "strength": 0.579
+    },
+    {
+      "t": 59.75,
+      "kind": "bass",
+      "strength": 0.627
+    },
+    {
+      "t": 60,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 60,
+      "kind": "hat",
+      "strength": 0.774
+    },
+    {
+      "t": 60,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 60.013,
+      "kind": "vocal",
+      "strength": 0.948
+    },
+    {
+      "t": 60.25,
+      "kind": "hat",
+      "strength": 0.585
+    },
+    {
+      "t": 60.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 60.5,
+      "kind": "hat",
+      "strength": 0.815
+    },
+    {
+      "t": 60.75,
+      "kind": "hat",
+      "strength": 0.638
+    },
+    {
+      "t": 61,
+      "kind": "kick",
+      "strength": 0.969
+    },
+    {
+      "t": 61,
+      "kind": "hat",
+      "strength": 0.809
+    },
+    {
+      "t": 61,
+      "kind": "bass",
+      "strength": 0.714
+    },
+    {
+      "t": 61.25,
+      "kind": "kick",
+      "strength": 0.777
+    },
+    {
+      "t": 61.25,
+      "kind": "hat",
+      "strength": 0.61
+    },
+    {
+      "t": 61.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 61.5,
+      "kind": "hat",
+      "strength": 0.837
+    },
+    {
+      "t": 61.75,
+      "kind": "hat",
+      "strength": 0.638
+    },
+    {
+      "t": 61.75,
+      "kind": "bass",
+      "strength": 0.631
+    },
+    {
+      "t": 62,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 62,
+      "kind": "hat",
+      "strength": 0.767
+    },
+    {
+      "t": 62,
+      "kind": "bass",
+      "strength": 0.958
+    },
+    {
+      "t": 62.25,
+      "kind": "hat",
+      "strength": 0.637
+    },
+    {
+      "t": 62.5,
+      "kind": "snare",
+      "strength": 0.984
+    },
+    {
+      "t": 62.5,
+      "kind": "hat",
+      "strength": 0.795
+    },
+    {
+      "t": 62.75,
+      "kind": "hat",
+      "strength": 0.571
+    },
+    {
+      "t": 63,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 63,
+      "kind": "hat",
+      "strength": 0.785
+    },
+    {
+      "t": 63,
+      "kind": "bass",
+      "strength": 0.746
+    },
+    {
+      "t": 63.25,
+      "kind": "kick",
+      "strength": 0.766
+    },
+    {
+      "t": 63.25,
+      "kind": "hat",
+      "strength": 0.607
+    },
+    {
+      "t": 63.5,
+      "kind": "snare",
+      "strength": 0.967
+    },
+    {
+      "t": 63.5,
+      "kind": "hat",
+      "strength": 0.819
+    },
+    {
+      "t": 63.75,
+      "kind": "hat",
+      "strength": 0.628
+    },
+    {
+      "t": 63.75,
+      "kind": "bass",
+      "strength": 0.641
+    },
+    {
+      "t": 63.982,
+      "kind": "vocal",
+      "strength": 0.951
+    },
+    {
+      "t": 64,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 64,
+      "kind": "hat",
+      "strength": 0.762
+    },
+    {
+      "t": 64,
+      "kind": "bass",
+      "strength": 0.999
+    },
+    {
+      "t": 64.25,
+      "kind": "hat",
+      "strength": 0.641
+    },
+    {
+      "t": 64.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 64.5,
+      "kind": "hat",
+      "strength": 0.806
+    },
+    {
+      "t": 64.75,
+      "kind": "hat",
+      "strength": 0.645
+    },
+    {
+      "t": 65,
+      "kind": "kick",
+      "strength": 0.981
+    },
+    {
+      "t": 65,
+      "kind": "hat",
+      "strength": 0.789
+    },
+    {
+      "t": 65,
+      "kind": "bass",
+      "strength": 0.724
+    },
+    {
+      "t": 65.25,
+      "kind": "kick",
+      "strength": 0.743
+    },
+    {
+      "t": 65.25,
+      "kind": "hat",
+      "strength": 0.59
+    },
+    {
+      "t": 65.5,
+      "kind": "snare",
+      "strength": 0.967
+    },
+    {
+      "t": 65.5,
+      "kind": "hat",
+      "strength": 0.825
+    },
+    {
+      "t": 65.75,
+      "kind": "hat",
+      "strength": 0.61
+    },
+    {
+      "t": 65.75,
+      "kind": "bass",
+      "strength": 0.639
+    },
+    {
+      "t": 66,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 66,
+      "kind": "hat",
+      "strength": 0.751
+    },
+    {
+      "t": 66,
+      "kind": "bass",
+      "strength": 0.96
+    },
+    {
+      "t": 66.25,
+      "kind": "hat",
+      "strength": 0.61
+    },
+    {
+      "t": 66.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 66.5,
+      "kind": "hat",
+      "strength": 0.834
+    },
+    {
+      "t": 66.75,
+      "kind": "hat",
+      "strength": 0.629
+    },
+    {
+      "t": 67,
+      "kind": "kick",
+      "strength": 0.976
+    },
+    {
+      "t": 67,
+      "kind": "hat",
+      "strength": 0.821
+    },
+    {
+      "t": 67,
+      "kind": "bass",
+      "strength": 0.711
+    },
+    {
+      "t": 67.25,
+      "kind": "kick",
+      "strength": 0.741
+    },
+    {
+      "t": 67.25,
+      "kind": "hat",
+      "strength": 0.61
+    },
+    {
+      "t": 67.5,
+      "kind": "snare",
+      "strength": 0.987
+    },
+    {
+      "t": 67.5,
+      "kind": "hat",
+      "strength": 0.791
+    },
+    {
+      "t": 67.75,
+      "kind": "hat",
+      "strength": 0.615
+    },
+    {
+      "t": 67.75,
+      "kind": "bass",
+      "strength": 0.642
+    },
+    {
+      "t": 67.994,
+      "kind": "vocal",
+      "strength": 0.968
+    },
+    {
+      "t": 68,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 68,
+      "kind": "hat",
+      "strength": 0.816
+    },
+    {
+      "t": 68,
+      "kind": "bass",
+      "strength": 0.97
+    },
+    {
+      "t": 68.25,
+      "kind": "hat",
+      "strength": 0.657
+    },
+    {
+      "t": 68.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 68.5,
+      "kind": "hat",
+      "strength": 0.776
+    },
+    {
+      "t": 68.75,
+      "kind": "hat",
+      "strength": 0.592
+    },
+    {
+      "t": 69,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 69,
+      "kind": "hat",
+      "strength": 0.815
+    },
+    {
+      "t": 69,
+      "kind": "bass",
+      "strength": 0.709
+    },
+    {
+      "t": 69.25,
+      "kind": "kick",
+      "strength": 0.736
+    },
+    {
+      "t": 69.25,
+      "kind": "hat",
+      "strength": 0.657
+    },
+    {
+      "t": 69.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 69.5,
+      "kind": "hat",
+      "strength": 0.796
+    },
+    {
+      "t": 69.75,
+      "kind": "hat",
+      "strength": 0.59
+    },
+    {
+      "t": 69.75,
+      "kind": "bass",
+      "strength": 0.651
+    },
+    {
+      "t": 70,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 70,
+      "kind": "hat",
+      "strength": 0.784
+    },
+    {
+      "t": 70,
+      "kind": "bass",
+      "strength": 0.952
+    },
+    {
+      "t": 70.25,
+      "kind": "hat",
+      "strength": 0.651
+    },
+    {
+      "t": 70.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 70.5,
+      "kind": "hat",
+      "strength": 0.81
+    },
+    {
+      "t": 70.75,
+      "kind": "hat",
+      "strength": 0.641
+    },
+    {
+      "t": 71,
+      "kind": "kick",
+      "strength": 0.966
+    },
+    {
+      "t": 71,
+      "kind": "hat",
+      "strength": 0.793
+    },
+    {
+      "t": 71,
+      "kind": "bass",
+      "strength": 0.758
+    },
+    {
+      "t": 71.25,
+      "kind": "kick",
+      "strength": 0.727
+    },
+    {
+      "t": 71.25,
+      "kind": "hat",
+      "strength": 0.575
+    },
+    {
+      "t": 71.5,
+      "kind": "snare",
+      "strength": 0.961
+    },
+    {
+      "t": 71.5,
+      "kind": "hat",
+      "strength": 0.761
+    },
+    {
+      "t": 71.75,
+      "kind": "hat",
+      "strength": 0.662
+    },
+    {
+      "t": 71.75,
+      "kind": "bass",
+      "strength": 0.652
+    },
+    {
+      "t": 71.983,
+      "kind": "vocal",
+      "strength": 0.974
+    },
+    {
+      "t": 72,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 72,
+      "kind": "hat",
+      "strength": 0.77
+    },
+    {
+      "t": 72,
+      "kind": "bass",
+      "strength": 0.961
+    },
+    {
+      "t": 72.25,
+      "kind": "hat",
+      "strength": 0.576
+    },
+    {
+      "t": 72.5,
+      "kind": "snare",
+      "strength": 0.962
+    },
+    {
+      "t": 72.5,
+      "kind": "hat",
+      "strength": 0.767
+    },
+    {
+      "t": 72.75,
+      "kind": "hat",
+      "strength": 0.588
+    },
+    {
+      "t": 73,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 73,
+      "kind": "hat",
+      "strength": 0.775
+    },
+    {
+      "t": 73,
+      "kind": "bass",
+      "strength": 0.73
+    },
+    {
+      "t": 73.25,
+      "kind": "kick",
+      "strength": 0.787
+    },
+    {
+      "t": 73.25,
+      "kind": "hat",
+      "strength": 0.615
+    },
+    {
+      "t": 73.5,
+      "kind": "snare",
+      "strength": 0.983
+    },
+    {
+      "t": 73.5,
+      "kind": "hat",
+      "strength": 0.764
+    },
+    {
+      "t": 73.75,
+      "kind": "hat",
+      "strength": 0.607
+    },
+    {
+      "t": 73.75,
+      "kind": "bass",
+      "strength": 0.623
+    },
+    {
+      "t": 74,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 74,
+      "kind": "hat",
+      "strength": 0.795
+    },
+    {
+      "t": 74,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 74.25,
+      "kind": "hat",
+      "strength": 0.621
+    },
+    {
+      "t": 74.5,
+      "kind": "snare",
+      "strength": 0.963
+    },
+    {
+      "t": 74.5,
+      "kind": "hat",
+      "strength": 0.784
+    },
+    {
+      "t": 74.75,
+      "kind": "hat",
+      "strength": 0.611
+    },
+    {
+      "t": 75,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 75,
+      "kind": "hat",
+      "strength": 0.792
+    },
+    {
+      "t": 75,
+      "kind": "bass",
+      "strength": 0.704
+    },
+    {
+      "t": 75.25,
+      "kind": "kick",
+      "strength": 0.777
+    },
+    {
+      "t": 75.25,
+      "kind": "hat",
+      "strength": 0.573
+    },
+    {
+      "t": 75.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 75.5,
+      "kind": "hat",
+      "strength": 0.842
+    },
+    {
+      "t": 75.75,
+      "kind": "hat",
+      "strength": 0.604
+    },
+    {
+      "t": 75.75,
+      "kind": "bass",
+      "strength": 0.611
+    },
+    {
+      "t": 75.996,
+      "kind": "vocal",
+      "strength": 0.946
+    },
+    {
+      "t": 76,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 76,
+      "kind": "hat",
+      "strength": 0.85
+    },
+    {
+      "t": 76,
+      "kind": "bass",
+      "strength": 0.985
+    },
+    {
+      "t": 76.25,
+      "kind": "hat",
+      "strength": 0.641
+    },
+    {
+      "t": 76.5,
+      "kind": "snare",
+      "strength": 0.988
+    },
+    {
+      "t": 76.5,
+      "kind": "hat",
+      "strength": 0.833
+    },
+    {
+      "t": 76.75,
+      "kind": "hat",
+      "strength": 0.623
+    },
+    {
+      "t": 77,
+      "kind": "kick",
+      "strength": 0.994
+    },
+    {
+      "t": 77,
+      "kind": "hat",
+      "strength": 0.819
+    },
+    {
+      "t": 77,
+      "kind": "bass",
+      "strength": 0.756
+    },
+    {
+      "t": 77.25,
+      "kind": "kick",
+      "strength": 0.753
+    },
+    {
+      "t": 77.25,
+      "kind": "hat",
+      "strength": 0.628
+    },
+    {
+      "t": 77.5,
+      "kind": "snare",
+      "strength": 0.993
+    },
+    {
+      "t": 77.5,
+      "kind": "hat",
+      "strength": 0.833
+    },
+    {
+      "t": 77.75,
+      "kind": "hat",
+      "strength": 0.602
+    },
+    {
+      "t": 77.75,
+      "kind": "bass",
+      "strength": 0.656
+    },
+    {
+      "t": 78,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 78,
+      "kind": "hat",
+      "strength": 0.811
+    },
+    {
+      "t": 78,
+      "kind": "bass",
+      "strength": 0.992
+    },
+    {
+      "t": 78.25,
+      "kind": "hat",
+      "strength": 0.65
+    },
+    {
+      "t": 78.5,
+      "kind": "snare",
+      "strength": 0.987
+    },
+    {
+      "t": 78.5,
+      "kind": "hat",
+      "strength": 0.757
+    },
+    {
+      "t": 78.75,
+      "kind": "hat",
+      "strength": 0.594
+    },
+    {
+      "t": 79,
+      "kind": "kick",
+      "strength": 0.971
+    },
+    {
+      "t": 79,
+      "kind": "hat",
+      "strength": 0.796
+    },
+    {
+      "t": 79,
+      "kind": "bass",
+      "strength": 0.752
+    },
+    {
+      "t": 79.25,
+      "kind": "kick",
+      "strength": 0.75
+    },
+    {
+      "t": 79.25,
+      "kind": "hat",
+      "strength": 0.585
+    },
+    {
+      "t": 79.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 79.5,
+      "kind": "hat",
+      "strength": 0.82
+    },
+    {
+      "t": 79.75,
+      "kind": "hat",
+      "strength": 0.588
+    },
+    {
+      "t": 79.75,
+      "kind": "bass",
+      "strength": 0.635
+    },
+    {
+      "t": 80,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 80,
+      "kind": "hat",
+      "strength": 0.811
+    },
+    {
+      "t": 80,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 80.014,
+      "kind": "vocal",
+      "strength": 0.995
+    },
+    {
+      "t": 80.25,
+      "kind": "hat",
+      "strength": 0.652
+    },
+    {
+      "t": 80.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 80.5,
+      "kind": "hat",
+      "strength": 0.778
+    },
+    {
+      "t": 80.75,
+      "kind": "hat",
+      "strength": 0.582
+    },
+    {
+      "t": 81,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 81,
+      "kind": "hat",
+      "strength": 0.8
+    },
+    {
+      "t": 81,
+      "kind": "bass",
+      "strength": 0.711
+    },
+    {
+      "t": 81.25,
+      "kind": "kick",
+      "strength": 0.754
+    },
+    {
+      "t": 81.25,
+      "kind": "hat",
+      "strength": 0.625
+    },
+    {
+      "t": 81.5,
+      "kind": "snare",
+      "strength": 0.997
+    },
+    {
+      "t": 81.5,
+      "kind": "hat",
+      "strength": 0.814
+    },
+    {
+      "t": 81.75,
+      "kind": "hat",
+      "strength": 0.636
+    },
+    {
+      "t": 81.75,
+      "kind": "bass",
+      "strength": 0.618
+    },
+    {
+      "t": 82,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 82,
+      "kind": "hat",
+      "strength": 0.791
+    },
+    {
+      "t": 82,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 82.25,
+      "kind": "hat",
+      "strength": 0.615
+    },
+    {
+      "t": 82.5,
+      "kind": "snare",
+      "strength": 0.964
+    },
+    {
+      "t": 82.5,
+      "kind": "hat",
+      "strength": 0.821
+    },
+    {
+      "t": 82.75,
+      "kind": "hat",
+      "strength": 0.666
+    },
+    {
+      "t": 83,
+      "kind": "kick",
+      "strength": 0.971
+    },
+    {
+      "t": 83,
+      "kind": "hat",
+      "strength": 0.776
+    },
+    {
+      "t": 83,
+      "kind": "bass",
+      "strength": 0.717
+    },
+    {
+      "t": 83.25,
+      "kind": "kick",
+      "strength": 0.788
+    },
+    {
+      "t": 83.25,
+      "kind": "hat",
+      "strength": 0.665
+    },
+    {
+      "t": 83.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 83.5,
+      "kind": "hat",
+      "strength": 0.829
+    },
+    {
+      "t": 83.75,
+      "kind": "hat",
+      "strength": 0.636
+    },
+    {
+      "t": 83.75,
+      "kind": "bass",
+      "strength": 0.661
+    },
+    {
+      "t": 84,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 84,
+      "kind": "hat",
+      "strength": 0.846
+    },
+    {
+      "t": 84,
+      "kind": "bass",
+      "strength": 0.988
+    },
+    {
+      "t": 84.002,
+      "kind": "vocal",
+      "strength": 0.982
+    },
+    {
+      "t": 84.25,
+      "kind": "hat",
+      "strength": 0.608
+    },
+    {
+      "t": 84.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 84.5,
+      "kind": "hat",
+      "strength": 0.796
+    },
+    {
+      "t": 84.75,
+      "kind": "hat",
+      "strength": 0.66
+    },
+    {
+      "t": 85,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 85,
+      "kind": "hat",
+      "strength": 0.753
+    },
+    {
+      "t": 85,
+      "kind": "bass",
+      "strength": 0.738
+    },
+    {
+      "t": 85.25,
+      "kind": "kick",
+      "strength": 0.757
+    },
+    {
+      "t": 85.25,
+      "kind": "hat",
+      "strength": 0.607
+    },
+    {
+      "t": 85.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 85.5,
+      "kind": "hat",
+      "strength": 0.845
+    },
+    {
+      "t": 85.75,
+      "kind": "hat",
+      "strength": 0.623
+    },
+    {
+      "t": 85.75,
+      "kind": "bass",
+      "strength": 0.658
+    },
+    {
+      "t": 86,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 86,
+      "kind": "hat",
+      "strength": 0.798
+    },
+    {
+      "t": 86,
+      "kind": "bass",
+      "strength": 0.956
+    },
+    {
+      "t": 86.25,
+      "kind": "hat",
+      "strength": 0.619
+    },
+    {
+      "t": 86.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 86.5,
+      "kind": "hat",
+      "strength": 0.819
+    },
+    {
+      "t": 86.75,
+      "kind": "hat",
+      "strength": 0.62
+    },
+    {
+      "t": 87,
+      "kind": "kick",
+      "strength": 0.992
+    },
+    {
+      "t": 87,
+      "kind": "hat",
+      "strength": 0.831
+    },
+    {
+      "t": 87,
+      "kind": "bass",
+      "strength": 0.76
+    },
+    {
+      "t": 87.25,
+      "kind": "kick",
+      "strength": 0.79
+    },
+    {
+      "t": 87.25,
+      "kind": "hat",
+      "strength": 0.599
+    },
+    {
+      "t": 87.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 87.5,
+      "kind": "hat",
+      "strength": 0.807
+    },
+    {
+      "t": 87.75,
+      "kind": "hat",
+      "strength": 0.587
+    },
+    {
+      "t": 87.75,
+      "kind": "bass",
+      "strength": 0.636
+    },
+    {
+      "t": 87.982,
+      "kind": "vocal",
+      "strength": 0.881
+    },
+    {
+      "t": 88,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 88,
+      "kind": "hat",
+      "strength": 0.713
+    },
+    {
+      "t": 88,
+      "kind": "bass",
+      "strength": 0.87
+    },
+    {
+      "t": 88.5,
+      "kind": "snare",
+      "strength": 0.904
+    },
+    {
+      "t": 88.5,
+      "kind": "hat",
+      "strength": 0.742
+    },
+    {
+      "t": 89,
+      "kind": "kick",
+      "strength": 0.913
+    },
+    {
+      "t": 89,
+      "kind": "hat",
+      "strength": 0.728
+    },
+    {
+      "t": 89,
+      "kind": "bass",
+      "strength": 0.634
+    },
+    {
+      "t": 89.5,
+      "kind": "snare",
+      "strength": 0.879
+    },
+    {
+      "t": 89.5,
+      "kind": "hat",
+      "strength": 0.761
+    },
+    {
+      "t": 90,
+      "kind": "kick",
+      "strength": 0.95
+    },
+    {
+      "t": 90,
+      "kind": "hat",
+      "strength": 0.703
+    },
+    {
+      "t": 90,
+      "kind": "bass",
+      "strength": 0.872
+    },
+    {
+      "t": 90.5,
+      "kind": "snare",
+      "strength": 0.858
+    },
+    {
+      "t": 90.5,
+      "kind": "hat",
+      "strength": 0.709
+    },
+    {
+      "t": 91,
+      "kind": "kick",
+      "strength": 0.878
+    },
+    {
+      "t": 91,
+      "kind": "hat",
+      "strength": 0.705
+    },
+    {
+      "t": 91,
+      "kind": "bass",
+      "strength": 0.644
+    },
+    {
+      "t": 91.5,
+      "kind": "snare",
+      "strength": 0.87
+    },
+    {
+      "t": 91.5,
+      "kind": "hat",
+      "strength": 0.688
+    },
+    {
+      "t": 91.984,
+      "kind": "vocal",
+      "strength": 0.749
+    },
+    {
+      "t": 92,
+      "kind": "kick",
+      "strength": 0.958
+    },
+    {
+      "t": 92,
+      "kind": "hat",
+      "strength": 0.681
+    },
+    {
+      "t": 92,
+      "kind": "bass",
+      "strength": 0.908
+    },
+    {
+      "t": 92.5,
+      "kind": "snare",
+      "strength": 0.923
+    },
+    {
+      "t": 92.5,
+      "kind": "hat",
+      "strength": 0.752
+    },
+    {
+      "t": 93,
+      "kind": "kick",
+      "strength": 0.866
+    },
+    {
+      "t": 93,
+      "kind": "hat",
+      "strength": 0.676
+    },
+    {
+      "t": 93,
+      "kind": "bass",
+      "strength": 0.625
+    },
+    {
+      "t": 93.5,
+      "kind": "snare",
+      "strength": 0.919
+    },
+    {
+      "t": 93.5,
+      "kind": "hat",
+      "strength": 0.692
+    },
+    {
+      "t": 94,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 94,
+      "kind": "hat",
+      "strength": 0.717
+    },
+    {
+      "t": 94,
+      "kind": "bass",
+      "strength": 0.882
+    },
+    {
+      "t": 94.5,
+      "kind": "snare",
+      "strength": 0.894
+    },
+    {
+      "t": 94.5,
+      "kind": "hat",
+      "strength": 0.687
+    },
+    {
+      "t": 95,
+      "kind": "kick",
+      "strength": 0.911
+    },
+    {
+      "t": 95,
+      "kind": "hat",
+      "strength": 0.678
+    },
+    {
+      "t": 95,
+      "kind": "bass",
+      "strength": 0.62
+    },
+    {
+      "t": 95.5,
+      "kind": "snare",
+      "strength": 0.869
+    },
+    {
+      "t": 95.5,
+      "kind": "hat",
+      "strength": 0.722
+    },
+    {
+      "t": 95.986,
+      "kind": "vocal",
+      "strength": 0.736
+    },
+    {
+      "t": 96,
+      "kind": "kick",
+      "strength": 0.958
+    },
+    {
+      "t": 96,
+      "kind": "hat",
+      "strength": 0.742
+    },
+    {
+      "t": 96,
+      "kind": "bass",
+      "strength": 0.873
+    },
+    {
+      "t": 96.5,
+      "kind": "snare",
+      "strength": 0.859
+    },
+    {
+      "t": 96.5,
+      "kind": "hat",
+      "strength": 0.762
+    },
+    {
+      "t": 97,
+      "kind": "kick",
+      "strength": 0.845
+    },
+    {
+      "t": 97,
+      "kind": "hat",
+      "strength": 0.684
+    },
+    {
+      "t": 97,
+      "kind": "bass",
+      "strength": 0.646
+    },
+    {
+      "t": 97.5,
+      "kind": "snare",
+      "strength": 0.882
+    },
+    {
+      "t": 97.5,
+      "kind": "hat",
+      "strength": 0.722
+    },
+    {
+      "t": 98,
+      "kind": "kick",
+      "strength": 0.947
+    },
+    {
+      "t": 98,
+      "kind": "hat",
+      "strength": 0.728
+    },
+    {
+      "t": 98,
+      "kind": "bass",
+      "strength": 0.9
+    },
+    {
+      "t": 98.5,
+      "kind": "snare",
+      "strength": 0.857
+    },
+    {
+      "t": 98.5,
+      "kind": "hat",
+      "strength": 0.737
+    },
+    {
+      "t": 99,
+      "kind": "kick",
+      "strength": 0.858
+    },
+    {
+      "t": 99,
+      "kind": "hat",
+      "strength": 0.753
+    },
+    {
+      "t": 99,
+      "kind": "bass",
+      "strength": 0.624
+    },
+    {
+      "t": 99.5,
+      "kind": "snare",
+      "strength": 0.925
+    },
+    {
+      "t": 99.5,
+      "kind": "hat",
+      "strength": 0.755
+    },
+    {
+      "t": 99.984,
+      "kind": "vocal",
+      "strength": 0.767
+    },
+    {
+      "t": 100,
+      "kind": "kick",
+      "strength": 0.969
+    },
+    {
+      "t": 100,
+      "kind": "hat",
+      "strength": 0.736
+    },
+    {
+      "t": 100,
+      "kind": "bass",
+      "strength": 0.872
+    },
+    {
+      "t": 100.5,
+      "kind": "snare",
+      "strength": 0.888
+    },
+    {
+      "t": 100.5,
+      "kind": "hat",
+      "strength": 0.763
+    },
+    {
+      "t": 101,
+      "kind": "kick",
+      "strength": 0.852
+    },
+    {
+      "t": 101,
+      "kind": "hat",
+      "strength": 0.765
+    },
+    {
+      "t": 101,
+      "kind": "bass",
+      "strength": 0.654
+    },
+    {
+      "t": 101.5,
+      "kind": "snare",
+      "strength": 0.859
+    },
+    {
+      "t": 101.5,
+      "kind": "hat",
+      "strength": 0.712
+    },
+    {
+      "t": 102,
+      "kind": "kick",
+      "strength": 0.989
+    },
+    {
+      "t": 102,
+      "kind": "hat",
+      "strength": 0.69
+    },
+    {
+      "t": 102,
+      "kind": "bass",
+      "strength": 0.855
+    },
+    {
+      "t": 102.5,
+      "kind": "snare",
+      "strength": 0.855
+    },
+    {
+      "t": 102.5,
+      "kind": "hat",
+      "strength": 0.671
+    },
+    {
+      "t": 103,
+      "kind": "kick",
+      "strength": 0.861
+    },
+    {
+      "t": 103,
+      "kind": "hat",
+      "strength": 0.68
+    },
+    {
+      "t": 103,
+      "kind": "bass",
+      "strength": 0.671
+    },
+    {
+      "t": 103.5,
+      "kind": "snare",
+      "strength": 0.923
+    },
+    {
+      "t": 103.5,
+      "kind": "hat",
+      "strength": 0.744
+    },
+    {
+      "t": 103.995,
+      "kind": "vocal",
+      "strength": 0.763
+    },
+    {
+      "t": 104,
+      "kind": "kick",
+      "strength": 0.995
+    },
+    {
+      "t": 104,
+      "kind": "hat",
+      "strength": 0.678
+    },
+    {
+      "t": 104,
+      "kind": "bass",
+      "strength": 0.852
+    },
+    {
+      "t": 104.5,
+      "kind": "snare",
+      "strength": 0.903
+    },
+    {
+      "t": 104.5,
+      "kind": "hat",
+      "strength": 0.748
+    },
+    {
+      "t": 105,
+      "kind": "kick",
+      "strength": 0.834
+    },
+    {
+      "t": 105,
+      "kind": "hat",
+      "strength": 0.753
+    },
+    {
+      "t": 105,
+      "kind": "bass",
+      "strength": 0.639
+    },
+    {
+      "t": 105.5,
+      "kind": "snare",
+      "strength": 0.888
+    },
+    {
+      "t": 105.5,
+      "kind": "hat",
+      "strength": 0.725
+    },
+    {
+      "t": 106,
+      "kind": "kick",
+      "strength": 0.992
+    },
+    {
+      "t": 106,
+      "kind": "hat",
+      "strength": 0.765
+    },
+    {
+      "t": 106,
+      "kind": "bass",
+      "strength": 0.853
+    },
+    {
+      "t": 106.5,
+      "kind": "snare",
+      "strength": 0.921
+    },
+    {
+      "t": 106.5,
+      "kind": "hat",
+      "strength": 0.7
+    },
+    {
+      "t": 107,
+      "kind": "kick",
+      "strength": 0.856
+    },
+    {
+      "t": 107,
+      "kind": "hat",
+      "strength": 0.751
+    },
+    {
+      "t": 107,
+      "kind": "bass",
+      "strength": 0.628
+    },
+    {
+      "t": 107.5,
+      "kind": "snare",
+      "strength": 0.874
+    },
+    {
+      "t": 107.5,
+      "kind": "hat",
+      "strength": 0.68
+    },
+    {
+      "t": 108,
+      "kind": "kick",
+      "strength": 0.935
+    },
+    {
+      "t": 108,
+      "kind": "hat",
+      "strength": 0.705
+    },
+    {
+      "t": 108,
+      "kind": "bass",
+      "strength": 0.877
+    },
+    {
+      "t": 108.001,
+      "kind": "vocal",
+      "strength": 0.812
+    },
+    {
+      "t": 108.5,
+      "kind": "snare",
+      "strength": 0.913
+    },
+    {
+      "t": 108.5,
+      "kind": "hat",
+      "strength": 0.752
+    },
+    {
+      "t": 109,
+      "kind": "kick",
+      "strength": 0.899
+    },
+    {
+      "t": 109,
+      "kind": "hat",
+      "strength": 0.675
+    },
+    {
+      "t": 109,
+      "kind": "bass",
+      "strength": 0.63
+    },
+    {
+      "t": 109.5,
+      "kind": "snare",
+      "strength": 0.908
+    },
+    {
+      "t": 109.5,
+      "kind": "hat",
+      "strength": 0.761
+    },
+    {
+      "t": 110,
+      "kind": "kick",
+      "strength": 0.947
+    },
+    {
+      "t": 110,
+      "kind": "hat",
+      "strength": 0.73
+    },
+    {
+      "t": 110,
+      "kind": "bass",
+      "strength": 0.891
+    },
+    {
+      "t": 110.5,
+      "kind": "snare",
+      "strength": 0.888
+    },
+    {
+      "t": 110.5,
+      "kind": "hat",
+      "strength": 0.705
+    },
+    {
+      "t": 111,
+      "kind": "kick",
+      "strength": 0.89
+    },
+    {
+      "t": 111,
+      "kind": "hat",
+      "strength": 0.7
+    },
+    {
+      "t": 111,
+      "kind": "bass",
+      "strength": 0.643
+    },
+    {
+      "t": 111.5,
+      "kind": "snare",
+      "strength": 0.853
+    },
+    {
+      "t": 111.5,
+      "kind": "hat",
+      "strength": 0.676
+    },
+    {
+      "t": 111.983,
+      "kind": "vocal",
+      "strength": 0.822
+    },
+    {
+      "t": 112,
+      "kind": "kick",
+      "strength": 0.949
+    },
+    {
+      "t": 112,
+      "kind": "hat",
+      "strength": 0.707
+    },
+    {
+      "t": 112,
+      "kind": "bass",
+      "strength": 0.866
+    },
+    {
+      "t": 112.5,
+      "kind": "snare",
+      "strength": 0.926
+    },
+    {
+      "t": 112.5,
+      "kind": "hat",
+      "strength": 0.708
+    },
+    {
+      "t": 113,
+      "kind": "kick",
+      "strength": 0.854
+    },
+    {
+      "t": 113,
+      "kind": "hat",
+      "strength": 0.709
+    },
+    {
+      "t": 113,
+      "kind": "bass",
+      "strength": 0.654
+    },
+    {
+      "t": 113.5,
+      "kind": "snare",
+      "strength": 0.922
+    },
+    {
+      "t": 113.5,
+      "kind": "hat",
+      "strength": 0.731
+    },
+    {
+      "t": 114,
+      "kind": "kick",
+      "strength": 0.961
+    },
+    {
+      "t": 114,
+      "kind": "hat",
+      "strength": 0.744
+    },
+    {
+      "t": 114,
+      "kind": "bass",
+      "strength": 0.904
+    },
+    {
+      "t": 114.5,
+      "kind": "snare",
+      "strength": 0.85
+    },
+    {
+      "t": 114.5,
+      "kind": "hat",
+      "strength": 0.728
+    },
+    {
+      "t": 115,
+      "kind": "kick",
+      "strength": 0.877
+    },
+    {
+      "t": 115,
+      "kind": "hat",
+      "strength": 0.743
+    },
+    {
+      "t": 115,
+      "kind": "bass",
+      "strength": 0.62
+    },
+    {
+      "t": 115.5,
+      "kind": "snare",
+      "strength": 0.864
+    },
+    {
+      "t": 115.5,
+      "kind": "hat",
+      "strength": 0.749
+    },
+    {
+      "t": 115.996,
+      "kind": "vocal",
+      "strength": 0.779
+    },
+    {
+      "t": 116,
+      "kind": "kick",
+      "strength": 0.982
+    },
+    {
+      "t": 116,
+      "kind": "hat",
+      "strength": 0.717
+    },
+    {
+      "t": 116,
+      "kind": "bass",
+      "strength": 0.89
+    },
+    {
+      "t": 116.5,
+      "kind": "snare",
+      "strength": 0.882
+    },
+    {
+      "t": 116.5,
+      "kind": "hat",
+      "strength": 0.722
+    },
+    {
+      "t": 117,
+      "kind": "kick",
+      "strength": 0.897
+    },
+    {
+      "t": 117,
+      "kind": "hat",
+      "strength": 0.726
+    },
+    {
+      "t": 117,
+      "kind": "bass",
+      "strength": 0.641
+    },
+    {
+      "t": 117.5,
+      "kind": "snare",
+      "strength": 0.883
+    },
+    {
+      "t": 117.5,
+      "kind": "hat",
+      "strength": 0.74
+    },
+    {
+      "t": 118,
+      "kind": "kick",
+      "strength": 0.957
+    },
+    {
+      "t": 118,
+      "kind": "hat",
+      "strength": 0.744
+    },
+    {
+      "t": 118,
+      "kind": "bass",
+      "strength": 0.908
+    },
+    {
+      "t": 118.5,
+      "kind": "snare",
+      "strength": 0.876
+    },
+    {
+      "t": 118.5,
+      "kind": "hat",
+      "strength": 0.705
+    },
+    {
+      "t": 119,
+      "kind": "kick",
+      "strength": 0.875
+    },
+    {
+      "t": 119,
+      "kind": "hat",
+      "strength": 0.756
+    },
+    {
+      "t": 119,
+      "kind": "bass",
+      "strength": 0.634
+    },
+    {
+      "t": 119.5,
+      "kind": "snare",
+      "strength": 0.89
+    },
+    {
+      "t": 119.5,
+      "kind": "hat",
+      "strength": 0.74
+    },
+    {
+      "t": 120,
+      "kind": "kick",
+      "strength": 0.992
+    },
+    {
+      "t": 120,
+      "kind": "hat",
+      "strength": 0.755
+    },
+    {
+      "t": 120,
+      "kind": "bass",
+      "strength": 0.855
+    },
+    {
+      "t": 120,
+      "kind": "vocal",
+      "strength": 0.824
+    },
+    {
+      "t": 120.5,
+      "kind": "snare",
+      "strength": 0.848
+    },
+    {
+      "t": 120.5,
+      "kind": "hat",
+      "strength": 0.718
+    },
+    {
+      "t": 121,
+      "kind": "kick",
+      "strength": 0.886
+    },
+    {
+      "t": 121,
+      "kind": "hat",
+      "strength": 0.69
+    },
+    {
+      "t": 121,
+      "kind": "bass",
+      "strength": 0.642
+    },
+    {
+      "t": 121.5,
+      "kind": "snare",
+      "strength": 0.908
+    },
+    {
+      "t": 121.5,
+      "kind": "hat",
+      "strength": 0.733
+    },
+    {
+      "t": 122,
+      "kind": "kick",
+      "strength": 0.948
+    },
+    {
+      "t": 122,
+      "kind": "hat",
+      "strength": 0.749
+    },
+    {
+      "t": 122,
+      "kind": "bass",
+      "strength": 0.885
+    },
+    {
+      "t": 122.5,
+      "kind": "snare",
+      "strength": 0.878
+    },
+    {
+      "t": 122.5,
+      "kind": "hat",
+      "strength": 0.692
+    },
+    {
+      "t": 123,
+      "kind": "kick",
+      "strength": 0.874
+    },
+    {
+      "t": 123,
+      "kind": "hat",
+      "strength": 0.75
+    },
+    {
+      "t": 123,
+      "kind": "bass",
+      "strength": 0.642
+    },
+    {
+      "t": 123.5,
+      "kind": "snare",
+      "strength": 0.925
+    },
+    {
+      "t": 123.5,
+      "kind": "hat",
+      "strength": 0.724
+    },
+    {
+      "t": 123.996,
+      "kind": "vocal",
+      "strength": 0.81
+    },
+    {
+      "t": 124,
+      "kind": "kick",
+      "strength": 0.968
+    },
+    {
+      "t": 124,
+      "kind": "hat",
+      "strength": 0.732
+    },
+    {
+      "t": 124,
+      "kind": "bass",
+      "strength": 0.904
+    },
+    {
+      "t": 124.5,
+      "kind": "snare",
+      "strength": 0.926
+    },
+    {
+      "t": 124.5,
+      "kind": "hat",
+      "strength": 0.711
+    },
+    {
+      "t": 125,
+      "kind": "kick",
+      "strength": 0.853
+    },
+    {
+      "t": 125,
+      "kind": "hat",
+      "strength": 0.737
+    },
+    {
+      "t": 125,
+      "kind": "bass",
+      "strength": 0.619
+    },
+    {
+      "t": 125.5,
+      "kind": "snare",
+      "strength": 0.904
+    },
+    {
+      "t": 125.5,
+      "kind": "hat",
+      "strength": 0.733
+    },
+    {
+      "t": 126,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 126,
+      "kind": "hat",
+      "strength": 0.746
+    },
+    {
+      "t": 126,
+      "kind": "bass",
+      "strength": 0.908
+    },
+    {
+      "t": 126.5,
+      "kind": "snare",
+      "strength": 0.906
+    },
+    {
+      "t": 126.5,
+      "kind": "hat",
+      "strength": 0.711
+    },
+    {
+      "t": 127,
+      "kind": "kick",
+      "strength": 0.849
+    },
+    {
+      "t": 127,
+      "kind": "hat",
+      "strength": 0.751
+    },
+    {
+      "t": 127,
+      "kind": "bass",
+      "strength": 0.662
+    },
+    {
+      "t": 127.5,
+      "kind": "snare",
+      "strength": 0.9
+    },
+    {
+      "t": 127.5,
+      "kind": "hat",
+      "strength": 0.679
+    },
+    {
+      "t": 128,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 128,
+      "kind": "hat",
+      "strength": 0.766
+    },
+    {
+      "t": 128,
+      "kind": "bass",
+      "strength": 0.965
+    },
+    {
+      "t": 128.014,
+      "kind": "vocal",
+      "strength": 0.917
+    },
+    {
+      "t": 128.25,
+      "kind": "hat",
+      "strength": 0.64
+    },
+    {
+      "t": 128.5,
+      "kind": "snare",
+      "strength": 0.989
+    },
+    {
+      "t": 128.5,
+      "kind": "hat",
+      "strength": 0.804
+    },
+    {
+      "t": 128.75,
+      "kind": "hat",
+      "strength": 0.641
+    },
+    {
+      "t": 129,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 129,
+      "kind": "hat",
+      "strength": 0.761
+    },
+    {
+      "t": 129,
+      "kind": "bass",
+      "strength": 0.725
+    },
+    {
+      "t": 129.25,
+      "kind": "kick",
+      "strength": 0.782
+    },
+    {
+      "t": 129.25,
+      "kind": "hat",
+      "strength": 0.637
+    },
+    {
+      "t": 129.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 129.5,
+      "kind": "hat",
+      "strength": 0.829
+    },
+    {
+      "t": 129.75,
+      "kind": "hat",
+      "strength": 0.612
+    },
+    {
+      "t": 129.75,
+      "kind": "bass",
+      "strength": 0.651
+    },
+    {
+      "t": 130,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 130,
+      "kind": "hat",
+      "strength": 0.847
+    },
+    {
+      "t": 130,
+      "kind": "bass",
+      "strength": 0.985
+    },
+    {
+      "t": 130.25,
+      "kind": "hat",
+      "strength": 0.611
+    },
+    {
+      "t": 130.5,
+      "kind": "snare",
+      "strength": 0.983
+    },
+    {
+      "t": 130.5,
+      "kind": "hat",
+      "strength": 0.808
+    },
+    {
+      "t": 130.75,
+      "kind": "hat",
+      "strength": 0.573
+    },
+    {
+      "t": 131,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 131,
+      "kind": "hat",
+      "strength": 0.751
+    },
+    {
+      "t": 131,
+      "kind": "bass",
+      "strength": 0.758
+    },
+    {
+      "t": 131.25,
+      "kind": "kick",
+      "strength": 0.77
+    },
+    {
+      "t": 131.25,
+      "kind": "hat",
+      "strength": 0.623
+    },
+    {
+      "t": 131.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 131.5,
+      "kind": "hat",
+      "strength": 0.815
+    },
+    {
+      "t": 131.75,
+      "kind": "hat",
+      "strength": 0.621
+    },
+    {
+      "t": 131.75,
+      "kind": "bass",
+      "strength": 0.623
+    },
+    {
+      "t": 132,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 132,
+      "kind": "hat",
+      "strength": 0.803
+    },
+    {
+      "t": 132,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 132.013,
+      "kind": "vocal",
+      "strength": 0.947
+    },
+    {
+      "t": 132.25,
+      "kind": "hat",
+      "strength": 0.62
+    },
+    {
+      "t": 132.5,
+      "kind": "snare",
+      "strength": 0.997
+    },
+    {
+      "t": 132.5,
+      "kind": "hat",
+      "strength": 0.839
+    },
+    {
+      "t": 132.75,
+      "kind": "hat",
+      "strength": 0.648
+    },
+    {
+      "t": 133,
+      "kind": "kick",
+      "strength": 0.999
+    },
+    {
+      "t": 133,
+      "kind": "hat",
+      "strength": 0.774
+    },
+    {
+      "t": 133,
+      "kind": "bass",
+      "strength": 0.712
+    },
+    {
+      "t": 133.25,
+      "kind": "kick",
+      "strength": 0.763
+    },
+    {
+      "t": 133.25,
+      "kind": "hat",
+      "strength": 0.607
+    },
+    {
+      "t": 133.5,
+      "kind": "snare",
+      "strength": 0.975
+    },
+    {
+      "t": 133.5,
+      "kind": "hat",
+      "strength": 0.78
+    },
+    {
+      "t": 133.75,
+      "kind": "hat",
+      "strength": 0.6
+    },
+    {
+      "t": 133.75,
+      "kind": "bass",
+      "strength": 0.637
+    },
+    {
+      "t": 134,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 134,
+      "kind": "hat",
+      "strength": 0.82
+    },
+    {
+      "t": 134,
+      "kind": "bass",
+      "strength": 0.989
+    },
+    {
+      "t": 134.25,
+      "kind": "hat",
+      "strength": 0.66
+    },
+    {
+      "t": 134.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 134.5,
+      "kind": "hat",
+      "strength": 0.809
+    },
+    {
+      "t": 134.75,
+      "kind": "hat",
+      "strength": 0.618
+    },
+    {
+      "t": 135,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 135,
+      "kind": "hat",
+      "strength": 0.839
+    },
+    {
+      "t": 135,
+      "kind": "bass",
+      "strength": 0.745
+    },
+    {
+      "t": 135.25,
+      "kind": "kick",
+      "strength": 0.783
+    },
+    {
+      "t": 135.25,
+      "kind": "hat",
+      "strength": 0.619
+    },
+    {
+      "t": 135.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 135.5,
+      "kind": "hat",
+      "strength": 0.756
+    },
+    {
+      "t": 135.75,
+      "kind": "hat",
+      "strength": 0.614
+    },
+    {
+      "t": 135.75,
+      "kind": "bass",
+      "strength": 0.639
+    },
+    {
+      "t": 136,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 136,
+      "kind": "hat",
+      "strength": 0.759
+    },
+    {
+      "t": 136,
+      "kind": "bass",
+      "strength": 0.965
+    },
+    {
+      "t": 136.014,
+      "kind": "vocal",
+      "strength": 0.932
+    },
+    {
+      "t": 136.25,
+      "kind": "hat",
+      "strength": 0.57
+    },
+    {
+      "t": 136.5,
+      "kind": "snare",
+      "strength": 0.986
+    },
+    {
+      "t": 136.5,
+      "kind": "hat",
+      "strength": 0.778
+    },
+    {
+      "t": 136.75,
+      "kind": "hat",
+      "strength": 0.632
+    },
+    {
+      "t": 137,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 137,
+      "kind": "hat",
+      "strength": 0.752
+    },
+    {
+      "t": 137,
+      "kind": "bass",
+      "strength": 0.737
+    },
+    {
+      "t": 137.25,
+      "kind": "kick",
+      "strength": 0.759
+    },
+    {
+      "t": 137.25,
+      "kind": "hat",
+      "strength": 0.584
+    },
+    {
+      "t": 137.5,
+      "kind": "snare",
+      "strength": 0.98
+    },
+    {
+      "t": 137.5,
+      "kind": "hat",
+      "strength": 0.829
+    },
+    {
+      "t": 137.75,
+      "kind": "hat",
+      "strength": 0.598
+    },
+    {
+      "t": 137.75,
+      "kind": "bass",
+      "strength": 0.654
+    },
+    {
+      "t": 138,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 138,
+      "kind": "hat",
+      "strength": 0.8
+    },
+    {
+      "t": 138,
+      "kind": "bass",
+      "strength": 0.993
+    },
+    {
+      "t": 138.25,
+      "kind": "hat",
+      "strength": 0.603
+    },
+    {
+      "t": 138.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 138.5,
+      "kind": "hat",
+      "strength": 0.849
+    },
+    {
+      "t": 138.75,
+      "kind": "hat",
+      "strength": 0.639
+    },
+    {
+      "t": 139,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 139,
+      "kind": "hat",
+      "strength": 0.841
+    },
+    {
+      "t": 139,
+      "kind": "bass",
+      "strength": 0.733
+    },
+    {
+      "t": 139.25,
+      "kind": "kick",
+      "strength": 0.763
+    },
+    {
+      "t": 139.25,
+      "kind": "hat",
+      "strength": 0.613
+    },
+    {
+      "t": 139.5,
+      "kind": "snare",
+      "strength": 0.984
+    },
+    {
+      "t": 139.5,
+      "kind": "hat",
+      "strength": 0.82
+    },
+    {
+      "t": 139.75,
+      "kind": "hat",
+      "strength": 0.657
+    },
+    {
+      "t": 139.75,
+      "kind": "bass",
+      "strength": 0.624
+    },
+    {
+      "t": 140,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 140,
+      "kind": "hat",
+      "strength": 0.802
+    },
+    {
+      "t": 140,
+      "kind": "bass",
+      "strength": 0.959
+    },
+    {
+      "t": 140.015,
+      "kind": "vocal",
+      "strength": 0.939
+    },
+    {
+      "t": 140.25,
+      "kind": "hat",
+      "strength": 0.642
+    },
+    {
+      "t": 140.5,
+      "kind": "snare",
+      "strength": 0.999
+    },
+    {
+      "t": 140.5,
+      "kind": "hat",
+      "strength": 0.782
+    },
+    {
+      "t": 140.75,
+      "kind": "hat",
+      "strength": 0.58
+    },
+    {
+      "t": 141,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 141,
+      "kind": "hat",
+      "strength": 0.807
+    },
+    {
+      "t": 141,
+      "kind": "bass",
+      "strength": 0.735
+    },
+    {
+      "t": 141.25,
+      "kind": "kick",
+      "strength": 0.74
+    },
+    {
+      "t": 141.25,
+      "kind": "hat",
+      "strength": 0.662
+    },
+    {
+      "t": 141.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 141.5,
+      "kind": "hat",
+      "strength": 0.846
+    },
+    {
+      "t": 141.75,
+      "kind": "hat",
+      "strength": 0.633
+    },
+    {
+      "t": 141.75,
+      "kind": "bass",
+      "strength": 0.611
+    },
+    {
+      "t": 142,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 142,
+      "kind": "hat",
+      "strength": 0.818
+    },
+    {
+      "t": 142,
+      "kind": "bass",
+      "strength": 0.973
+    },
+    {
+      "t": 142.25,
+      "kind": "hat",
+      "strength": 0.634
+    },
+    {
+      "t": 142.5,
+      "kind": "snare",
+      "strength": 0.972
+    },
+    {
+      "t": 142.5,
+      "kind": "hat",
+      "strength": 0.752
+    },
+    {
+      "t": 142.75,
+      "kind": "hat",
+      "strength": 0.657
+    },
+    {
+      "t": 143,
+      "kind": "kick",
+      "strength": 0.966
+    },
+    {
+      "t": 143,
+      "kind": "hat",
+      "strength": 0.754
+    },
+    {
+      "t": 143,
+      "kind": "bass",
+      "strength": 0.742
+    },
+    {
+      "t": 143.25,
+      "kind": "kick",
+      "strength": 0.777
+    },
+    {
+      "t": 143.25,
+      "kind": "hat",
+      "strength": 0.652
+    },
+    {
+      "t": 143.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 143.5,
+      "kind": "hat",
+      "strength": 0.771
+    },
+    {
+      "t": 143.75,
+      "kind": "hat",
+      "strength": 0.636
+    },
+    {
+      "t": 143.75,
+      "kind": "bass",
+      "strength": 0.616
+    },
+    {
+      "t": 143.99,
+      "kind": "vocal",
+      "strength": 0.965
+    },
+    {
+      "t": 144,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 144,
+      "kind": "hat",
+      "strength": 0.785
+    },
+    {
+      "t": 144,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 144.25,
+      "kind": "hat",
+      "strength": 0.661
+    },
+    {
+      "t": 144.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 144.5,
+      "kind": "hat",
+      "strength": 0.823
+    },
+    {
+      "t": 144.75,
+      "kind": "hat",
+      "strength": 0.653
+    },
+    {
+      "t": 145,
+      "kind": "kick",
+      "strength": 0.979
+    },
+    {
+      "t": 145,
+      "kind": "hat",
+      "strength": 0.777
+    },
+    {
+      "t": 145,
+      "kind": "bass",
+      "strength": 0.732
+    },
+    {
+      "t": 145.25,
+      "kind": "kick",
+      "strength": 0.774
+    },
+    {
+      "t": 145.25,
+      "kind": "hat",
+      "strength": 0.622
+    },
+    {
+      "t": 145.5,
+      "kind": "snare",
+      "strength": 0.967
+    },
+    {
+      "t": 145.5,
+      "kind": "hat",
+      "strength": 0.837
+    },
+    {
+      "t": 145.75,
+      "kind": "hat",
+      "strength": 0.649
+    },
+    {
+      "t": 145.75,
+      "kind": "bass",
+      "strength": 0.643
+    },
+    {
+      "t": 146,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 146,
+      "kind": "hat",
+      "strength": 0.8
+    },
+    {
+      "t": 146,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 146.25,
+      "kind": "hat",
+      "strength": 0.609
+    },
+    {
+      "t": 146.5,
+      "kind": "snare",
+      "strength": 0.965
+    },
+    {
+      "t": 146.5,
+      "kind": "hat",
+      "strength": 0.813
+    },
+    {
+      "t": 146.75,
+      "kind": "hat",
+      "strength": 0.67
+    },
+    {
+      "t": 147,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 147,
+      "kind": "hat",
+      "strength": 0.773
+    },
+    {
+      "t": 147,
+      "kind": "bass",
+      "strength": 0.748
+    },
+    {
+      "t": 147.25,
+      "kind": "kick",
+      "strength": 0.717
+    },
+    {
+      "t": 147.25,
+      "kind": "hat",
+      "strength": 0.625
+    },
+    {
+      "t": 147.5,
+      "kind": "snare",
+      "strength": 0.969
+    },
+    {
+      "t": 147.5,
+      "kind": "hat",
+      "strength": 0.837
+    },
+    {
+      "t": 147.75,
+      "kind": "hat",
+      "strength": 0.669
+    },
+    {
+      "t": 147.75,
+      "kind": "bass",
+      "strength": 0.65
+    },
+    {
+      "t": 148,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 148,
+      "kind": "hat",
+      "strength": 0.763
+    },
+    {
+      "t": 148,
+      "kind": "bass",
+      "strength": 0.992
+    },
+    {
+      "t": 148.004,
+      "kind": "vocal",
+      "strength": 0.963
+    },
+    {
+      "t": 148.25,
+      "kind": "hat",
+      "strength": 0.62
+    },
+    {
+      "t": 148.5,
+      "kind": "snare",
+      "strength": 0.962
+    },
+    {
+      "t": 148.5,
+      "kind": "hat",
+      "strength": 0.842
+    },
+    {
+      "t": 148.75,
+      "kind": "hat",
+      "strength": 0.627
+    },
+    {
+      "t": 149,
+      "kind": "kick",
+      "strength": 0.994
+    },
+    {
+      "t": 149,
+      "kind": "hat",
+      "strength": 0.798
+    },
+    {
+      "t": 149,
+      "kind": "bass",
+      "strength": 0.708
+    },
+    {
+      "t": 149.25,
+      "kind": "kick",
+      "strength": 0.743
+    },
+    {
+      "t": 149.25,
+      "kind": "hat",
+      "strength": 0.607
+    },
+    {
+      "t": 149.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 149.5,
+      "kind": "hat",
+      "strength": 0.822
+    },
+    {
+      "t": 149.75,
+      "kind": "hat",
+      "strength": 0.644
+    },
+    {
+      "t": 149.75,
+      "kind": "bass",
+      "strength": 0.614
+    },
+    {
+      "t": 150,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 150,
+      "kind": "hat",
+      "strength": 0.759
+    },
+    {
+      "t": 150,
+      "kind": "bass",
+      "strength": 0.95
+    },
+    {
+      "t": 150.25,
+      "kind": "hat",
+      "strength": 0.657
+    },
+    {
+      "t": 150.5,
+      "kind": "snare",
+      "strength": 0.981
+    },
+    {
+      "t": 150.5,
+      "kind": "hat",
+      "strength": 0.785
+    },
+    {
+      "t": 150.75,
+      "kind": "hat",
+      "strength": 0.599
+    },
+    {
+      "t": 151,
+      "kind": "kick",
+      "strength": 0.984
+    },
+    {
+      "t": 151,
+      "kind": "hat",
+      "strength": 0.816
+    },
+    {
+      "t": 151,
+      "kind": "bass",
+      "strength": 0.705
+    },
+    {
+      "t": 151.25,
+      "kind": "kick",
+      "strength": 0.781
+    },
+    {
+      "t": 151.25,
+      "kind": "hat",
+      "strength": 0.637
+    },
+    {
+      "t": 151.5,
+      "kind": "snare",
+      "strength": 0.975
+    },
+    {
+      "t": 151.5,
+      "kind": "hat",
+      "strength": 0.821
+    },
+    {
+      "t": 151.75,
+      "kind": "hat",
+      "strength": 0.632
+    },
+    {
+      "t": 151.75,
+      "kind": "bass",
+      "strength": 0.64
+    },
+    {
+      "t": 152,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 152,
+      "kind": "hat",
+      "strength": 0.787
+    },
+    {
+      "t": 152,
+      "kind": "bass",
+      "strength": 0.965
+    },
+    {
+      "t": 152.018,
+      "kind": "vocal",
+      "strength": 1
+    },
+    {
+      "t": 152.25,
+      "kind": "hat",
+      "strength": 0.668
+    },
+    {
+      "t": 152.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 152.5,
+      "kind": "hat",
+      "strength": 0.807
+    },
+    {
+      "t": 152.75,
+      "kind": "hat",
+      "strength": 0.655
+    },
+    {
+      "t": 153,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 153,
+      "kind": "hat",
+      "strength": 0.795
+    },
+    {
+      "t": 153,
+      "kind": "bass",
+      "strength": 0.716
+    },
+    {
+      "t": 153.25,
+      "kind": "kick",
+      "strength": 0.73
+    },
+    {
+      "t": 153.25,
+      "kind": "hat",
+      "strength": 0.635
+    },
+    {
+      "t": 153.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 153.5,
+      "kind": "hat",
+      "strength": 0.845
+    },
+    {
+      "t": 153.75,
+      "kind": "hat",
+      "strength": 0.6
+    },
+    {
+      "t": 153.75,
+      "kind": "bass",
+      "strength": 0.663
+    },
+    {
+      "t": 154,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 154,
+      "kind": "hat",
+      "strength": 0.819
+    },
+    {
+      "t": 154,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 154.25,
+      "kind": "hat",
+      "strength": 0.657
+    },
+    {
+      "t": 154.5,
+      "kind": "snare",
+      "strength": 0.996
+    },
+    {
+      "t": 154.5,
+      "kind": "hat",
+      "strength": 0.78
+    },
+    {
+      "t": 154.75,
+      "kind": "hat",
+      "strength": 0.616
+    },
+    {
+      "t": 155,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 155,
+      "kind": "hat",
+      "strength": 0.788
+    },
+    {
+      "t": 155,
+      "kind": "bass",
+      "strength": 0.719
+    },
+    {
+      "t": 155.25,
+      "kind": "kick",
+      "strength": 0.744
+    },
+    {
+      "t": 155.25,
+      "kind": "hat",
+      "strength": 0.619
+    },
+    {
+      "t": 155.5,
+      "kind": "snare",
+      "strength": 0.989
+    },
+    {
+      "t": 155.5,
+      "kind": "hat",
+      "strength": 0.755
+    },
+    {
+      "t": 155.75,
+      "kind": "hat",
+      "strength": 0.605
+    },
+    {
+      "t": 155.75,
+      "kind": "bass",
+      "strength": 0.632
+    },
+    {
+      "t": 155.996,
+      "kind": "vocal",
+      "strength": 0.996
+    },
+    {
+      "t": 156,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 156,
+      "kind": "hat",
+      "strength": 0.833
+    },
+    {
+      "t": 156,
+      "kind": "bass",
+      "strength": 0.98
+    },
+    {
+      "t": 156.25,
+      "kind": "hat",
+      "strength": 0.659
+    },
+    {
+      "t": 156.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 156.5,
+      "kind": "hat",
+      "strength": 0.765
+    },
+    {
+      "t": 156.75,
+      "kind": "hat",
+      "strength": 0.602
+    },
+    {
+      "t": 157,
+      "kind": "kick",
+      "strength": 0.961
+    },
+    {
+      "t": 157,
+      "kind": "hat",
+      "strength": 0.811
+    },
+    {
+      "t": 157,
+      "kind": "bass",
+      "strength": 0.762
+    },
+    {
+      "t": 157.25,
+      "kind": "kick",
+      "strength": 0.724
+    },
+    {
+      "t": 157.25,
+      "kind": "hat",
+      "strength": 0.647
+    },
+    {
+      "t": 157.5,
+      "kind": "snare",
+      "strength": 0.994
+    },
+    {
+      "t": 157.5,
+      "kind": "hat",
+      "strength": 0.818
+    },
+    {
+      "t": 157.75,
+      "kind": "hat",
+      "strength": 0.609
+    },
+    {
+      "t": 157.75,
+      "kind": "bass",
+      "strength": 0.664
+    },
+    {
+      "t": 158,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 158,
+      "kind": "hat",
+      "strength": 0.817
+    },
+    {
+      "t": 158,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 158.25,
+      "kind": "hat",
+      "strength": 0.584
+    },
+    {
+      "t": 158.5,
+      "kind": "snare",
+      "strength": 0.978
+    },
+    {
+      "t": 158.5,
+      "kind": "hat",
+      "strength": 0.778
+    },
+    {
+      "t": 158.75,
+      "kind": "hat",
+      "strength": 0.572
+    },
+    {
+      "t": 159,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 159,
+      "kind": "hat",
+      "strength": 0.845
+    },
+    {
+      "t": 159,
+      "kind": "bass",
+      "strength": 0.736
+    },
+    {
+      "t": 159.25,
+      "kind": "kick",
+      "strength": 0.745
+    },
+    {
+      "t": 159.25,
+      "kind": "hat",
+      "strength": 0.611
+    },
+    {
+      "t": 159.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 159.5,
+      "kind": "hat",
+      "strength": 0.784
+    },
+    {
+      "t": 159.75,
+      "kind": "hat",
+      "strength": 0.587
+    },
+    {
+      "t": 159.75,
+      "kind": "bass",
+      "strength": 0.639
+    },
+    {
+      "t": 160,
+      "kind": "kick",
+      "strength": 0.875
+    },
+    {
+      "t": 160,
+      "kind": "hat",
+      "strength": 0.657
+    },
+    {
+      "t": 160,
+      "kind": "bass",
+      "strength": 0.799
+    },
+    {
+      "t": 160.008,
+      "kind": "vocal",
+      "strength": 0.713
+    },
+    {
+      "t": 160.5,
+      "kind": "snare",
+      "strength": 0.647
+    },
+    {
+      "t": 161,
+      "kind": "kick",
+      "strength": 0.625
+    },
+    {
+      "t": 161,
+      "kind": "bass",
+      "strength": 0.493
+    },
+    {
+      "t": 161.5,
+      "kind": "snare",
+      "strength": 0.704
+    },
+    {
+      "t": 162,
+      "kind": "kick",
+      "strength": 0.747
+    },
+    {
+      "t": 162,
+      "kind": "bass",
+      "strength": 0.717
+    },
+    {
+      "t": 162.5,
+      "kind": "snare",
+      "strength": 0.656
+    },
+    {
+      "t": 163,
+      "kind": "kick",
+      "strength": 0.661
+    },
+    {
+      "t": 163,
+      "kind": "bass",
+      "strength": 0.49
+    },
+    {
+      "t": 163.5,
+      "kind": "snare",
+      "strength": 0.64
+    },
+    {
+      "t": 164,
+      "kind": "kick",
+      "strength": 0.715
+    },
+    {
+      "t": 164,
+      "kind": "bass",
+      "strength": 0.708
+    },
+    {
+      "t": 164.5,
+      "kind": "snare",
+      "strength": 0.669
+    },
+    {
+      "t": 165,
+      "kind": "kick",
+      "strength": 0.651
+    },
+    {
+      "t": 165,
+      "kind": "bass",
+      "strength": 0.485
+    },
+    {
+      "t": 165.5,
+      "kind": "snare",
+      "strength": 0.651
+    },
+    {
+      "t": 166,
+      "kind": "kick",
+      "strength": 0.759
+    },
+    {
+      "t": 166,
+      "kind": "bass",
+      "strength": 0.71
+    },
+    {
+      "t": 166.5,
+      "kind": "snare",
+      "strength": 0.67
+    },
+    {
+      "t": 167,
+      "kind": "kick",
+      "strength": 0.661
+    },
+    {
+      "t": 167,
+      "kind": "bass",
+      "strength": 0.535
+    },
+    {
+      "t": 167.5,
+      "kind": "snare",
+      "strength": 0.7
+    },
+    {
+      "t": 168,
+      "kind": "kick",
+      "strength": 0.704
+    },
+    {
+      "t": 168,
+      "kind": "bass",
+      "strength": 0.755
+    },
+    {
+      "t": 168.5,
+      "kind": "snare",
+      "strength": 0.668
+    },
+    {
+      "t": 169,
+      "kind": "kick",
+      "strength": 0.632
+    },
+    {
+      "t": 169,
+      "kind": "bass",
+      "strength": 0.492
+    },
+    {
+      "t": 169.5,
+      "kind": "snare",
+      "strength": 0.677
+    },
+    {
+      "t": 170,
+      "kind": "kick",
+      "strength": 0.693
+    },
+    {
+      "t": 170,
+      "kind": "bass",
+      "strength": 0.701
+    },
+    {
+      "t": 170.5,
+      "kind": "snare",
+      "strength": 0.635
+    },
+    {
+      "t": 171,
+      "kind": "kick",
+      "strength": 0.596
+    },
+    {
+      "t": 171,
+      "kind": "bass",
+      "strength": 0.521
+    },
+    {
+      "t": 171.5,
+      "kind": "snare",
+      "strength": 0.641
+    },
+    {
+      "t": 172,
+      "kind": "kick",
+      "strength": 0.724
+    },
+    {
+      "t": 172,
+      "kind": "bass",
+      "strength": 0.718
+    },
+    {
+      "t": 172.5,
+      "kind": "snare",
+      "strength": 0.64
+    },
+    {
+      "t": 173,
+      "kind": "kick",
+      "strength": 0.629
+    },
+    {
+      "t": 173,
+      "kind": "bass",
+      "strength": 0.493
+    },
+    {
+      "t": 173.5,
+      "kind": "snare",
+      "strength": 0.708
+    },
+    {
+      "t": 174,
+      "kind": "kick",
+      "strength": 0.766
+    },
+    {
+      "t": 174,
+      "kind": "bass",
+      "strength": 0.72
+    },
+    {
+      "t": 174.5,
+      "kind": "snare",
+      "strength": 0.673
+    },
+    {
+      "t": 175,
+      "kind": "kick",
+      "strength": 0.653
+    },
+    {
+      "t": 175,
+      "kind": "bass",
+      "strength": 0.498
+    },
+    {
+      "t": 175.5,
+      "kind": "snare",
+      "strength": 0.641
+    },
+    {
+      "t": 176,
+      "kind": "kick",
+      "strength": 0.761
+    },
+    {
+      "t": 176,
+      "kind": "bass",
+      "strength": 0.713
+    },
+    {
+      "t": 176.5,
+      "kind": "snare",
+      "strength": 0.669
+    },
+    {
+      "t": 177,
+      "kind": "kick",
+      "strength": 0.61
+    },
+    {
+      "t": 177,
+      "kind": "bass",
+      "strength": 0.492
+    },
+    {
+      "t": 177.5,
+      "kind": "snare",
+      "strength": 0.709
+    },
+    {
+      "t": 178,
+      "kind": "kick",
+      "strength": 0.697
+    },
+    {
+      "t": 178,
+      "kind": "bass",
+      "strength": 0.737
+    },
+    {
+      "t": 178.5,
+      "kind": "snare",
+      "strength": 0.637
+    },
+    {
+      "t": 179,
+      "kind": "kick",
+      "strength": 0.67
+    },
+    {
+      "t": 179,
+      "kind": "bass",
+      "strength": 0.502
+    },
+    {
+      "t": 179.5,
+      "kind": "snare",
+      "strength": 0.659
+    },
+    {
+      "t": 180,
+      "kind": "kick",
+      "strength": 0.758
+    },
+    {
+      "t": 180,
+      "kind": "bass",
+      "strength": 0.701
+    },
+    {
+      "t": 180.5,
+      "kind": "snare",
+      "strength": 0.702
+    },
+    {
+      "t": 181,
+      "kind": "kick",
+      "strength": 0.598
+    },
+    {
+      "t": 181,
+      "kind": "bass",
+      "strength": 0.513
+    },
+    {
+      "t": 181.5,
+      "kind": "snare",
+      "strength": 0.66
+    },
+    {
+      "t": 182,
+      "kind": "kick",
+      "strength": 0.695
+    },
+    {
+      "t": 182,
+      "kind": "bass",
+      "strength": 0.701
+    },
+    {
+      "t": 182.5,
+      "kind": "snare",
+      "strength": 0.67
+    },
+    {
+      "t": 183,
+      "kind": "kick",
+      "strength": 0.644
+    },
+    {
+      "t": 183,
+      "kind": "bass",
+      "strength": 0.507
+    },
+    {
+      "t": 183.5,
+      "kind": "snare",
+      "strength": 0.694
+    },
+    {
+      "t": 183.982,
+      "kind": "vocal",
+      "strength": 0.734
+    },
+    {
+      "t": 184,
+      "kind": "kick",
+      "strength": 0.971
+    },
+    {
+      "t": 184,
+      "kind": "hat",
+      "strength": 0.69
+    },
+    {
+      "t": 184,
+      "kind": "bass",
+      "strength": 0.86
+    },
+    {
+      "t": 184.25,
+      "kind": "hat",
+      "strength": 0.536
+    },
+    {
+      "t": 184.5,
+      "kind": "snare",
+      "strength": 0.992
+    },
+    {
+      "t": 184.5,
+      "kind": "hat",
+      "strength": 0.765
+    },
+    {
+      "t": 184.75,
+      "kind": "hat",
+      "strength": 0.664
+    },
+    {
+      "t": 185,
+      "kind": "kick",
+      "strength": 0.97
+    },
+    {
+      "t": 185,
+      "kind": "hat",
+      "strength": 0.772
+    },
+    {
+      "t": 185,
+      "kind": "bass",
+      "strength": 0.731
+    },
+    {
+      "t": 185.25,
+      "kind": "kick",
+      "strength": 0.762
+    },
+    {
+      "t": 185.25,
+      "kind": "hat",
+      "strength": 0.669
+    },
+    {
+      "t": 185.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 185.5,
+      "kind": "hat",
+      "strength": 0.806
+    },
+    {
+      "t": 185.75,
+      "kind": "hat",
+      "strength": 0.641
+    },
+    {
+      "t": 185.75,
+      "kind": "bass",
+      "strength": 0.636
+    },
+    {
+      "t": 186,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 186,
+      "kind": "hat",
+      "strength": 0.841
+    },
+    {
+      "t": 186,
+      "kind": "bass",
+      "strength": 0.995
+    },
+    {
+      "t": 186.25,
+      "kind": "hat",
+      "strength": 0.585
+    },
+    {
+      "t": 186.5,
+      "kind": "snare",
+      "strength": 0.993
+    },
+    {
+      "t": 186.5,
+      "kind": "hat",
+      "strength": 0.793
+    },
+    {
+      "t": 186.75,
+      "kind": "hat",
+      "strength": 0.655
+    },
+    {
+      "t": 187,
+      "kind": "kick",
+      "strength": 0.997
+    },
+    {
+      "t": 187,
+      "kind": "hat",
+      "strength": 0.79
+    },
+    {
+      "t": 187,
+      "kind": "bass",
+      "strength": 0.752
+    },
+    {
+      "t": 187.25,
+      "kind": "kick",
+      "strength": 0.776
+    },
+    {
+      "t": 187.25,
+      "kind": "hat",
+      "strength": 0.583
+    },
+    {
+      "t": 187.5,
+      "kind": "snare",
+      "strength": 0.997
+    },
+    {
+      "t": 187.5,
+      "kind": "hat",
+      "strength": 0.809
+    },
+    {
+      "t": 187.75,
+      "kind": "hat",
+      "strength": 0.632
+    },
+    {
+      "t": 187.75,
+      "kind": "bass",
+      "strength": 0.629
+    },
+    {
+      "t": 188,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 188,
+      "kind": "hat",
+      "strength": 0.776
+    },
+    {
+      "t": 188,
+      "kind": "bass",
+      "strength": 0.957
+    },
+    {
+      "t": 188.013,
+      "kind": "vocal",
+      "strength": 0.993
+    },
+    {
+      "t": 188.25,
+      "kind": "hat",
+      "strength": 0.664
+    },
+    {
+      "t": 188.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 188.5,
+      "kind": "hat",
+      "strength": 0.803
+    },
+    {
+      "t": 188.75,
+      "kind": "hat",
+      "strength": 0.651
+    },
+    {
+      "t": 189,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 189,
+      "kind": "hat",
+      "strength": 0.791
+    },
+    {
+      "t": 189,
+      "kind": "bass",
+      "strength": 0.709
+    },
+    {
+      "t": 189.25,
+      "kind": "kick",
+      "strength": 0.778
+    },
+    {
+      "t": 189.25,
+      "kind": "hat",
+      "strength": 0.658
+    },
+    {
+      "t": 189.5,
+      "kind": "snare",
+      "strength": 0.985
+    },
+    {
+      "t": 189.5,
+      "kind": "hat",
+      "strength": 0.828
+    },
+    {
+      "t": 189.75,
+      "kind": "hat",
+      "strength": 0.601
+    },
+    {
+      "t": 189.75,
+      "kind": "bass",
+      "strength": 0.641
+    },
+    {
+      "t": 190,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 190,
+      "kind": "hat",
+      "strength": 0.803
+    },
+    {
+      "t": 190,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 190.25,
+      "kind": "hat",
+      "strength": 0.656
+    },
+    {
+      "t": 190.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 190.5,
+      "kind": "hat",
+      "strength": 0.758
+    },
+    {
+      "t": 190.75,
+      "kind": "hat",
+      "strength": 0.658
+    },
+    {
+      "t": 191,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 191,
+      "kind": "hat",
+      "strength": 0.79
+    },
+    {
+      "t": 191,
+      "kind": "bass",
+      "strength": 0.762
+    },
+    {
+      "t": 191.25,
+      "kind": "kick",
+      "strength": 0.72
+    },
+    {
+      "t": 191.25,
+      "kind": "hat",
+      "strength": 0.601
+    },
+    {
+      "t": 191.5,
+      "kind": "snare",
+      "strength": 0.966
+    },
+    {
+      "t": 191.5,
+      "kind": "hat",
+      "strength": 0.825
+    },
+    {
+      "t": 191.75,
+      "kind": "hat",
+      "strength": 0.662
+    },
+    {
+      "t": 191.75,
+      "kind": "bass",
+      "strength": 0.649
+    },
+    {
+      "t": 192,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 192,
+      "kind": "hat",
+      "strength": 0.774
+    },
+    {
+      "t": 192,
+      "kind": "bass",
+      "strength": 0.989
+    },
+    {
+      "t": 192.003,
+      "kind": "vocal",
+      "strength": 1
+    },
+    {
+      "t": 192.25,
+      "kind": "hat",
+      "strength": 0.61
+    },
+    {
+      "t": 192.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 192.5,
+      "kind": "hat",
+      "strength": 0.826
+    },
+    {
+      "t": 192.75,
+      "kind": "hat",
+      "strength": 0.613
+    },
+    {
+      "t": 193,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 193,
+      "kind": "hat",
+      "strength": 0.796
+    },
+    {
+      "t": 193,
+      "kind": "bass",
+      "strength": 0.705
+    },
+    {
+      "t": 193.25,
+      "kind": "kick",
+      "strength": 0.726
+    },
+    {
+      "t": 193.25,
+      "kind": "hat",
+      "strength": 0.594
+    },
+    {
+      "t": 193.5,
+      "kind": "snare",
+      "strength": 0.987
+    },
+    {
+      "t": 193.5,
+      "kind": "hat",
+      "strength": 0.802
+    },
+    {
+      "t": 193.75,
+      "kind": "hat",
+      "strength": 0.645
+    },
+    {
+      "t": 193.75,
+      "kind": "bass",
+      "strength": 0.648
+    },
+    {
+      "t": 194,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 194,
+      "kind": "hat",
+      "strength": 0.782
+    },
+    {
+      "t": 194,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 194.25,
+      "kind": "hat",
+      "strength": 0.632
+    },
+    {
+      "t": 194.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 194.5,
+      "kind": "hat",
+      "strength": 0.849
+    },
+    {
+      "t": 194.75,
+      "kind": "hat",
+      "strength": 0.656
+    },
+    {
+      "t": 195,
+      "kind": "kick",
+      "strength": 0.995
+    },
+    {
+      "t": 195,
+      "kind": "hat",
+      "strength": 0.774
+    },
+    {
+      "t": 195,
+      "kind": "bass",
+      "strength": 0.708
+    },
+    {
+      "t": 195.25,
+      "kind": "kick",
+      "strength": 0.778
+    },
+    {
+      "t": 195.25,
+      "kind": "hat",
+      "strength": 0.575
+    },
+    {
+      "t": 195.5,
+      "kind": "snare",
+      "strength": 0.986
+    },
+    {
+      "t": 195.5,
+      "kind": "hat",
+      "strength": 0.783
+    },
+    {
+      "t": 195.75,
+      "kind": "hat",
+      "strength": 0.668
+    },
+    {
+      "t": 195.75,
+      "kind": "bass",
+      "strength": 0.606
+    },
+    {
+      "t": 195.994,
+      "kind": "vocal",
+      "strength": 0.975
+    },
+    {
+      "t": 196,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 196,
+      "kind": "hat",
+      "strength": 0.779
+    },
+    {
+      "t": 196,
+      "kind": "bass",
+      "strength": 1
+    },
+    {
+      "t": 196.25,
+      "kind": "hat",
+      "strength": 0.644
+    },
+    {
+      "t": 196.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 196.5,
+      "kind": "hat",
+      "strength": 0.832
+    },
+    {
+      "t": 196.75,
+      "kind": "hat",
+      "strength": 0.624
+    },
+    {
+      "t": 197,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 197,
+      "kind": "hat",
+      "strength": 0.799
+    },
+    {
+      "t": 197,
+      "kind": "bass",
+      "strength": 0.723
+    },
+    {
+      "t": 197.25,
+      "kind": "kick",
+      "strength": 0.753
+    },
+    {
+      "t": 197.25,
+      "kind": "hat",
+      "strength": 0.62
+    },
+    {
+      "t": 197.5,
+      "kind": "snare",
+      "strength": 0.991
+    },
+    {
+      "t": 197.5,
+      "kind": "hat",
+      "strength": 0.843
+    },
+    {
+      "t": 197.75,
+      "kind": "hat",
+      "strength": 0.623
+    },
+    {
+      "t": 197.75,
+      "kind": "bass",
+      "strength": 0.617
+    },
+    {
+      "t": 198,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 198,
+      "kind": "hat",
+      "strength": 0.755
+    },
+    {
+      "t": 198,
+      "kind": "bass",
+      "strength": 0.968
+    },
+    {
+      "t": 198.25,
+      "kind": "hat",
+      "strength": 0.643
+    },
+    {
+      "t": 198.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 198.5,
+      "kind": "hat",
+      "strength": 0.826
+    },
+    {
+      "t": 198.75,
+      "kind": "hat",
+      "strength": 0.629
+    },
+    {
+      "t": 199,
+      "kind": "kick",
+      "strength": 0.971
+    },
+    {
+      "t": 199,
+      "kind": "hat",
+      "strength": 0.774
+    },
+    {
+      "t": 199,
+      "kind": "bass",
+      "strength": 0.751
+    },
+    {
+      "t": 199.25,
+      "kind": "kick",
+      "strength": 0.735
+    },
+    {
+      "t": 199.25,
+      "kind": "hat",
+      "strength": 0.669
+    },
+    {
+      "t": 199.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 199.5,
+      "kind": "hat",
+      "strength": 0.833
+    },
+    {
+      "t": 199.75,
+      "kind": "hat",
+      "strength": 0.631
+    },
+    {
+      "t": 199.75,
+      "kind": "bass",
+      "strength": 0.61
+    },
+    {
+      "t": 200,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 200,
+      "kind": "hat",
+      "strength": 0.797
+    },
+    {
+      "t": 200,
+      "kind": "bass",
+      "strength": 0.957
+    },
+    {
+      "t": 200.015,
+      "kind": "vocal",
+      "strength": 1
+    },
+    {
+      "t": 200.25,
+      "kind": "hat",
+      "strength": 0.577
+    },
+    {
+      "t": 200.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 200.5,
+      "kind": "hat",
+      "strength": 0.817
+    },
+    {
+      "t": 200.75,
+      "kind": "hat",
+      "strength": 0.607
+    },
+    {
+      "t": 201,
+      "kind": "kick",
+      "strength": 0.998
+    },
+    {
+      "t": 201,
+      "kind": "hat",
+      "strength": 0.777
+    },
+    {
+      "t": 201,
+      "kind": "bass",
+      "strength": 0.715
+    },
+    {
+      "t": 201.25,
+      "kind": "kick",
+      "strength": 0.781
+    },
+    {
+      "t": 201.25,
+      "kind": "hat",
+      "strength": 0.581
+    },
+    {
+      "t": 201.5,
+      "kind": "snare",
+      "strength": 0.992
+    },
+    {
+      "t": 201.5,
+      "kind": "hat",
+      "strength": 0.773
+    },
+    {
+      "t": 201.75,
+      "kind": "hat",
+      "strength": 0.602
+    },
+    {
+      "t": 201.75,
+      "kind": "bass",
+      "strength": 0.637
+    },
+    {
+      "t": 202,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 202,
+      "kind": "hat",
+      "strength": 0.778
+    },
+    {
+      "t": 202,
+      "kind": "bass",
+      "strength": 0.977
+    },
+    {
+      "t": 202.25,
+      "kind": "hat",
+      "strength": 0.582
+    },
+    {
+      "t": 202.5,
+      "kind": "snare",
+      "strength": 0.991
+    },
+    {
+      "t": 202.5,
+      "kind": "hat",
+      "strength": 0.766
+    },
+    {
+      "t": 202.75,
+      "kind": "hat",
+      "strength": 0.643
+    },
+    {
+      "t": 203,
+      "kind": "kick",
+      "strength": 0.997
+    },
+    {
+      "t": 203,
+      "kind": "hat",
+      "strength": 0.845
+    },
+    {
+      "t": 203,
+      "kind": "bass",
+      "strength": 0.734
+    },
+    {
+      "t": 203.25,
+      "kind": "kick",
+      "strength": 0.766
+    },
+    {
+      "t": 203.25,
+      "kind": "hat",
+      "strength": 0.616
+    },
+    {
+      "t": 203.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 203.5,
+      "kind": "hat",
+      "strength": 0.782
+    },
+    {
+      "t": 203.75,
+      "kind": "hat",
+      "strength": 0.613
+    },
+    {
+      "t": 203.75,
+      "kind": "bass",
+      "strength": 0.622
+    },
+    {
+      "t": 204,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 204,
+      "kind": "hat",
+      "strength": 0.814
+    },
+    {
+      "t": 204,
+      "kind": "bass",
+      "strength": 0.966
+    },
+    {
+      "t": 204.011,
+      "kind": "vocal",
+      "strength": 0.999
+    },
+    {
+      "t": 204.25,
+      "kind": "hat",
+      "strength": 0.635
+    },
+    {
+      "t": 204.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 204.5,
+      "kind": "hat",
+      "strength": 0.782
+    },
+    {
+      "t": 204.75,
+      "kind": "hat",
+      "strength": 0.655
+    },
+    {
+      "t": 205,
+      "kind": "kick",
+      "strength": 1
+    },
+    {
+      "t": 205,
+      "kind": "hat",
+      "strength": 0.84
+    },
+    {
+      "t": 205,
+      "kind": "bass",
+      "strength": 0.756
+    },
+    {
+      "t": 205.25,
+      "kind": "kick",
+      "strength": 0.724
+    },
+    {
+      "t": 205.25,
+      "kind": "hat",
+      "strength": 0.634
+    },
+    {
+      "t": 205.5,
+      "kind": "snare",
+      "strength": 1
+    },
+    {
+      "t": 205.5,
+      "kind": "hat",
+      "strength": 0.759
+    },
+    {
+      "t": 205.75,
+      "kind": "hat",
+      "strength": 0.598
+    },
+    {
+      "t": 205.75,
+      "kind": "bass",
+      "strength": 0.609
+    },
+    {
+      "t": 206,
+      "kind": "kick",
+      "strength": 0.851
+    },
+    {
+      "t": 206,
+      "kind": "hat",
+      "strength": 0.594
+    },
+    {
+      "t": 206,
+      "kind": "bass",
+      "strength": 0.71
+    }
+  ]
+}
