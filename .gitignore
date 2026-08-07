@@ -19,3 +19,7 @@ venv/
 *.wav
 *.mp3
 *.flac
+
+# regenerable large embeddings
+data/**/embedding.bin
+data/**/embedding.json

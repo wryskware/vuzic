@@ -4,6 +4,14 @@ Written at repo-creation time so the next session starts from questions rather
 than a blank page. None of these are decided. Each has a leaning, stated
 honestly as a leaning.
 
+> **Superseded in part (2026-08-06).** `docs/plan.md` answers most of these
+> against the survey in `docs/research/`. The leanings below held up: hybrid
+> analysis, hard dimensionality reduction, Web Audio clock, direct WebGPU. The
+> one that did not is §4's lean toward the Lenia family — its interesting
+> parameter region is a thin fractal shell, which breaks parameter
+> interpolation. Read this file for the *reasoning*, `plan.md` for the
+> conclusions.
+
 ## 1. Where does the latent representation come from?
 
 The whole premise rests on this. Options, roughly in order of effort:
