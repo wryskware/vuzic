@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.astro/
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db
+
+# analysis pipeline
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# large media / generated timelines
+/media/
+/analysis/out/
+*.wav
+*.mp3
+*.flac
