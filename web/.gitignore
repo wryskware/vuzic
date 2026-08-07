@@ -1,0 +1,5 @@
+node_modules/
+dist/
+
+# synced from ../data by `npm run sync-data`
+public/timelines/

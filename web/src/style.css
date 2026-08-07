@@ -1,0 +1,119 @@
+:root {
+  color-scheme: dark;
+  --ink: #e6e9f0;
+  --dim: #8b94a8;
+  --bg: #06070b;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#overlay {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 300px;
+  display: block;
+  cursor: col-resize;
+}
+
+#transport {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid #23283a;
+  border-radius: 6px;
+  background: rgba(8, 9, 14, 0.8);
+}
+
+#transport button {
+  font: inherit;
+  color: var(--ink);
+  background: #1a1f2e;
+  border: 1px solid #333b52;
+  border-radius: 4px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+
+#transport button:hover {
+  background: #232a3d;
+}
+
+#status {
+  color: var(--dim);
+}
+
+/* tweakpane default wrapper; specificity has to beat tweakpane's own injected rule */
+body > .tp-dfwv {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 300px;
+  max-height: calc(100vh - 330px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  z-index: 10;
+}
+
+.fatal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 40px;
+  text-align: center;
+  background: var(--bg);
+}
+
+.fatal h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.fatal p {
+  max-width: 60ch;
+  color: var(--dim);
+  margin: 0;
+}
+
+.fatal .hint {
+  font-size: 12px;
+}
+
+.fatal button {
+  margin-top: 12px;
+  font: inherit;
+  color: var(--ink);
+  background: #1a1f2e;
+  border: 1px solid #333b52;
+  border-radius: 4px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
