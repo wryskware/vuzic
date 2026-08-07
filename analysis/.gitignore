@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+out/
+tracks/*
+!tracks/.gitkeep
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
