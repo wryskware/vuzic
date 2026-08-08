@@ -2,7 +2,7 @@ import './style.css';
 import { AudioClock } from './audio/clock';
 import { DebugOverlay } from './debug/overlay';
 import { initGpu, renderUnsupportedPage, type GpuContext } from './gpu/context';
-import { chooseSignal, embeddingSignal, Modulator } from './mapping/modulation';
+import { buildDriverBank, Modulator } from './mapping/modulation';
 import {
   defaultModulationConfig,
   loadModulationLocal,
@@ -14,7 +14,7 @@ import { defaultConfig } from './sim/physarum/config';
 import { PhysarumSim } from './sim/physarum/physarum';
 import { resolveSeed } from './sim/seed';
 import type { Sim } from './sim/types';
-import { loadEmbedding, loadTimeline } from './timeline/loader';
+import { loadTimeline } from './timeline/loader';
 import { TimelineSampler } from './timeline/sampler';
 import { createPanel, type PanelHandle } from './ui/panel';
 
@@ -88,10 +88,10 @@ async function main(): Promise<void> {
     console.info(`timeline "${track}" has no events array; impulses idle until test-fired`);
   }
 
-  // The modulation input: the wide 1024-dim embedding sidecar when the track
-  // shipped one, the 64-dim PCA latent channel when it did not (plan.md
-  // Revision 3). z-scoring happens once, here, inside the signal.
-  const signal = chooseSignal(timeline);
+  // The modulation input: ~16 named drivers built from this timeline's own
+  // structure channels and its 64-dim latent channel, variance-reordered and
+  // z-scored once, here (plan.md Revision 4). No sidecar, no background upgrade.
+  const drivers = buildDriverBank(timeline);
   const stored = loadModulationLocal();
   const modConfig =
     stored && modulationFits(stored, physarum.config.speciesCount)
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
   const modulator = new Modulator(
     physarum,
     sampler,
-    signal,
+    drivers,
     modConfig,
     seed,
   );
@@ -110,15 +110,6 @@ async function main(): Promise<void> {
       `seed ${seed}${pinned ? ' (pinned)' : ''}`,
   );
   const tuningLog = new TuningLog();
-
-  // …and the upgrade to the wide input, in the background. The sidecar is ~11 MB;
-  // blocking the first frame on it is a multi-second blank screen off localhost,
-  // so the app boots on the fallback and swaps when this lands. The Embedding is
-  // dropped as soon as the signal has z-scored it — only the z copy is retained.
-  void loadEmbedding(timelineUrl(track)).then((emb) => {
-    const wide = emb ? embeddingSignal(emb) : null;
-    if (wide) modulator.attachSignal(wide);
-  });
 
   // One seed, three consumers. Hotspot placement, projection wiring and the
   // seeded personality all re-key from here, so a reseed, a reroll and a snapshot

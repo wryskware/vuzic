@@ -1,27 +1,32 @@
 /**
- * Headless tests for the pure half of the modulation layer (plan.md Revision 3).
+ * Headless tests for the pure half of the modulation layer (plan.md Revision 4).
  *
  * Run with `npm test` in web/ — Node strips the types and loads the modules
  * straight out of src/, which is why mapping/*.ts imports carry explicit .ts
  * extensions. Nothing here touches the DOM or WebGPU.
  *
  * The properties that matter, in the order the runtime depends on them:
- *   the input really is standardised, the wiring really is a function of the seed
- *   alone, the output really cannot leave its range, and the depths really do
- *   isolate.
+ *   the driver bank really is variance-ordered and standardised, a gain of 0
+ *   really does silence a driver everywhere, the wiring really is a function of
+ *   the seed alone, the output really cannot leave its range, the depths really
+ *   do isolate — and brightness really is out of all of it.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
   baseVector,
-  chooseSignal,
+  buildDriverBank,
+  DriverBank,
   makeRng,
-  ModulationSignal,
+  PC_DRIVER_COUNT,
+  STRUCTURE_DRIVERS,
   unitDirection,
+  varianceOrder,
   Z_CLAMP,
 } from '../src/mapping/modulation.ts';
 import { SlewLimiter } from '../src/mapping/slew.ts';
+import { defaultStemFollow, followMultiplier, StemFollow } from '../src/mapping/stemfollow.ts';
 import {
   applyVector,
   CLASS_FAST,
@@ -58,6 +63,10 @@ const MASK = modulationMask(K);
  * needs a PhysarumSim and a TimelineSampler; these tests deliberately exercise the
  * same formula without a GPU, and `targetFor` on the real class is the identical
  * expression (one code path, verified by eye and by the bounds test below).
+ *
+ * `gains` is Revision 4's addition and multiplies the driver *before* the dot
+ * product — which is the only reason a gain of 0 can be exactly, rather than
+ * approximately, silent in every wiring.
  */
 function targetFor(
   seed: number,
@@ -66,10 +75,13 @@ function targetFor(
   defaults: Float64Array,
   depth: number,
   groupDepth: Record<ModGroup, number>,
+  gains?: ArrayLike<number>,
 ): Float64Array {
   const base = baseVector(seed, defaults, SLOTS, new Float64Array(LEN));
   const out = new Float64Array(LEN);
   const w = new Float32Array(dims);
+  const gz = new Float32Array(dims);
+  for (let d = 0; d < dims; d++) gz[d] = ((gains?.[d] as number) ?? 1) * ((z[d] as number) ?? 0);
   for (let i = 0; i < LEN; i++) {
     const spec = SLOTS[i] as ModSpec | null;
     if (!spec) {
@@ -78,13 +90,50 @@ function targetFor(
     }
     unitDirection(seed, i, dims, w);
     let raw = 0;
-    for (let d = 0; d < dims; d++) raw += (w[d] as number) * ((z[d] as number) ?? 0);
+    for (let d = 0; d < dims; d++) raw += (w[d] as number) * (gz[d] as number);
     const e = Math.tanh(depth * groupDepth[spec.group] * raw);
     const b = base[i] as number;
     const v = spec.mult ? b * Math.exp(spec.half * e) : b + spec.half * e;
     out[i] = v < spec.lo ? spec.lo : v > spec.hi ? spec.hi : v;
   }
   return out;
+}
+
+/** A DriverBank straight from a frames x dims array, for the arithmetic tests. */
+function bankOf(raw: Float32Array, frames: number, dims: number, names?: string[]): DriverBank {
+  return new DriverBank(
+    Array.from({ length: dims }, (_, d) => ({
+      name: names?.[d] ?? `d${d}`,
+      source: d,
+      read: (f: number) => raw[f * dims + d] as number,
+    })),
+    frames,
+    0.1,
+    'test',
+  );
+}
+
+/**
+ * A minimal Timeline-shaped object: the loader's product, without the loader.
+ * `channels` is what `buildDriverBank` walks, so the layout has to be real.
+ */
+function fakeTimeline(
+  frames: number,
+  channels: { name: string; dims: number; offset: number }[],
+  fill: (frame: number, offset: number) => number,
+): Timeline {
+  const stride = channels.reduce((a, c) => a + c.dims, 0);
+  const data = new Float32Array(frames * stride);
+  for (let f = 0; f < frames; f++) {
+    for (let o = 0; o < stride; o++) data[f * stride + o] = fill(f, o);
+  }
+  return {
+    manifest: { grid: { frames, hopSeconds: 0.1 } },
+    data,
+    stride,
+    channels: new Map(channels.map((c) => [c.name, c])),
+    events: [],
+  } as unknown as Timeline;
 }
 
 function unitDepths(value = 1): Record<ModGroup, number> {
@@ -113,11 +162,17 @@ test('the slot table still has the layout the runtime indexes by', () => {
 test('the exclusions are exactly the documented ones', () => {
   const names = fieldNames(K);
   const excluded = names.filter((_, i) => SLOTS[i] === null);
-  // every p3 exponent, plus exposure / gamma / stemGain
-  assert.equal(excluded.length, 4 * K + 3);
+  // every p3 exponent, brightness + intensity per species (Revision 4), plus
+  // exposure / gamma / stemGain
+  assert.equal(excluded.length, 6 * K + 3);
   for (const n of excluded) {
     assert.ok(
-      n.endsWith('.p3') || n === 'exposure' || n === 'gamma' || n === 'stemGain',
+      n.endsWith('.p3') ||
+        n.endsWith('.brightness') ||
+        n.endsWith('.intensity') ||
+        n === 'exposure' ||
+        n === 'gamma' ||
+        n === 'stemGain',
       `unexpected exclusion ${n}`,
     );
   }
@@ -160,6 +215,94 @@ test('preset ↔ config ↔ vector round-trips exactly', () => {
   assert.equal(vectorToPreset(v0, K).species.length, K);
 });
 
+test('brightness is out of the modulation registry entirely (Revision 4)', () => {
+  const names = fieldNames(K);
+  // No slot may claim the retired group, and the two light slots per species
+  // must be untouchable by the modulator in both directions: null spec AND a
+  // zero mask bit, since those are two separate lookups in the runtime.
+  assert.ok(!(MOD_GROUPS as readonly string[]).includes('brightness'), 'the group is gone');
+  for (let i = 0; i < LEN; i++) {
+    const n = names[i] as string;
+    if (!n.endsWith('.brightness') && !n.endsWith('.intensity')) continue;
+    assert.equal(SLOTS[i], null, `${n} still has a ModSpec`);
+    assert.equal(MASK[i], 0, `${n} is still in the modulation mask`);
+  }
+  // …and a full-range masked write leaves the live brightness alone.
+  const cfg = defaultConfig(K);
+  cfg.species[0]!.brightness = 0.42;
+  cfg.species[0]!.intensity = 1.75;
+  applyVector(cfg, new Float64Array(LEN).fill(9), MASK);
+  assert.equal(cfg.species[0]!.brightness, 0.42);
+  assert.equal(cfg.species[0]!.intensity, 1.75);
+});
+
+// ── the driver bank ──────────────────────────────────────────────────────────
+
+test('variance reordering: the loudest latent dim becomes pc-1, whatever its index', () => {
+  const frames = 400;
+  const latentDims = 8;
+  const stride = 3 + latentDims;
+  // dim 5 gets the biggest swing, dim 2 the second, everything else is quiet —
+  // deliberately NOT in stored order, which is the bug Revision 4 fixes.
+  const amp = [0.1, 0.05, 0.6, 0.02, 0.03, 1.0, 0.01, 0.04];
+  const tl = fakeTimeline(
+    frames,
+    [
+      { name: 'novelty4', dims: 1, offset: 0 },
+      { name: 'novelty16', dims: 1, offset: 1 },
+      { name: 'actChorus', dims: 1, offset: 2 },
+      { name: 'latent', dims: latentDims, offset: 3 },
+    ],
+    (f, o) => (o < 3 ? Math.sin(f * (0.1 + o * 0.03)) : (amp[o - 3] as number) * Math.sin(f * 0.07 + o)),
+  );
+
+  const order = varianceOrder(tl.data, frames, stride, 3, latentDims);
+  assert.equal(order[0], 5, 'dim 5 has the most variance');
+  assert.equal(order[1], 2);
+
+  const bank = buildDriverBank(tl);
+  assert.ok(bank);
+  assert.equal(bank.dims, STRUCTURE_DRIVERS.length + Math.min(PC_DRIVER_COUNT, latentDims));
+  assert.deepEqual(bank.names.slice(0, 3), ['novelty·4bar', 'novelty·16bar', 'chorus-ness']);
+  assert.equal(bank.names[3], 'pc-1');
+  assert.equal(bank.sources[3], 5, 'pc-1 is latent dim 5');
+  assert.equal(bank.sources[4], 2, 'pc-2 is latent dim 2');
+  // strictly descending raw variance across the pc block
+  for (let d = 4; d < bank.dims; d++) {
+    assert.ok(
+      (bank.variance[d] as number) <= (bank.variance[d - 1] as number) + 1e-12,
+      `pc-${d - 2} has more variance than pc-${d - 3}`,
+    );
+  }
+});
+
+test('a missing structure channel keeps its slot as a silent driver', () => {
+  // Driver indices key the seeded wiring and the saved gains, so they must not
+  // shift because an optional channel is absent from one track.
+  const frames = 50;
+  const tl = fakeTimeline(
+    frames,
+    [
+      { name: 'novelty4', dims: 1, offset: 0 },
+      { name: 'latent', dims: 4, offset: 1 },
+    ],
+    (f, o) => Math.sin(f * 0.1 + o),
+  );
+  const bank = buildDriverBank(tl);
+  assert.ok(bank);
+  assert.equal(bank.dims, 3 + 4);
+  assert.ok((bank.names[1] as string).includes('absent'));
+  const out = new Float32Array(bank.dims);
+  bank.sample(1.0, out);
+  assert.equal(out[1], 0, 'an absent driver contributes exactly nothing');
+  assert.equal(out[2], 0);
+  assert.ok(Math.abs(out[0] as number) > 0);
+
+  // no latent channel at all → no bank rather than a fake one
+  const bare = fakeTimeline(frames, [{ name: 'stems', dims: 4, offset: 0 }], () => 1);
+  assert.equal(buildDriverBank(bare), null);
+});
+
 // ── z-scoring ────────────────────────────────────────────────────────────────
 
 test('z-scoring: each dim comes out mean 0, sd 1, and the stored stats say so', () => {
@@ -174,7 +317,7 @@ test('z-scoring: each dim comes out mean 0, sd 1, and the stored stats say so', 
       raw[f * dims + d] = 10 * d + (d + 1) * g;
     }
   }
-  const sig = new ModulationSignal('embedding', raw, frames, dims, 0.1, 'test');
+  const sig = bankOf(raw, frames, dims);
   const out = new Float32Array(dims);
   const sum = new Float64Array(dims);
   const sq = new Float64Array(dims);
@@ -200,7 +343,7 @@ test('z-scoring clamps outliers and survives a constant dimension', () => {
     raw[f * dims] = 0.5; // constant: sd 0
     raw[f * dims + 1] = f === 0 ? 1e6 : 0; // one enormous outlier
   }
-  const sig = new ModulationSignal('latent', raw, frames, dims, 0.1, 'test');
+  const sig = bankOf(raw, frames, dims);
   const out = new Float32Array(dims);
   for (let f = 0; f < frames; f++) {
     sig.sample(f * 0.1, out);
@@ -212,41 +355,42 @@ test('z-scoring clamps outliers and survives a constant dimension', () => {
   assert.equal(out[1], Z_CLAMP, 'the outlier saturates rather than dominating');
 });
 
-test('chooseSignal prefers the 1024-dim sidecar and falls back to the latent channel', () => {
-  const frames = 40;
-  const stride = 6;
-  const timeline = {
-    manifest: { grid: { frames, hopSeconds: 0.1 } },
-    data: new Float32Array(frames * stride).map((_, i) => Math.sin(i)),
-    stride,
-    channels: new Map([{ name: 'latent', dims: 4, offset: 2 }].map((c) => [c.name, c])),
-    events: [],
-    embedding: null,
-  } as unknown as Timeline;
-
-  const fallback = chooseSignal(timeline);
-  assert.ok(fallback);
-  assert.equal(fallback.kind, 'latent');
-  assert.equal(fallback.dims, 4);
-  assert.equal(fallback.label, 'latent-4');
-
-  const wide = chooseSignal({
-    ...timeline,
-    embedding: {
-      frames,
-      dims: 16,
-      hopSeconds: 0.1,
-      data: new Float32Array(frames * 16).map((_, i) => Math.cos(i)),
-      source: 'muq',
-    },
-  } as unknown as Timeline);
-  assert.ok(wide);
-  assert.equal(wide.kind, 'embedding');
-  assert.equal(wide.dims, 16);
-
-  // no sidecar and no channel at all → no modulation rather than a fake signal
-  const bare = { ...timeline, channels: new Map() } as unknown as Timeline;
-  assert.equal(chooseSignal(bare), null);
+test('the bank caps the pc block at PC_DRIVER_COUNT however wide the latent is', () => {
+  const frames = 60;
+  const tl = fakeTimeline(
+    frames,
+    [
+      { name: 'novelty4', dims: 1, offset: 0 },
+      { name: 'novelty16', dims: 1, offset: 1 },
+      { name: 'actChorus', dims: 1, offset: 2 },
+      { name: 'latent', dims: 64, offset: 3 },
+    ],
+    (f, o) => Math.sin(f * 0.05 * (o + 1)) * (1 + (o % 7)),
+  );
+  const bank = buildDriverBank(tl);
+  assert.ok(bank);
+  assert.equal(bank.dims, STRUCTURE_DRIVERS.length + PC_DRIVER_COUNT);
+  assert.equal(bank.label, `drivers-${bank.dims}`);
+  assert.equal(bank.names[bank.dims - 1], `pc-${PC_DRIVER_COUNT}`);
+  // every driver is standardised, structure channels included — that is what
+  // makes one gain slider mean the same thing on all sixteen of them
+  const out = new Float32Array(bank.dims);
+  const sum = new Float64Array(bank.dims);
+  const sq = new Float64Array(bank.dims);
+  for (let f = 0; f < frames; f++) {
+    bank.sample(f * 0.1, out);
+    for (let d = 0; d < bank.dims; d++) {
+      sum[d] = (sum[d] as number) + (out[d] as number);
+      sq[d] = (sq[d] as number) + (out[d] as number) ** 2;
+    }
+  }
+  for (let d = 0; d < bank.dims; d++) {
+    assert.ok(Math.abs((sum[d] as number) / frames) < 1e-3, `${bank.names[d]} mean`);
+    assert.ok(
+      Math.abs(Math.sqrt((sq[d] as number) / frames) - 1) < 1e-2,
+      `${bank.names[d]} sd`,
+    );
+  }
 });
 
 // ── wiring ───────────────────────────────────────────────────────────────────
@@ -399,16 +543,72 @@ test('depth 0 is exactly the base — the personality with the music switched of
 
   // and a zero *group* depth pins only that group
   const oneOff = unitDepths(1);
-  oneOff.brightness = 0;
+  oneOff.matrix = 0;
   const partial = targetFor(777, z, dims, defaults, 1, oneOff);
   let moved = 0;
   for (let i = 0; i < LEN; i++) {
     const spec = SLOTS[i] as ModSpec | null;
     if (!spec) continue;
-    if (spec.group === 'brightness') assert.equal(partial[i], base[i], fieldNames(K)[i]);
+    if (spec.group === 'matrix') assert.equal(partial[i], base[i], fieldNames(K)[i]);
     else if (Math.abs((partial[i] as number) - (base[i] as number)) > 1e-9) moved++;
   }
-  assert.ok(moved > 20, `only ${moved} non-brightness slots moved`);
+  assert.ok(moved > 20, `only ${moved} non-matrix slots moved`);
+});
+
+// ── driver gains ─────────────────────────────────────────────────────────────
+
+test('gain 0 silences a driver through every wiring, exactly', () => {
+  const dims = 16;
+  const defaults = defaultTheta();
+  const depths = unitDepths(1);
+  const z = new Float32Array(dims).map((_, d) => Math.sin(d * 1.7) * 2.5);
+
+  // One driver at a time: put all the signal on driver `mute`, then mute it.
+  // Every slot must land exactly on its base — not "close to", because the gain
+  // multiplies the driver before the projection rather than trimming afterwards.
+  for (const mute of [0, 3, 15]) {
+    const only = new Float32Array(dims);
+    only[mute] = 2.5;
+    const gains = new Float32Array(dims).fill(1);
+    gains[mute] = 0;
+    const base = baseVector(4242, defaults, SLOTS, new Float64Array(LEN));
+    const v = targetFor(4242, only, dims, defaults, 1, depths, gains);
+    for (let i = 0; i < LEN; i++) assert.equal(v[i], base[i], `${fieldNames(K)[i]} (driver ${mute})`);
+
+    // and with the gain back at 1 the very same input does move things
+    const live = targetFor(4242, only, dims, defaults, 1, depths);
+    let moved = 0;
+    for (let i = 0; i < LEN; i++) {
+      if (Math.abs((live[i] as number) - (base[i] as number)) > 1e-9) moved++;
+    }
+    assert.ok(moved > 20, `driver ${mute} at gain 1 moved only ${moved} slots`);
+  }
+
+  // all gains 0 → the whole bank is silent, whatever the music is doing
+  const silent = targetFor(9, z, dims, defaults, 3, unitDepths(2), new Float32Array(dims));
+  const base9 = baseVector(9, defaults, SLOTS, new Float64Array(LEN));
+  for (let i = 0; i < LEN; i++) assert.equal(silent[i], base9[i], fieldNames(K)[i]);
+});
+
+test('gains scale monotonically: 2x the gain is a bigger excursion, same sign', () => {
+  const dims = 16;
+  const defaults = defaultTheta();
+  const z = new Float32Array(dims).map((_, d) => Math.cos(d * 0.9));
+  const base = baseVector(11, defaults, SLOTS, new Float64Array(LEN));
+  const half = targetFor(11, z, dims, defaults, 1, unitDepths(1), new Float32Array(dims).fill(0.5));
+  const full = targetFor(11, z, dims, defaults, 1, unitDepths(1), new Float32Array(dims).fill(1));
+  let checked = 0;
+  for (let i = 0; i < LEN; i++) {
+    const spec = SLOTS[i] as ModSpec | null;
+    if (!spec || spec.mult) continue;
+    const a = (half[i] as number) - (base[i] as number);
+    const b = (full[i] as number) - (base[i] as number);
+    if (Math.abs(b) < 1e-6) continue;
+    assert.ok(a * b >= 0, `${fieldNames(K)[i]} flipped sign with gain`);
+    assert.ok(Math.abs(a) <= Math.abs(b) + 1e-9, `${fieldNames(K)[i]} shrank with more gain`);
+    checked++;
+  }
+  assert.ok(checked > 20, `only ${checked} additive slots checked`);
 });
 
 test('group isolation: zeroing one group leaves the others exactly where they were', () => {
@@ -508,7 +708,7 @@ test('boundary snap moves only its own class, by exactly the given fraction', ()
 
 // ── persistence ──────────────────────────────────────────────────────────────
 
-test('a v3 config survives serialize → parse, palette and grade and all', () => {
+test('a v4 config survives serialize → parse, palette and grade and all', () => {
   const base = defaultConfig(K);
   base.palette.colors[0] = '#123456';
   base.palette.saturation = 0.7;
@@ -520,12 +720,18 @@ test('a v3 config survives serialize → parse, palette and grade and all', () =
   cfg.responseSpeed = 3;
   cfg.slew.fast = 0.03;
   cfg.enabled = false;
+  cfg.driverGains = [0, 1, 2, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+  cfg.stemFollow.floor = 0.12;
+  cfg.stemFollow.curve = 1.8;
+  cfg.stemFollow.smoothingMs = 420;
   // shared by reference with the live config, exactly like the anchor era
   assert.equal(cfg.palette, base.palette);
   assert.equal(cfg.render, base.render);
 
   const back = parseModulation(serializeModulation(cfg));
-  assert.equal(back.version, 3);
+  assert.equal(back.version, 4);
+  assert.deepEqual(back.driverGains, cfg.driverGains);
+  assert.deepEqual(back.stemFollow, cfg.stemFollow);
   assert.deepEqual(back.palette, cfg.palette);
   assert.deepEqual(back.render, cfg.render);
   assert.equal(back.depth, 1.75);
@@ -554,7 +760,7 @@ test('a v2 file loads its palette and render block and discards the anchors', ()
     anchors: [{ id: 'a0', name: 'anchor 0', center: [1, 2, 3], preset: { species: [] } }],
   };
   const back = parseModulation(JSON.stringify(v2));
-  assert.equal(back.version, 3);
+  assert.equal(back.version, 4);
   assert.equal(back.palette.colors[1], '#abcdef');
   assert.equal(back.palette.saturation, 0.4);
   assert.equal(back.render.grade.vignette, 0.42);
@@ -566,6 +772,50 @@ test('a v2 file loads its palette and render block and discards the anchors', ()
   // boundaries survive: they are an event, not scene machinery
   assert.equal(back.boundary.enabled, false);
   assert.equal(back.boundary.snapFraction, 0.3);
+});
+
+test('a v3 file migrates to v4 losslessly: nothing dropped, gains default to 1', () => {
+  const v3 = {
+    version: 3,
+    speciesCount: K,
+    palette: { colors: ['#111111', '#222222', '#333333', '#444444'], saturation: 0.8, brightness: 1.2 },
+    render: { ...defaultRenderConfig(), grade: { ...defaultRenderConfig().grade, vignette: 0.31 } },
+    enabled: false,
+    depth: 2.5,
+    // brightness is a group v3 had and v4 does not; it must not fail the parse
+    groupDepth: { structure: 1.4, matrix: 0.2, population: 0.9, brightness: 1.7, decay: 0.3 },
+    responseSpeed: 2.75,
+    slew: { fast: 0.07, medium: 0.9, slow: 12 },
+    boundary: { enabled: false, snapFraction: 0.25, respawnFraction: 0.4 },
+  };
+  const back = parseModulation(JSON.stringify(v3));
+  assert.equal(back.version, 4);
+  // everything v3 carried survives verbatim
+  assert.equal(back.depth, 2.5);
+  assert.equal(back.enabled, false);
+  assert.equal(back.responseSpeed, 2.75);
+  assert.equal(back.groupDepth.structure, 1.4);
+  assert.equal(back.groupDepth.matrix, 0.2);
+  assert.equal(back.groupDepth.population, 0.9);
+  assert.equal(back.groupDepth.decay, 0.3);
+  assert.equal(back.slew.slow, 12);
+  assert.deepEqual(back.boundary, v3.boundary);
+  assert.equal(back.palette.saturation, 0.8);
+  assert.equal(back.render.grade.vignette, 0.31);
+  // the retired group is dropped, not carried as dead weight
+  assert.ok(!('brightness' in back.groupDepth), 'the brightness group depth is gone');
+  // and the two new blocks arrive at their defaults
+  assert.deepEqual(back.driverGains, [], 'no gains authored → the Modulator fills them with 1');
+  assert.deepEqual(back.stemFollow, defaultStemFollow());
+});
+
+test('driver gains are clamped, not rejected, and junk entries default to 1', () => {
+  const file = JSON.stringify({
+    version: 4,
+    speciesCount: K,
+    driverGains: [-5, 0, 1, 9, 'x', null, 1.5],
+  });
+  assert.deepEqual(parseModulation(file).driverGains, [0, 0, 1, 2, 1, 1, 1.5]);
 });
 
 test('an unknown version is rejected rather than half-applied', () => {
@@ -604,7 +854,7 @@ test('a non-finite sample is contained: it never poisons its dim or any frame', 
   const dims = 4;
   const raw = new Float32Array(frames * dims).map((_, i) => Math.sin(i) * 3);
   raw[5] = NaN; // frame 1, dim 1
-  const sig = new ModulationSignal('embedding', raw, frames, dims, 0.1, 'test');
+  const sig = bankOf(raw, frames, dims);
   assert.ok(Number.isFinite(sig.mean[1] as number), 'mean of the affected dim');
   assert.ok(Number.isFinite(sig.std[1] as number), 'sd of the affected dim');
   const out = new Float32Array(dims);
@@ -642,4 +892,119 @@ test('the seeded personality puts no mass on a bound, even where the default hug
   // other tempting fix — shrinking the draw to symmetric headroom, which for this
   // slot is ±0.009 and would collapse the spread to sd ~0.003.
   assert.ok(sd > 0.05, `personality spread collapsed to sd ${sd}`);
+});
+
+// ── stem-follow: the brightness lane (plan.md Revision 4) ────────────────────
+
+test('stem-follow: silence lands on the floor, full activity is 1, monotone between', () => {
+  const cfg = { ...defaultStemFollow(), floor: 0.25, curve: 1 };
+  assert.equal(followMultiplier(0, cfg), 0.25, 'a silent instrument keeps the floor, not zero');
+  assert.equal(followMultiplier(1, cfg), 1, 'a loud instrument is untouched');
+  assert.ok(Math.abs(followMultiplier(0.5, cfg) - 0.625) < 1e-12);
+  let prev = -1;
+  for (let a = 0; a <= 1.0001; a += 0.05) {
+    const v = followMultiplier(a, cfg);
+    assert.ok(v >= prev, `not monotone at ${a}`);
+    assert.ok(v >= 0.25 - 1e-12 && v <= 1 + 1e-12, `${v} outside [floor, 1]`);
+    prev = v;
+  }
+  // out-of-range activity cannot push the multiplier out of range either
+  assert.equal(followMultiplier(-3, cfg), 0.25);
+  assert.equal(followMultiplier(7, cfg), 1);
+  assert.equal(followMultiplier(Number.NaN, cfg), 0.25);
+});
+
+test('stem-follow: floor 0 is a blackout, floor 1 is a no-op, curve biases toward loud', () => {
+  const base = defaultStemFollow();
+  assert.equal(followMultiplier(0, { ...base, floor: 0 }), 0);
+  assert.equal(followMultiplier(0, { ...base, floor: 1 }), 1);
+  assert.equal(followMultiplier(0.3, { ...base, floor: 1 }), 1);
+  // curve > 1 dims the middle harder; curve < 1 lifts it. Endpoints never move.
+  const mid = 0.5;
+  const flat = followMultiplier(mid, { ...base, floor: 0, curve: 1 });
+  const steep = followMultiplier(mid, { ...base, floor: 0, curve: 2.5 });
+  const soft = followMultiplier(mid, { ...base, floor: 0, curve: 0.4 });
+  assert.ok(steep < flat && flat < soft, `${steep} < ${flat} < ${soft}`);
+  for (const curve of [0.4, 1, 2.5]) {
+    assert.equal(followMultiplier(0, { ...base, floor: 0, curve }), 0);
+    assert.equal(followMultiplier(1, { ...base, floor: 0, curve }), 1);
+  }
+  // disabled is exactly 1 whatever else is set
+  assert.equal(followMultiplier(0, { ...base, enabled: false, floor: 0 }), 1);
+});
+
+test('stem-follow smoothing: a cut fades over its time constant rather than snapping', () => {
+  const cfg = { ...defaultStemFollow(), floor: 0, curve: 1, smoothingMs: 300 };
+  const follow = new StemFollow(4, 4);
+  const dt = 1 / 60;
+  const loud = new Float32Array([1, 1, 1, 1]);
+  const cut = new Float32Array([1, 1, 0, 1]); // vocals (species 2) drop out
+  for (let i = 0; i < 600; i++) follow.update(loud, dt, cfg);
+  assert.ok(Math.abs((follow.multiplier[2] as number) - 1) < 1e-3, 'settled at full');
+
+  // one time constant after the cut it should be ~1/e of the way down, not at 0
+  for (let i = 0; i < Math.round(0.3 / dt); i++) follow.update(cut, dt, cfg);
+  const afterTau = follow.multiplier[2] as number;
+  assert.ok(Math.abs(afterTau - Math.exp(-1)) < 0.02, `after τ: ${afterTau}`);
+  assert.ok(
+    Math.abs((follow.multiplier[0] as number) - 1) < 1e-5,
+    'the other species did not move',
+  );
+
+  // …and it does get all the way there
+  for (let i = 0; i < 600; i++) follow.update(cut, dt, cfg);
+  assert.ok((follow.multiplier[2] as number) < 1e-3, 'the cut species is fully dimmed');
+
+  // with a floor it stops at the floor instead of at black
+  const floored = new StemFollow(4, 4);
+  const withFloor = { ...cfg, floor: 0.25 };
+  for (let i = 0; i < 600; i++) floored.update(cut, dt, withFloor);
+  assert.ok(Math.abs((floored.multiplier[2] as number) - 0.25) < 1e-3, 'ghost floor');
+});
+
+test('stem-follow: a seek snaps the EMA instead of dragging the old moment across', () => {
+  // The A/B property: restoring a snapshot must show the brightness that moment
+  // had, not a 300 ms fade out of wherever the transport was standing.
+  const cfg = { ...defaultStemFollow(), floor: 0, curve: 1, smoothingMs: 300 };
+  const follow = new StemFollow(4, 4);
+  const dt = 1 / 60;
+  const loud = new Float32Array([1, 1, 1, 1]);
+  const quiet = new Float32Array([0, 0, 0, 0]);
+  for (let i = 0; i < 600; i++) follow.update(loud, dt, cfg);
+
+  // eased: one tick into a quiet passage is still essentially fully bright
+  const eased = new StemFollow(4, 4);
+  for (let i = 0; i < 600; i++) eased.update(loud, dt, cfg);
+  eased.update(quiet, dt, cfg);
+  assert.ok((eased.multiplier[0] as number) > 0.9, 'the ease carries the old level');
+
+  // snapped: the same tick, flagged as a discontinuity, lands on the new level
+  follow.update(quiet, dt, cfg, true);
+  assert.ok((follow.multiplier[0] as number) < 1e-6, 'the snap adopts the new level');
+  assert.equal(follow.activity[0], 0);
+});
+
+test('stem-follow leaves species with no stem, and tracks with no stems, alone', () => {
+  const cfg = defaultStemFollow();
+  // K = 6 against a 4-dim stems channel: species 4 and 5 have no instrument
+  const follow = new StemFollow(6, 4);
+  assert.equal(follow.stemOf(3), 3);
+  assert.equal(follow.stemOf(4), -1);
+  for (let i = 0; i < 100; i++) follow.update(new Float32Array([0, 0, 0, 0, 0, 0]), 1 / 60, cfg);
+  assert.ok((follow.multiplier[0] as number) < 0.3, 'a keyed species dims');
+  assert.equal(follow.multiplier[4], 1, 'an unkeyed species is untouched, not blacked out');
+
+  // no stems channel at all: the lane is a no-op rather than a global dimming
+  const none = new StemFollow(4, 0);
+  for (let i = 0; i < 100; i++) none.update(null, 1 / 60, cfg);
+  for (let k = 0; k < 4; k++) assert.equal(none.multiplier[k], 1);
+});
+
+test('stem-follow: the shipped default leaves a visible ghost, not a blackout', () => {
+  // The user asked for "visibly diminish", not "disappear" — so the default
+  // floor has to be clearly above black and clearly below full.
+  const d = defaultStemFollow();
+  assert.ok(d.enabled, 'the lane is on by default');
+  assert.ok(d.floor >= 0.15 && d.floor <= 0.4, `floor ${d.floor} is not a ghost`);
+  assert.ok(d.smoothingMs >= 200 && d.smoothingMs <= 400, `smoothing ${d.smoothingMs} ms`);
 });

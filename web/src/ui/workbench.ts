@@ -1,6 +1,15 @@
 /**
  * The workbench — dev tooling rather than a viewer feature, and after plan.md
- * Revision 3 a much smaller instrument than it was.
+ * Revision 4 an instrument you can actually read.
+ *
+ * **The drivers section is the point of this round.** ~16 named channels, each
+ * with a live meter and a gain slider: mute the ones that are not doing anything
+ * you like, boost the ones that are. That is the whole tuning surface for the
+ * projection layer — nobody tunes weights, and nobody should have to.
+ *
+ * **Brightness is no longer in it.** It has its own section (stem-follow), which
+ * is not modulation at all: a species is as bright as its own instrument is
+ * loud. That section works in manual mode and with every driver muted.
  *
  * The anchor era's loop was *scrub → tweak → capture → save*, i.e. authoring a
  * preset per cluster. The user's verdict on that, verbatim: "I do not care about
@@ -42,7 +51,7 @@
  */
 import type { Pane } from 'tweakpane';
 import type { PhysarumSim } from '../sim/physarum/physarum';
-import type { Modulator } from '../mapping/modulation';
+import { MAX_DRIVER_GAIN, type Modulator } from '../mapping/modulation';
 import { MOD_GROUPS, type ModGroup } from '../mapping/preset';
 import type { TuningLog, TuningAction } from '../mapping/tuninglog';
 import { randomSeed, setPinnedSeed, syncUrlSeed } from '../sim/seed';
@@ -95,6 +104,11 @@ interface UiState {
   boundaryOn: boolean;
   snapFraction: number;
   respawnFraction: number;
+  followOn: boolean;
+  followFloor: number;
+  followCurve: number;
+  followSmoothing: number;
+  followStatus: string;
   autosave: boolean;
   file: string;
   snapshotInfo: string;
@@ -105,9 +119,27 @@ const GROUP_LABELS: Record<ModGroup, string> = {
   structure: 'structure (sensors, motion)',
   matrix: 'matrix M (who follows whom)',
   population: 'population (deposit, alive)',
-  brightness: 'brightness (light)',
   decay: 'decay (trail memory)',
 };
+
+/**
+ * A z value as a signed bar. The meters are what make the bank interpretable —
+ * "chorus-ness is pinned high and pc-1 just swung negative" is a sentence you can
+ * only say if you can see it — so they are drawn wide enough to read at a glance
+ * rather than printed as four decimals nobody parses in motion.
+ */
+const METER_HALF = 5;
+
+function meterBar(z: number, muted: boolean): string {
+  const v = Number.isFinite(z) ? Math.min(Math.max(z / 3, -1), 1) : 0;
+  const n = Math.round(Math.abs(v) * METER_HALF);
+  const left = v < 0 ? '█'.repeat(n).padStart(METER_HALF, ' ') : ' '.repeat(METER_HALF);
+  const right = v > 0 ? '█'.repeat(n).padEnd(METER_HALF, ' ') : ' '.repeat(METER_HALF);
+  // Deliberately narrow: tweakpane's readonly field is ~16 monospace characters
+  // wide and clips silently, so a wider meter loses the number off the end.
+  const tail = muted ? 'MUTE' : `${z < 0 ? '-' : '+'}${Math.abs(z).toFixed(1)}`;
+  return `${left}│${right}${tail}`;
+}
 
 export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandle {
   const { modulator, sim, log } = host;
@@ -127,6 +159,11 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     boundaryOn: cfg.boundary.enabled,
     snapFraction: cfg.boundary.snapFraction,
     respawnFraction: cfg.boundary.respawnFraction,
+    followOn: cfg.stemFollow.enabled,
+    followFloor: cfg.stemFollow.floor,
+    followCurve: cfg.stemFollow.curve,
+    followSmoothing: cfg.stemFollow.smoothingMs,
+    followStatus: '—',
     autosave: true,
     file: '—',
     snapshotInfo: 'none',
@@ -134,6 +171,10 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
   };
   const groupUi: Record<string, number> = {};
   const excursionUi: Record<string, string> = {};
+  /** driver index → meter text / gain, keyed by index so duplicate names cannot collide */
+  const meterUi: Record<string, string> = {};
+  const gainUi: Record<string, number> = {};
+  const followUi: Record<string, string> = {};
 
   const autosave = (): void => {
     if (!ui.autosave) return;
@@ -164,11 +205,16 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     ui.boundaryOn = c.boundary.enabled;
     ui.snapFraction = c.boundary.snapFraction;
     ui.respawnFraction = c.boundary.respawnFraction;
+    ui.followOn = c.stemFollow.enabled;
+    ui.followFloor = c.stemFollow.floor;
+    ui.followCurve = c.stemFollow.curve;
+    ui.followSmoothing = c.stemFollow.smoothingMs;
     for (const g of MOD_GROUPS) groupUi[g] = c.groupDepth[g];
+    for (let d = 0; d < modulator.driverCount; d++) gainUi[`g${d}`] = modulator.driverGain(d);
   };
 
   // ── modulation ─────────────────────────────────────────────────────────────
-  const root = pane.addFolder({ title: 'modulation (revision 3)', expanded: true });
+  const root = pane.addFolder({ title: 'modulation · driver bank (revision 4)', expanded: true });
 
   root.addBinding(ui, 'enabled', { label: 'modulate (off = manual)' }).on('change', (ev) => {
     const want = ev.value ? 'modulated' : 'manual';
@@ -222,6 +268,39 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     pane.refresh();
   });
 
+  // ── the driver bank (Revision 4) ───────────────────────────────────────────
+  // Two widgets per driver: a meter you read and a gain you turn. The meter is
+  // the reason this round exists — it is what turns "something changed" into
+  // "chorus-ness went up", which is the only way to decide what to mute.
+  const drivers = root.addFolder({
+    title: `drivers (${modulator.driverCount} named inputs · meter ±3σ)`,
+    expanded: true,
+  });
+  for (let d = 0; d < modulator.driverCount; d++) {
+    const key = `g${d}`;
+    meterUi[key] = '—';
+    gainUi[key] = modulator.driverGain(d);
+    drivers.addBinding(meterUi, key, { readonly: true, label: modulator.driverName(d) });
+    drivers
+      .addBinding(gainUi, key, { min: 0, max: MAX_DRIVER_GAIN, step: 0.01, label: '↳ gain' })
+      .on('change', (ev) => {
+        modulator.setDriverGain(d, ev.value);
+        autosave();
+      });
+  }
+  if (modulator.driverCount > 0) {
+    const setAll = (v: number): void => {
+      modulator.setAllDriverGains(v);
+      for (let d = 0; d < modulator.driverCount; d++) gainUi[`g${d}`] = modulator.driverGain(d);
+      autosave();
+      pane.refresh();
+    };
+    // "Mute all" is a diagnostic, not a preset: it is how you check that what you
+    // are looking at is the projections and not the stem lane or the impulses.
+    drivers.addButton({ title: 'mute all (silence the projections)' }).on('click', () => setAll(0));
+    drivers.addButton({ title: 'reset gains to 1' }).on('click', () => setAll(1));
+  }
+
   // ── depth ──────────────────────────────────────────────────────────────────
   const depth = root.addFolder({ title: 'depth', expanded: true });
   depth
@@ -272,6 +351,42 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
   for (const g of MOD_GROUPS) {
     excursionUi[g] = '—';
     live.addBinding(excursionUi, g, { readonly: true, label: GROUP_LABELS[g] });
+  }
+
+  // ── brightness · stem-follow (Revision 4, NOT modulation) ──────────────────
+  const follow = pane.addFolder({ title: 'brightness · stem-follow', expanded: true });
+  follow.addBinding(ui, 'followStatus', { readonly: true, label: '' });
+  follow.addBinding(ui, 'followOn', { label: 'follow stems (off = absolute)' }).on('change', (ev) => {
+    modulator.config.stemFollow.enabled = ev.value;
+    autosave();
+  });
+  follow
+    .addBinding(ui, 'followFloor', { min: 0, max: 1, step: 0.01, label: 'floor (silent = this ×)' })
+    .on('change', (ev) => {
+      modulator.config.stemFollow.floor = ev.value;
+      autosave();
+    });
+  follow
+    .addBinding(ui, 'followCurve', { min: 0.2, max: 4, step: 0.01, label: 'curve (exponent)' })
+    .on('change', (ev) => {
+      modulator.config.stemFollow.curve = ev.value;
+      autosave();
+    });
+  follow
+    .addBinding(ui, 'followSmoothing', { min: 50, max: 2000, step: 10, label: 'smoothing (ms)' })
+    .on('change', (ev) => {
+      modulator.config.stemFollow.smoothingMs = ev.value;
+      autosave();
+    });
+  // Per-species readout: activity, the multiplier it produces, and the effective
+  // light. This is what tells you whether the floor is doing what you meant.
+  for (let s = 0; s < sim.config.speciesCount; s++) {
+    const key = `f${s}`;
+    followUi[key] = '—';
+    follow.addBinding(followUi, key, {
+      readonly: true,
+      label: `${s} ${sim.config.species[s]?.name ?? ''}`,
+    });
   }
 
   // ── section boundaries (an event, not a scene) ─────────────────────────────
@@ -401,6 +516,34 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
 
   return {
     refresh(): void {
+      // Meters first — they are live in *both* modes, because the bank is an
+      // instrument panel before it is an input, and reading the music with
+      // modulation off is a legitimate thing to want.
+      for (let d = 0; d < modulator.driverCount; d++) {
+        const key = `g${d}`;
+        const gain = modulator.driverGain(d);
+        meterUi[key] = meterBar(modulator.driverValue(d), gain === 0);
+        gainUi[key] = gain;
+      }
+
+      const sf = modulator.stemFollow;
+      const on = modulator.config.stemFollow.enabled;
+      ui.followStatus = on
+        ? 'ON — species brightness sliders are the BASE, scaled by their stem'
+        : 'OFF — species brightness sliders are absolute';
+      ui.followOn = on;
+      for (let s = 0; s < sf.speciesCount; s++) {
+        const key = `f${s}`;
+        if (sf.stemOf(s) < 0) {
+          followUi[key] = 'no stem — brightness absolute';
+          continue;
+        }
+        const mul = sf.multiplier[s] ?? 1;
+        const base = sim.config.species[s]?.brightness ?? 1;
+        followUi[key] =
+          `act ${(sf.activity[s] ?? 0).toFixed(2)} · ×${mul.toFixed(2)} → ${(base * mul).toFixed(2)}`;
+      }
+
       const ex = modulator.excursions();
       for (const g of MOD_GROUPS) {
         const depthOf = modulator.config.depth * modulator.config.groupDepth[g];
@@ -424,6 +567,7 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     },
     dispose(): void {
       root.dispose();
+      follow.dispose();
       file.dispose();
       ab.dispose();
       logFolder.dispose();

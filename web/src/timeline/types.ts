@@ -66,25 +66,15 @@ export interface TimelineManifest {
 }
 
 /**
- * The raw pooled MuQ layer-6 embedding, `embedding.json` + `embedding.bin` next
- * to the timeline. plan.md Decision 2 emits it as a second sidecar precisely so a
- * later mapping could use the full width, and Revision 3's modulator is that
- * mapping: 1024 dims is what the random projections read.
- *
- * It is ~11 MB and **gitignored** (`data/​**​/embedding.bin`), so a fresh clone
- * legitimately has no such file. Absent is not an error — the modulator falls
- * back to the timeline's 64-dim PCA `latent` channel.
+ * The raw pooled 1024-dim MuQ embedding sidecar (`embedding.json` + `.bin`) is
+ * **not loaded by the runtime any more** (plan.md Revision 4). Projecting from
+ * 1024 unnamed dimensions reacted to everything and isolated nothing, so the
+ * mapping layer now builds a bank of ~16 *named* drivers from the timeline's own
+ * 64-dim `latent` channel plus its structure channels. The sidecar stays on disk
+ * and in the analysis output — it is the training input for the distilled-NN
+ * mapping in plan.md's "Later" — but nothing in `web/` fetches it, which also
+ * deletes the 11 MB background download and the cold/warm input swap with it.
  */
-export interface Embedding {
-  frames: number;
-  dims: number;
-  hopSeconds: number;
-  /** frames x dims, row-major, as stored — no scaling applied here */
-  data: Float32Array;
-  /** free-text provenance from embedding.json, for the workbench readout */
-  source: string;
-}
-
 export interface Timeline {
   manifest: TimelineManifest;
   /** frames x stride, row-major */
@@ -94,14 +84,6 @@ export interface Timeline {
   channels: ReadonlyMap<string, ChannelSpec>;
   /** validated, clamped and sorted; empty when the manifest carries none */
   events: readonly TimelineEvent[];
-  /**
-   * The wide sidecar. `loadTimeline` always leaves this null — the file is ~11 MB
-   * and awaiting it would block first paint — and `main` fetches it separately,
-   * handing the result to `Modulator.attachSignal`. The field stays because
-   * `chooseSignal` still honours it when a caller (a test, a future preload
-   * path) has the embedding in hand at construction time.
-   */
-  embedding: Embedding | null;
 }
 
 /** Channel names the runtime knows about by name. All are optional at load time. */

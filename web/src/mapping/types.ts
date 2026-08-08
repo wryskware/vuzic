@@ -2,6 +2,7 @@ import type { Palette } from '../sim/physarum/config.ts';
 import type { RenderConfig } from '../sim/render/config.ts';
 import type { ModGroup } from './preset.ts';
 import type { SlewRates } from './slew.ts';
+import type { StemFollowConfig } from './stemfollow.ts';
 
 export interface BoundaryOptions {
   /**
@@ -27,8 +28,8 @@ export interface BoundaryOptions {
  * and sharing a world are two different acts.
  */
 export interface ModulationConfig {
-  /** 1/2 = anchor era; 3 = seeded random-projection modulation */
-  version: 3;
+  /** 1/2 = anchor era; 3 = raw-embedding projections; 4 = the named driver bank */
+  version: 4;
   /** K this was authored for; a mismatch with the live sim cannot be applied */
   speciesCount: number;
   /**
@@ -45,10 +46,25 @@ export interface ModulationConfig {
   depth: number;
   /** per-group trim on top of `depth` */
   groupDepth: Record<ModGroup, number>;
+  /**
+   * Per-driver gain, 0..2, index-aligned with the bank (Revision 4). Applied to
+   * the z-scored driver *before* the projection, so 0 mutes that driver in every
+   * wiring at once. This is the tuning surface: mute the drivers that are not
+   * doing anything you like, boost the ones that are. Length is the track's
+   * driver count; a file authored against a different one adopts what fits and
+   * defaults the rest to 1.
+   */
+  driverGains: number[];
+  /**
+   * The brightness lane (Revision 4). Not modulation and not part of θ — a
+   * direct wire from each species' own stem to its light, so it works in manual
+   * mode and with every driver muted.
+   */
+  stemFollow: StemFollowConfig;
   /** multiplier on the slew clock; 2 = everything reacts twice as fast */
   responseSpeed: number;
   slew: SlewRates;
   boundary: BoundaryOptions;
 }
 
-export const MODULATION_VERSION = 3;
+export const MODULATION_VERSION = 4;

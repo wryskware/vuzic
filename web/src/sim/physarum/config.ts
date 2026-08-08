@@ -26,6 +26,18 @@ export const MAX_EFFECTIVE_DEPOSIT = 6;
  */
 export const MAX_DEPOSIT = 7 * MAX_EFFECTIVE_DEPOSIT;
 
+/**
+ * Ceiling on `brightness × stem-follow`, matching the `brightness` slider max.
+ * Both factors are already bounded (slider ≤ 2, follow ≤ 1) so this only bites
+ * if a loaded file carries something out of range — but the composition order in
+ * `uploadSpecies` is load-bearing, so it clamps where it composes.
+ *
+ * Impulse flashes multiply on top of this and are deliberately NOT bounded by
+ * it, exactly as deposit bursts are not bounded by MAX_EFFECTIVE_DEPOSIT: a
+ * flash has to stay legible on a species the stem lane is currently dimming.
+ */
+export const MAX_BRIGHTNESS = 2;
+
 export interface AdaptiveTriple {
   /** constant term */
   p1: number;
@@ -38,10 +50,13 @@ export interface AdaptiveTriple {
 export interface SpeciesConfig {
   name: string;
   /**
-   * Modulatable light, 0..2, default 1. Revision 2: hue is static art direction,
-   * *brightness* is what the music moves. Multiplies `intensity` in the
-   * compositor only — deliberately not wired into deposit, so it changes how the
-   * world looks without changing how it grows.
+   * Per-species light, 0..2, default 1. Multiplies `intensity` in the compositor
+   * only — deliberately not wired into deposit, so it changes how the world looks
+   * without changing how it grows.
+   *
+   * **Revision 4:** no longer modulated by the embedding (it flashed constantly).
+   * This is now the *base* that the stem-follow lane scales — with stem-follow
+   * off it is absolute again, exactly as in phase 4.
    */
   brightness: number;
   intensity: number;

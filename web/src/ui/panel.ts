@@ -322,8 +322,16 @@ function addRenderFolder(pane: Pane, sim: PhysarumSim): () => void {
 
 function addSpeciesFolder(root: Folder, index: number, s: SpeciesConfig): void {
   const f = root.addFolder({ title: `${index} · ${s.name}`, expanded: index === 0 });
-  f.addBinding(s, 'brightness', { min: 0, max: 2, step: 0.01, label: 'brightness (θ, fast)' });
-  f.addBinding(s, 'intensity', { min: 0, max: 4, step: 0.01 });
+  // Honest label, both ways round (Revision 4): the modulator never writes these
+  // any more, so with stem-follow off they are absolute, and with it on they are
+  // the base it scales. Which one is live is stated in the stem-follow folder.
+  f.addBinding(s, 'brightness', {
+    min: 0,
+    max: 2,
+    step: 0.01,
+    label: 'brightness (base × stem-follow)',
+  });
+  f.addBinding(s, 'intensity', { min: 0, max: 4, step: 0.01, label: 'intensity (manual)' });
   f.addBinding(s, 'deposit', { min: 0, max: 6, step: 0.01 });
   f.addBinding(s, 'decay', { min: 0.8, max: 1, step: 0.001 });
   f.addBinding(s, 'aliveFraction', { min: 0, max: 1, step: 0.01, label: 'alive fraction' });

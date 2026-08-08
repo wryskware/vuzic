@@ -6,6 +6,7 @@ import type { Sim } from '../types';
 import {
   defaultConfig,
   hexToLinear,
+  MAX_BRIGHTNESS,
   MAX_DEPOSIT,
   MAX_EFFECTIVE_DEPOSIT,
   paletteLinear,
@@ -87,6 +88,13 @@ export class PhysarumSim implements Sim {
    */
   private impulses: ImpulseState | null = null;
   private splashCount = 0;
+
+  /**
+   * Per-species brightness multiplier from the stem-follow lane (Revision 4),
+   * held by reference and mutated by its owner every tick, like `impulses`.
+   * Null means the lane is not wired at all and brightness is absolute.
+   */
+  private brightFollow: Float32Array | null = null;
 
   private globalsBuf!: GPUBuffer;
   private speciesBuf!: GPUBuffer;
@@ -217,6 +225,14 @@ export class PhysarumSim implements Sim {
    */
   setImpulses(state: ImpulseState | null): void {
     this.impulses = state;
+  }
+
+  /**
+   * Hand the sim the stem-follow lane's live multiplier array (length K). Held
+   * by reference: the owner writes it every tick and this never copies.
+   */
+  setBrightFollow(values: Float32Array | null): void {
+    this.brightFollow = values;
   }
 
   stats(): PhysarumStats {
@@ -972,13 +988,30 @@ export class PhysarumSim implements Sim {
       d[o + 13] = s.moveDist.p2;
       d[o + 14] = s.moveDist.p3;
       d[o + 15] = 0;
-      // Hue is static art direction (palette); brightness is the modulated half.
+      // Hue is static art direction (palette); brightness is the reactive half.
       // It multiplies the compositor weight only — never deposit — so light can
       // react hard without the trail field changing shape underneath it.
+      //
+      // Composition order, Revision 4, and it is the order the whole brightness
+      // rework depends on:
+      //
+      //   base (slider / θ)  ×  stem-follow  →  clamp to MAX_BRIGHTNESS
+      //                                          ×  impulse flash
+      //
+      // The stem lane is the slow, legible part ("the vocal dropped out, so the
+      // cyan species faded") and is clamped with the base. The flash is the fast
+      // transient part and multiplies *outside* that clamp, so a kick still reads
+      // on a species the stem lane is currently holding at its floor — the same
+      // argument as MAX_EFFECTIVE_DEPOSIT vs MAX_DEPOSIT for the deposit lane.
+      const follow = this.brightFollow ? (this.brightFollow[k] ?? 1) : 1;
+      const light = Math.min(
+        Math.max(s.brightness, 0) * Math.max(follow, 0),
+        MAX_BRIGHTNESS,
+      );
       d[o + 16] = this.paletteRgb[k * 3 + 0] as number;
       d[o + 17] = this.paletteRgb[k * 3 + 1] as number;
       d[o + 18] = this.paletteRgb[k * 3 + 2] as number;
-      d[o + 19] = s.intensity * Math.max(s.brightness, 0) * brightMul;
+      d[o + 19] = s.intensity * light * brightMul;
       // The one music hookup in phase 4: stem k scales species k's deposit.
       // Two clamps, not one. The stem-driven base saturates at
       // MAX_EFFECTIVE_DEPOSIT; the impulse burst then multiplies *that* and only

@@ -11,9 +11,19 @@
  * presets, temperature and distanceScale. A v1/v2 file still loads — its palette
  * and render block are the parts that were never scene-specific — and everything
  * else is discarded with one warning rather than silently reinterpreted.
+ *
+ * Version 4 (Revision 4) adds per-driver gains and the stem-follow block, and
+ * retires the `brightness` group depth. A v3 file is a *lossless* upgrade in the
+ * other direction: everything it carries still means what it meant, so it is
+ * kept whole, the gains default to 1 (nothing muted) and stem-follow adopts the
+ * shipped defaults. One warning, once per session.
  */
 import { MODULATION_VERSION, type BoundaryOptions, type ModulationConfig } from './types.ts';
 import { MOD_GROUPS, type ModGroup } from './preset.ts';
+// The one constant the loader and the live slider must agree on: raising it in
+// one place only would clip loaded files below what the workbench allows.
+import { MAX_DRIVER_GAIN } from './modulation.ts';
+import { defaultStemFollow, type StemFollowConfig } from './stemfollow.ts';
 import { defaultPalette, type Palette, type PhysarumConfig } from '../sim/physarum/config.ts';
 import {
   defaultRenderConfig,
@@ -47,7 +57,6 @@ export function defaultGroupDepth(): Record<ModGroup, number> {
     structure: 1,
     matrix: 0.7,
     population: 1,
-    brightness: 1,
     decay: 0.6,
   };
 }
@@ -63,6 +72,11 @@ export function defaultModulationConfig(base: PhysarumConfig): ModulationConfig 
     enabled: true,
     depth: 1,
     groupDepth: defaultGroupDepth(),
+    // Empty rather than filled: the driver count depends on the track's latent
+    // width, which nothing here knows. The Modulator sizes and normalises this
+    // on setConfig and writes the real array back.
+    driverGains: [],
+    stemFollow: defaultStemFollow(),
     responseSpeed: 1,
     slew: { ...DEFAULT_SLEW },
     boundary: { enabled: true, snapFraction: 0.6, respawnFraction: 0.12 },
@@ -156,8 +170,45 @@ function warnLegacy(version: number): void {
     `modulation: migrating a v${version} mapping file. Anchors, k-means centres, ` +
       'per-anchor presets, temperature and distanceScale are gone (plan.md Revision 3) ' +
       'and have been discarded. The palette and render blocks were kept; depths, ' +
-      'speeds and slew rates are back at the v3 defaults.',
+      'speeds and slew rates are back at the current defaults.',
   );
+}
+
+/** Same policy, different story: v3 → v4 loses nothing, so it says so. */
+let warnedV3 = false;
+
+function warnV3(): void {
+  if (warnedV3) return;
+  warnedV3 = true;
+  console.warn(
+    'modulation: migrating a v3 mapping file to v4 (plan.md Revision 4). Everything ' +
+      'it carried was kept; driver gains default to 1 (no driver muted) and the ' +
+      'stem-follow brightness lane adopts the shipped defaults. The `brightness` ' +
+      'group depth no longer exists — brightness left the projections for stem-follow.',
+  );
+}
+
+/**
+ * Gains are clamped, not rejected: this is a slider value, and a file with a
+ * silly number in it should still load with that driver simply pinned to the end
+ * of its range. Non-numbers fall back to 1, i.e. "not muted".
+ */
+function driverGains(v: unknown): number[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((x) =>
+    typeof x === 'number' && Number.isFinite(x) ? Math.min(Math.max(x, 0), MAX_DRIVER_GAIN) : 1,
+  );
+}
+
+function stemFollow(v: unknown): StemFollowConfig {
+  const o = (v ?? {}) as Record<string, unknown>;
+  const d = defaultStemFollow();
+  return {
+    enabled: o['enabled'] === undefined ? d.enabled : o['enabled'] !== false,
+    floor: Math.min(Math.max(num(o['floor'], 'stemFollow.floor', d.floor), 0), 1),
+    curve: Math.max(num(o['curve'], 'stemFollow.curve', d.curve), 0.01),
+    smoothingMs: Math.max(num(o['smoothingMs'], 'stemFollow.smoothingMs', d.smoothingMs), 1),
+  };
 }
 
 function boundary(v: unknown): BoundaryOptions {
@@ -197,15 +248,15 @@ export function parseModulation(text: string): ModulationConfig {
   const o = raw as Record<string, unknown>;
   if (!o || typeof o !== 'object') fail('top level is not an object');
   const version = o['version'];
-  if (version !== 3 && version !== 2 && version !== 1) {
+  if (version !== 4 && version !== 3 && version !== 2 && version !== 1) {
     fail(`unsupported version ${String(version)}`);
   }
   const speciesCount = count(o['speciesCount'], 'speciesCount', MAX_SPECIES_COUNT);
 
   // v1/v2: everything except palette and render described the anchor system.
   // Rebuild the rest from defaults rather than half-translating it.
-  if (version !== 3) {
-    warnLegacy(version as number);
+  if (version === 1 || version === 2) {
+    warnLegacy(version);
     return {
       version: MODULATION_VERSION,
       speciesCount,
@@ -214,11 +265,18 @@ export function parseModulation(text: string): ModulationConfig {
       enabled: true,
       depth: 1,
       groupDepth: defaultGroupDepth(),
+      driverGains: [],
+      stemFollow: defaultStemFollow(),
       responseSpeed: 1,
       slew: { ...DEFAULT_SLEW },
       boundary: boundary(o['boundary']),
     };
   }
+
+  // v3 → v4 keeps everything. The only fields it cannot have are the two new
+  // ones, which take their defaults; `groupDepth.brightness`, if present, is
+  // simply not read, because that group no longer exists.
+  if (version === 3) warnV3();
 
   return {
     version: MODULATION_VERSION,
@@ -228,6 +286,8 @@ export function parseModulation(text: string): ModulationConfig {
     enabled: o['enabled'] !== false,
     depth: num(o['depth'], 'depth', 1),
     groupDepth: groupDepth(o['groupDepth']),
+    driverGains: driverGains(o['driverGains']),
+    stemFollow: stemFollow(o['stemFollow']),
     responseSpeed: num(o['responseSpeed'], 'responseSpeed', 1),
     slew: slewRates(o['slew']),
     boundary: boundary(o['boundary']),

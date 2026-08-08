@@ -15,13 +15,18 @@
  *
  * Colour is NOT in here (plan.md Revision 2). Modulating hue muddied the image
  * and made species impossible to track, so the palette is static and lives in
- * `PhysarumConfig.palette` / `ModulationConfig.palette`. What θ carries instead
- * is a per-species `brightness`: light responds to the music, hue does not.
+ * `PhysarumConfig.palette` / `ModulationConfig.palette`.
  *
  * **Revision 3.** The simplex is gone; the same slot table now feeds a seeded
  * random-projection modulator. Each slot therefore carries a `ModSpec` — group,
  * excursion half-range, personality jitter, additive vs multiplicative — or
  * `null`, meaning "the sliders own this, the music never touches it".
+ *
+ * **Revision 4.** `brightness` and `intensity` are still θ fields (they are
+ * saved, slewed and seeded like everything else) but their `ModSpec` is now
+ * `null`: light is driven by the stem-follow lane, not by the projections. The
+ * `brightness` mod *group* is therefore gone entirely, along with its depth
+ * slider — there is nothing left in it.
  */
 import {
   MAX_EFFECTIVE_DEPOSIT,
@@ -76,15 +81,9 @@ const G_STEM_GAIN = 3;
  * Which lane of the workbench a slot answers to. One depth slider per group, so a
  * human can say "more shape, less light" without touching 92 numbers.
  */
-export type ModGroup = 'structure' | 'matrix' | 'population' | 'brightness' | 'decay';
+export type ModGroup = 'structure' | 'matrix' | 'population' | 'decay';
 
-export const MOD_GROUPS: readonly ModGroup[] = [
-  'structure',
-  'matrix',
-  'population',
-  'brightness',
-  'decay',
-];
+export const MOD_GROUPS: readonly ModGroup[] = ['structure', 'matrix', 'population', 'decay'];
 
 /**
  * How the music is allowed to move one slot.
@@ -166,10 +165,16 @@ const TRIPLE_BOUNDS = (
  * expect to see, not the excursion itself.
  */
 const SPECIES_BOUNDS: Bound[] = [
-  // Light. Revision 2 kept hue static and handed brightness to the music instead,
-  // so this is the group that must never be subtle.
-  { name: 'brightness', cls: CLASS_FAST, min: 0, max: 2, mod: add('brightness', 0.1, 2, 0.6, 0.3) },
-  { name: 'intensity', cls: CLASS_FAST, min: 0, max: 4, mod: add('brightness', 0.15, 3, 0.7, 0.4) },
+  // Light — **excluded from modulation since Revision 4**. Revision 2 handed
+  // brightness to the embedding; in use it flashed constantly, for reasons no
+  // viewer could name, and the user's call was to take it back. Brightness is
+  // now driven by `mapping/stemfollow.ts` — a species is as bright as its own
+  // stem is loud — and `intensity` goes with it, because it is the same lane
+  // (it multiplies brightness in the compositor) and modulating one half of a
+  // product you have deliberately stopped modulating is just the flashing back
+  // under another name. Both stay on the sliders in both modes.
+  { name: 'brightness', cls: CLASS_FAST, min: 0, max: 2, mod: null },
+  { name: 'intensity', cls: CLASS_FAST, min: 0, max: 4, mod: null },
   // Deposit is multiplicative: it is a rate, and ±0.7 in ln space is ×0.5…×2,
   // which reads the same whether the base landed at 0.4 or at 3.
   {

@@ -1,40 +1,63 @@
 /**
- * Seeded random-projection modulation — plan.md Revision 3, and the whole of the
- * mapping layer now that anchors, k-means and the simplex are gone.
+ * Seeded random-projection modulation over a **named driver bank** — plan.md
+ * Revision 4, and the whole of the mapping layer now that anchors, k-means and
+ * the simplex are gone.
  *
- *   ẑ (per-dim z-scored embedding, 10 Hz)
- *        │
- *        ├── w₀·ẑ ──► tanh ──► base₀ + half₀·(…) ──┐
- *        ├── w₁·ẑ ──► tanh ──► base₁ · exp(…)   ───┤  per-class slew  ──► PhysarumConfig
- *        └── …                                     ┘
+ *   timeline ──► DriverBank (D ≈ 16 named, z-scored channels, 10 Hz)
+ *                     │
+ *                gains ⊙ ẑ          ← the tuning surface: one slider per driver
+ *                     │
+ *        ├── w₀·(g⊙ẑ) ──► tanh ──► base₀ + half₀·(…) ──┐
+ *        ├── w₁·(g⊙ẑ) ──► tanh ──► base₁ · exp(…)   ───┤ per-class slew ──► config
+ *        └── …                                        ┘
  *
- * Each modulatable parameter owns a random unit direction wᵢ in signal space,
- * keyed on hash(seed, i). With a z-scored input and a unit projection, wᵢ·ẑ is
- * roughly N(0,1) whatever the track, which is the entire reason the depths mean
- * the same thing everywhere and can be shipped LEGIBLE rather than cautious.
+ * **Why the bank exists.** Revision 3 projected from the raw 1024-dim MuQ
+ * embedding. That reacts to everything and isolates nothing: every parameter is
+ * a different random blend of a thousand unnamed directions, so when the image
+ * does something you cannot say what in the music caused it, and there is no
+ * knob that means anything. Nobody can tune 1024 weights. So the input is now a
+ * short bank of channels a human can name, meter and mute:
  *
- * `tanh` is the bound: the excursion can never leave ±halfᵢ, so no depth setting
- * can put a parameter outside its authored range and the final `clamp` is belt
- * and braces rather than the thing doing the work. Physarum tolerates arbitrary
- * in-range sweeps — that is why it was chosen (Decision 3) — so "always bounded,
- * always moving" is a complete safety argument.
+ *   0..2   novelty·4bar, novelty·16bar, chorus-ness  — the structure channels,
+ *          shipped in the timeline since v2 and never used until now
+ *   3..D   pc-1 … pc-13, the highest-variance components of the 64-dim latent
+ *
+ * Each is z-scored per track, so w·ẑ is still ~N(0,1) and the depths still mean
+ * the same thing on any song. Each has a gain (0..2, default 1) applied *before*
+ * the projection, so muting a driver silences it in every wiring at once — which
+ * is the property that makes the bank a tuning surface rather than a readout.
+ *
+ * **Variance reordering.** The analysis PCA emits components in variance order,
+ * but the post-PCA smoothing stage does not preserve that ordering (it is a
+ * per-dimension filter with the same coefficients, applied to signals with very
+ * different spectra). Measured on Free Fall, the stored order is 0, 2, 4, 5, 8,
+ * 11, 6 … — dims 1 and 3 carry less variance than dim 8. So the bank measures
+ * variance over the actual track at load and sorts descending. pc-1 is then the
+ * component that genuinely moves most, which is what makes the top 13 the right
+ * 13 to keep.
+ *
+ * `tanh` is the bound: the excursion can never leave ±halfᵢ, so no depth or gain
+ * setting can put a parameter outside its authored range and the final `clamp`
+ * is belt and braces. Physarum tolerates arbitrary in-range sweeps — that is why
+ * it was chosen (Decision 3) — so "always bounded, always moving" is a complete
+ * safety argument.
  *
  * The seed does three jobs at once and they are deliberately the same seed:
- *   wiring    — which embedding directions move which parameter
+ *   wiring    — which drivers move which parameter
  *   base      — the *personality*, jittered around the shipped defaults
  *   the world — agent positions and impulse hotspots (the sim's own use)
  * so "reroll" is one act and a pinned seed reproduces the run exactly.
  *
- * What this is NOT: it does not learn, and it does not know what any embedding
- * dimension means. It is the zero-training baseline of the distilled-NN mapping
- * in plan.md's "Later", and the reroll/keep choices it produces are that NN's
- * preference data.
+ * Brightness is **not** here any more (Revision 4): it left the registry for the
+ * stem-follow lane in `stemfollow.ts`, which this class drives every tick in
+ * both manual and modulated mode.
  */
 import { hash3 } from '../sim/impulses.ts';
 import type { PhysarumSim } from '../sim/physarum/physarum.ts';
 import { mergeRenderConfig } from '../sim/render/config.ts';
 import type { FeaturesFrame, TimelineSampler } from '../timeline/sampler.ts';
-import type { Embedding, Timeline } from '../timeline/types.ts';
+import type { Timeline } from '../timeline/types.ts';
+import { STEM_NAMES } from '../timeline/types.ts';
 import {
   applyVector,
   CLASS_SLOW,
@@ -49,6 +72,7 @@ import {
   type ModSpec,
 } from './preset.ts';
 import { SlewLimiter } from './slew.ts';
+import { StemFollow } from './stemfollow.ts';
 import type { ModulationConfig } from './types.ts';
 
 /** mulberry32 — small, fast, deterministic across engines for a u32 seed. */
@@ -68,99 +92,123 @@ const KEY_WIRING = 0x5eed_0117;
 const KEY_BASE = 0x0000_ba5e;
 
 /**
- * z-scores beyond this are clipped. Real embeddings have heavy tails on a few
- * dims (a silent intro is genuinely 8σ from the mean of a loud track) and one
- * such dim would otherwise dominate every projection it appears in. ±4 keeps
+ * z-scores beyond this are clipped. Real music channels have heavy tails on a
+ * few dims (a silent intro is genuinely 8σ from the mean of a loud track) and
+ * one such dim would otherwise dominate every projection it appears in. ±4 keeps
  * >99.99% of a normal signal untouched and turns the outliers into a plateau.
  */
 export const Z_CLAMP = 4;
 
-export type SignalKind = 'embedding' | 'latent';
+/** Gain range for a driver. 0 mutes it everywhere; 2 doubles its say. */
+export const MAX_DRIVER_GAIN = 2;
 
 /**
- * The modulator's input, z-scored per dimension over the whole track at load.
+ * Largest tick step that counts as continuous playback. 1 is a normal advance and
+ * 0 is an idle transport re-ticking the same position; anything else is a seek.
+ * Same threshold, and the same reasoning, as `EventCursor`'s walk gap.
+ */
+export const MAX_CONTINUOUS_TICK_GAP = 1;
+
+/**
+ * The named structure drivers, in bank order. These are 1-dim timeline channels
+ * that have shipped since the v2 format and were never read by the runtime until
+ * Revision 4. A track missing one keeps the slot (as a constant, contributing
+ * exactly nothing) so that driver indices — and therefore saved gains and the
+ * seeded wiring — do not shift between tracks.
+ */
+export const STRUCTURE_DRIVERS: readonly { channel: string; name: string }[] = [
+  { channel: 'novelty4', name: 'novelty·4bar' },
+  { channel: 'novelty16', name: 'novelty·16bar' },
+  { channel: 'actChorus', name: 'chorus-ness' },
+];
+
+/** How many latent components join the bank. 3 + 13 = 16 sliders, which is tunable by a human. */
+export const PC_DRIVER_COUNT = 13;
+
+/**
+ * The modulator's input: D named channels, z-scored per dimension over the whole
+ * track at load.
  *
  * Per-*track* standardisation is the point: it makes "how unusual is this moment
  * for this song" the signal, rather than "where does this song sit among all
- * songs", and it is what lets one set of depths work on any track. Cost is one
- * pass over frames x dims (2725 x 1024 is ~3 M floats — a few ms) and one copy.
+ * songs", and it is what lets one set of depths work on any track.
  */
-export class ModulationSignal {
-  readonly kind: SignalKind;
+export class DriverBank {
   readonly dims: number;
   readonly frames: number;
   readonly hopSeconds: number;
   readonly source: string;
+  /** display names, index-aligned with the bank */
+  readonly names: readonly string[];
+  /** latent dim each driver came from, or -1 for a structure channel */
+  readonly sources: Int32Array;
+  /** raw (pre-z) variance of each driver over the track — the reordering evidence */
+  readonly variance: Float64Array;
   readonly mean: Float64Array;
   readonly std: Float64Array;
   /** frames x dims, already z-scored and clipped */
   private readonly z: Float32Array;
 
   constructor(
-    kind: SignalKind,
-    raw: Float32Array,
+    columns: readonly { name: string; source: number; read: (frame: number) => number }[],
     frames: number,
-    dims: number,
     hopSeconds: number,
     source: string,
-    stride = dims,
-    offset = 0,
   ) {
-    this.kind = kind;
+    const dims = columns.length;
     this.dims = dims;
     this.frames = frames;
     this.hopSeconds = hopSeconds;
     this.source = source;
+    this.names = columns.map((c) => c.name);
+    this.sources = Int32Array.from(columns.map((c) => c.source));
+    this.variance = new Float64Array(dims);
     this.mean = new Float64Array(dims);
     this.std = new Float64Array(dims);
     this.z = new Float32Array(frames * dims);
 
     // Non-finite samples are excluded here and written as z = 0 below. This is
     // the *only* place the float path is checked, and it has to be: a single NaN
-    // in the sidecar would otherwise poison mean[d]/std[d] for that dimension,
-    // and NaN fails every `<`/`>` comparison so neither the z clamp nor the
-    // target clamp downstream would catch it — it would reach SlewLimiter.step,
-    // whose state is a feedback term, and latch there for the rest of the run.
-    const counts = new Int32Array(dims);
-    for (let f = 0; f < frames; f++) {
-      const o = f * stride + offset;
-      for (let d = 0; d < dims; d++) {
-        const x = raw[o + d] as number;
-        if (!Number.isFinite(x)) continue;
-        this.mean[d] = (this.mean[d] as number) + x;
-        counts[d] = (counts[d] as number) + 1;
-      }
-    }
-    for (let d = 0; d < dims; d++)
-      this.mean[d] = (this.mean[d] as number) / Math.max(counts[d] as number, 1);
-    for (let f = 0; f < frames; f++) {
-      const o = f * stride + offset;
-      for (let d = 0; d < dims; d++) {
-        const x = raw[o + d] as number;
-        if (!Number.isFinite(x)) continue;
-        const delta = x - (this.mean[d] as number);
-        this.std[d] = (this.std[d] as number) + delta * delta;
-      }
-    }
+    // would otherwise poison mean[d]/std[d] for that driver, and NaN fails every
+    // `<`/`>` comparison so neither the z clamp nor the target clamp downstream
+    // would catch it — it would reach SlewLimiter.step, whose state is a feedback
+    // term, and latch there for the rest of the run.
     let bad = 0;
     for (let d = 0; d < dims; d++) {
-      // Population sd. A constant dimension gets sd 0 and is floored to 1, which
-      // makes its z exactly 0 forever — it contributes nothing rather than NaN.
-      const v = Math.sqrt((this.std[d] as number) / Math.max(counts[d] as number, 1));
-      this.std[d] = v > 1e-12 ? v : 1;
-    }
-    for (let f = 0; f < frames; f++) {
-      const o = f * stride + offset;
-      const q = f * dims;
-      for (let d = 0; d < dims; d++) {
-        const x = raw[o + d] as number;
+      const read = (columns[d] as { read: (f: number) => number }).read;
+      let sum = 0;
+      let n = 0;
+      for (let f = 0; f < frames; f++) {
+        const x = read(f);
+        if (!Number.isFinite(x)) continue;
+        sum += x;
+        n++;
+      }
+      const mean = sum / Math.max(n, 1);
+      let acc = 0;
+      for (let f = 0; f < frames; f++) {
+        const x = read(f);
+        if (!Number.isFinite(x)) continue;
+        acc += (x - mean) * (x - mean);
+      }
+      // Population variance. A constant driver gets sd 0, floored to 1 below,
+      // which makes its z exactly 0 forever — it contributes nothing rather
+      // than NaN.
+      const varv = acc / Math.max(n, 1);
+      const sd = Math.sqrt(varv);
+      this.mean[d] = mean;
+      this.variance[d] = varv;
+      this.std[d] = sd > 1e-12 ? sd : 1;
+      const inv = 1 / (this.std[d] as number);
+      for (let f = 0; f < frames; f++) {
+        const x = read(f);
         if (!Number.isFinite(x)) {
-          this.z[q + d] = 0;
+          this.z[f * dims + d] = 0;
           bad++;
           continue;
         }
-        const v = (x - (this.mean[d] as number)) / (this.std[d] as number);
-        this.z[q + d] = v < -Z_CLAMP ? -Z_CLAMP : v > Z_CLAMP ? Z_CLAMP : v;
+        const v = (x - mean) * inv;
+        this.z[f * dims + d] = v < -Z_CLAMP ? -Z_CLAMP : v > Z_CLAMP ? Z_CLAMP : v;
       }
     }
     if (bad > 0)
@@ -170,7 +218,7 @@ export class ModulationSignal {
   }
 
   get label(): string {
-    return `${this.kind === 'embedding' ? 'embedding' : 'latent'}-${this.dims}`;
+    return `drivers-${this.dims}`;
   }
 
   /**
@@ -197,45 +245,90 @@ export class ModulationSignal {
 }
 
 /**
- * Pick the widest input the track actually shipped. The 1024-dim sidecar is
- * preferred (plan.md Revision 3: "the PCA intermediate is no longer
- * load-bearing"); a fresh clone has it gitignored away, so the 64-dim PCA
- * `latent` channel is a first-class fallback and says so once.
+ * Rank latent dimensions by their variance over this track, descending.
+ * Exported because "the stored order is not the variance order" is the claim
+ * Revision 4 rests on, and it is worth a test rather than a comment.
  */
-export function embeddingSignal(emb: Embedding): ModulationSignal | null {
-  if (emb.dims <= 0 || emb.frames <= 0) return null;
-  return new ModulationSignal(
-    'embedding',
-    emb.data,
-    emb.frames,
-    emb.dims,
-    emb.hopSeconds,
-    emb.source,
-  );
+export function varianceOrder(
+  data: Float32Array,
+  frames: number,
+  stride: number,
+  offset: number,
+  dims: number,
+): Int32Array {
+  const varv = new Float64Array(dims);
+  for (let d = 0; d < dims; d++) {
+    let sum = 0;
+    let n = 0;
+    for (let f = 0; f < frames; f++) {
+      const x = data[f * stride + offset + d] as number;
+      if (!Number.isFinite(x)) continue;
+      sum += x;
+      n++;
+    }
+    const mean = sum / Math.max(n, 1);
+    let acc = 0;
+    for (let f = 0; f < frames; f++) {
+      const x = data[f * stride + offset + d] as number;
+      if (!Number.isFinite(x)) continue;
+      acc += (x - mean) * (x - mean);
+    }
+    varv[d] = acc / Math.max(n, 1);
+  }
+  const order = Int32Array.from({ length: dims }, (_, i) => i);
+  // Ties break on the stored index, so the bank is a pure function of the file.
+  return order.sort((a, b) => {
+    const dv = (varv[b] as number) - (varv[a] as number);
+    return dv !== 0 ? dv : a - b;
+  });
 }
 
-export function chooseSignal(timeline: Timeline, channelName = 'latent'): ModulationSignal | null {
-  const emb = timeline.embedding;
-  if (emb) {
-    const wide = embeddingSignal(emb);
-    if (wide) return wide;
+/**
+ * Build the bank from a timeline. The 64-dim `latent` channel is the sole PCA
+ * source — Revision 4 deleted the 11 MB raw-embedding sidecar path, and since
+ * `latent` is always present in a v2 timeline there is no longer a cold/warm
+ * distinction: the input is the same from the first frame to the last.
+ */
+export function buildDriverBank(timeline: Timeline, channelName = 'latent'): DriverBank | null {
+  const { data, stride } = timeline;
+  const { frames, hopSeconds } = timeline.manifest.grid;
+  const latent = timeline.channels.get(channelName);
+  if (!latent || latent.dims === 0) {
+    console.warn(`modulation: timeline has no usable "${channelName}" channel; nothing to drive from`);
+    return null;
   }
-  const c = timeline.channels.get(channelName);
-  if (!c || c.dims === 0) return null;
+
+  const columns: { name: string; source: number; read: (frame: number) => number }[] = [];
+  const missing: string[] = [];
+  for (const spec of STRUCTURE_DRIVERS) {
+    const c = timeline.channels.get(spec.channel);
+    if (!c || c.dims === 0) {
+      missing.push(spec.channel);
+      // Keep the slot: driver indices (and therefore saved gains and the seeded
+      // wiring) must not shift because one optional channel is absent.
+      columns.push({ name: `${spec.name} (absent)`, source: -1, read: () => 0 });
+      continue;
+    }
+    const o = c.offset;
+    columns.push({ name: spec.name, source: -1, read: (f) => data[f * stride + o] as number });
+  }
+  if (missing.length > 0)
+    console.warn(`modulation: structure channel(s) ${missing.join(', ')} absent; those drivers read 0`);
+
+  const order = varianceOrder(data, frames, stride, latent.offset, latent.dims);
+  const take = Math.min(PC_DRIVER_COUNT, latent.dims);
+  for (let i = 0; i < take; i++) {
+    const dim = order[i] as number;
+    const o = latent.offset + dim;
+    columns.push({ name: `pc-${i + 1}`, source: dim, read: (f) => data[f * stride + o] as number });
+  }
+
+  const bank = new DriverBank(columns, frames, hopSeconds, `timeline "${channelName}" + structure`);
   console.info(
-    `modulation: driving from the ${c.dims}-dim "${channelName}" channel` +
-      ' (the wide sidecar upgrades this in the background if the track ships one)',
+    `modulation: ${bank.dims} drivers — ${bank.names.join(', ')}` +
+      ` (pc order from latent dims ${Array.from(bank.sources.slice(STRUCTURE_DRIVERS.length)).join(',')})`,
   );
-  return new ModulationSignal(
-    'latent',
-    timeline.data,
-    timeline.manifest.grid.frames,
-    c.dims,
-    timeline.manifest.grid.hopSeconds,
-    `timeline channel "${channelName}"`,
-    timeline.stride,
-    c.offset,
-  );
+  return bank;
 }
 
 /**
@@ -336,8 +429,15 @@ export class Modulator {
   /** hold the current ẑ: parameters stop morphing, slew still settles */
   frozen = false;
 
-  /** Swappable: the wide sidecar arrives after first paint (see `attachSignal`). */
-  signal: ModulationSignal | null;
+  /** The named input bank. Null only when the timeline has no latent channel at all. */
+  readonly drivers: DriverBank | null;
+
+  /**
+   * The brightness lane (Revision 4). Runs in *both* modes — it is not modulation,
+   * it is a direct wire from a stem to its species' light — so muting every driver
+   * gain still leaves an image that breathes with the arrangement.
+   */
+  readonly stemFollow: StemFollow;
 
   private readonly sim: PhysarumSim;
   private readonly sampler: TimelineSampler;
@@ -350,28 +450,40 @@ export class Modulator {
   private readonly mask: Uint8Array;
   private readonly length: number;
   /** length x dims, row-major; row i is parameter i's projection direction */
-  private w: Float32Array;
+  private readonly w: Float32Array;
   private readonly base: Float64Array;
   private readonly target: Float64Array;
   private readonly defaults: Float64Array;
-  private zbuf: Float32Array;
+  /** live z per driver — also what the workbench meters read */
+  private readonly zbuf: Float32Array;
+  /** gains ⊙ z, rebuilt once per tick and shared by every projection */
+  private readonly gz: Float32Array;
+  /** scratch ẑ for `targetFor`, so the scripting hook never writes live state */
+  private readonly probe: Float32Array;
+  /** per-driver gain, mirrored into cfg.driverGains so it persists */
+  private readonly gains: Float32Array;
+  /** stems row for the follow lane; length K, allocation-free */
+  private readonly stemRow: Float32Array;
+  private readonly stemChannel: { offset: number; dims: number } | null;
   private slew!: SlewLimiter;
 
   private readonly excursionSum: Float64Array = new Float64Array(MOD_GROUPS.length);
   private readonly excursionCount: Int32Array = new Int32Array(MOD_GROUPS.length);
   private lastSegment = -2;
+  /** NaN until the first tick, so the first update snaps rather than fades in. */
+  private lastTick = Number.NaN;
 
   constructor(
     sim: PhysarumSim,
     sampler: TimelineSampler,
-    signal: ModulationSignal | null,
+    drivers: DriverBank | null,
     config: ModulationConfig,
     seed: number,
     events: ModulatorEvents = {},
   ) {
     this.sim = sim;
     this.sampler = sampler;
-    this.signal = signal;
+    this.drivers = drivers;
     this.events = events;
     this.seed = seed >>> 0;
 
@@ -384,8 +496,18 @@ export class Modulator {
     this.defaults = presetToVector(presetFromConfig(sim.config), k);
     this.base = new Float64Array(this.length);
     this.target = new Float64Array(this.length);
-    this.zbuf = new Float32Array(signal?.dims ?? 0);
-    this.w = new Float32Array(this.length * (signal?.dims ?? 0));
+    const dims = drivers?.dims ?? 0;
+    this.zbuf = new Float32Array(dims);
+    this.gz = new Float32Array(dims);
+    this.probe = new Float32Array(dims);
+    this.gains = new Float32Array(dims).fill(1);
+    this.w = new Float32Array(this.length * dims);
+
+    const stems = sampler.getChannel('stems');
+    this.stemChannel = stems && stems.dims > 0 ? { offset: stems.offset, dims: stems.dims } : null;
+    this.stemRow = new Float32Array(k);
+    this.stemFollow = new StemFollow(k, Math.min(this.stemChannel?.dims ?? 0, STEM_NAMES.length));
+    sim.setBrightFollow(this.stemFollow.multiplier);
 
     this.setConfig(config);
     this.rewire();
@@ -401,17 +523,15 @@ export class Modulator {
 
   /** Modulation needs an input; without one the app is a slider box, honestly. */
   get available(): boolean {
-    return this.signal !== null;
+    return this.drivers !== null;
   }
 
   get unavailableReason(): string {
-    return this.signal
-      ? ''
-      : 'no embedding sidecar and no "latent" channel — nothing to project from';
+    return this.drivers ? '' : 'the timeline has no "latent" channel — nothing to build drivers from';
   }
 
   get sourceLabel(): string {
-    return this.signal ? this.signal.label : 'none';
+    return this.drivers ? this.drivers.label : 'none';
   }
 
   /** How many slots the music actually moves, of how many in θ. */
@@ -419,6 +539,37 @@ export class Modulator {
     let n = 0;
     for (const m of this.mask) n += m;
     return n;
+  }
+
+  // ── the driver bank, as the workbench sees it ──────────────────────────────
+
+  get driverCount(): number {
+    return this.drivers?.dims ?? 0;
+  }
+
+  driverName(index: number): string {
+    return this.drivers?.names[index] ?? `driver ${index}`;
+  }
+
+  /** Live z of driver `index` — the meter value. Updated in both modes. */
+  driverValue(index: number): number {
+    return this.zbuf[index] ?? 0;
+  }
+
+  driverGain(index: number): number {
+    return this.gains[index] ?? 1;
+  }
+
+  /** Gains live in the config so they persist; the Float32Array is the hot copy. */
+  setDriverGain(index: number, value: number): void {
+    if (index < 0 || index >= this.gains.length) return;
+    const g = Math.min(Math.max(Number.isFinite(value) ? value : 1, 0), MAX_DRIVER_GAIN);
+    this.gains[index] = g;
+    this.cfg.driverGains[index] = g;
+  }
+
+  setAllDriverGains(value: number): void {
+    for (let d = 0; d < this.gains.length; d++) this.setDriverGain(d, value);
   }
 
   setConfig(config: ModulationConfig): void {
@@ -436,6 +587,24 @@ export class Modulator {
     mergeRenderConfig(this.sim.config.render, config.render);
     config.render = this.sim.config.render;
     this.sim.invalidatePalette();
+
+    // Gains are authored against a driver count the file cannot know (it depends
+    // on the track's latent width), so adopt what fits and default the rest to 1,
+    // then write the normalised array back — the config is what gets saved.
+    //
+    // Only the prefix is overwritten. Anything past this track's driver count is
+    // carried through untouched, because the config object is what the workbench
+    // autosaves and serialises: truncating here would mean loading a file on a
+    // track with a narrower latent (or none at all, where the bank is null and
+    // this length is 0) silently destroys the rest of the user's saved gains.
+    const gains = config.driverGains.slice();
+    for (let d = 0; d < this.gains.length; d++) {
+      const v = gains[d];
+      const g = typeof v === 'number' && Number.isFinite(v) ? Math.min(Math.max(v, 0), MAX_DRIVER_GAIN) : 1;
+      this.gains[d] = g;
+      gains[d] = g;
+    }
+    config.driverGains = gains;
 
     this.slew = new SlewLimiter(fieldClasses(k), config.slew);
     this.slew.reset(presetToVector(presetFromConfig(this.sim.config), k));
@@ -468,31 +637,10 @@ export class Modulator {
     this.applyBase();
   }
 
-  /**
-   * Swap in a wider input that landed after startup. The 1024-dim sidecar is
-   * ~11 MB and awaiting it before the first frame meant a blank canvas for the
-   * whole download on any real network, so the app boots on the 64-dim PCA
-   * fallback and upgrades here when the fetch resolves.
-   *
-   * The seeded personality is unchanged by this (it does not depend on the
-   * input), but the *wiring* does — the projection rows are dims-long — so this
-   * rewires. Visible effect is a smooth move through the slew limiter to a
-   * different point in the same bounded ranges, which is what modulation does
-   * every tick anyway.
-   */
-  attachSignal(signal: ModulationSignal): void {
-    this.signal = signal;
-    this.zbuf = new Float32Array(signal.dims);
-    this.w = new Float32Array(this.length * signal.dims);
-    this.rewire();
-    console.info(`modulation: upgraded input to ${signal.label} (${signal.source})`);
-  }
-
   /** Rebuild projections and personality for the current seed. */
   private rewire(): void {
-    const dims = this.signal?.dims ?? 0;
+    const dims = this.drivers?.dims ?? 0;
     if (dims > 0) {
-      if (this.w.length !== this.length * dims) this.w = new Float32Array(this.length * dims);
       const row = new Float32Array(dims);
       for (let i = 0; i < this.length; i++) {
         if (this.mask[i] !== 1) continue;
@@ -516,7 +664,7 @@ export class Modulator {
 
   /** Projection direction of one slot, copied. Exported shape for tests. */
   direction(index: number): Float32Array {
-    const dims = this.signal?.dims ?? 0;
+    const dims = this.drivers?.dims ?? 0;
     return this.w.slice(index * dims, index * dims + dims);
   }
 
@@ -550,6 +698,23 @@ export class Modulator {
    * multiply on top of whatever this wrote and are never slewed through it.
    */
   update(frame: FeaturesFrame, dt: number): void {
+    // Transport discontinuity detection, same policy as `EventCursor`: playback
+    // advances one tick, an idle transport repeats the same tick (gap 0), and
+    // anything else — restart, arrow-key seek, A/B restore, overlay scrub — is a
+    // jump. The stem-follow EMA has to snap across one, because its state belongs
+    // to the position we just left; fading over ~300 ms into the new position is
+    // precisely what makes an A/B restore fail to reproduce the snapshot moment's
+    // brightness. Nothing calls a reset for this: every seek path in the app ends
+    // up here, so detecting it is the only way to cover all of them.
+    const gap = frame.tick - this.lastTick;
+    const jumped = !(gap >= 0 && gap <= MAX_CONTINUOUS_TICK_GAP);
+    this.lastTick = frame.tick;
+
+    // The brightness lane, ahead of everything and outside the mode check: it is
+    // a direct wire, not modulation, so it works in manual mode and it survives
+    // every driver gain being muted.
+    this.updateStemFollow(frame, dt, jumped);
+
     // Boundary re-seed is an *event*, not scene machinery (Revision 3), so it
     // fires on its own toggle regardless of whether modulation is driving.
     // Segment tracking runs unconditionally and the toggle gates the *response*.
@@ -563,10 +728,13 @@ export class Modulator {
       this.events.onSectionChange?.(this.lastSegment, this.cfg.boundary.respawnFraction);
     }
 
-    if (this.mode !== 'modulated' || !this.signal) return;
+    // Sampled in both modes so the workbench meters are live even with modulation
+    // off — the bank is an instrument panel first and an input second.
+    if (this.drivers && !this.frozen) this.drivers.sample(frame.time, this.zbuf);
 
-    if (!this.frozen) this.signal.sample(frame.time, this.zbuf);
-    this.computeTarget();
+    if (this.mode !== 'modulated' || !this.drivers) return;
+
+    this.computeTarget(this.zbuf);
 
     if (boundaryHit) this.slew.snapClass(CLASS_SLOW, this.target, this.cfg.boundary.snapFraction);
 
@@ -575,6 +743,18 @@ export class Modulator {
     const v = this.slew.step(this.target, dt * Math.max(this.cfg.responseSpeed, 0));
     applyVector(this.sim.config, v, this.mask);
     this.sim.uploadMatrix();
+  }
+
+  private updateStemFollow(frame: FeaturesFrame, dt: number, snap: boolean): void {
+    const c = this.stemChannel;
+    if (!c) {
+      this.stemFollow.update(null, dt, this.cfg.stemFollow, snap);
+      return;
+    }
+    for (let k = 0; k < this.stemRow.length; k++) {
+      this.stemRow[k] = k < c.dims ? (frame.values[c.offset + k] ?? 0) : 0;
+    }
+    this.stemFollow.update(this.stemRow, dt, this.cfg.stemFollow, snap);
   }
 
   /** Advance `lastSegment`; true only for a genuine crossing (never the first sight). */
@@ -586,9 +766,14 @@ export class Modulator {
     return !first;
   }
 
-  private computeTarget(): void {
-    const dims = this.signal?.dims ?? 0;
-    const z = this.zbuf;
+  private computeTarget(z: ArrayLike<number>): void {
+    const dims = this.drivers?.dims ?? 0;
+    const gz = this.gz;
+    // One multiply per driver per tick, then every projection reads the same
+    // vector: a gain of 0 is therefore *exactly* zero in every wiring, not
+    // approximately zero in most of them.
+    for (let d = 0; d < dims; d++) gz[d] = (this.gains[d] as number) * ((z[d] as number) ?? 0);
+
     const w = this.w;
     const depth = Math.max(this.cfg.depth, 0);
     this.excursionSum.fill(0);
@@ -605,7 +790,7 @@ export class Modulator {
       const gd = this.cfg.groupDepth[spec.group] ?? 1;
       let raw = 0;
       const o = i * dims;
-      for (let d = 0; d < dims; d++) raw += (w[o + d] as number) * (z[d] as number);
+      for (let d = 0; d < dims; d++) raw += (w[o + d] as number) * (gz[d] as number);
       const e = Math.tanh(depth * Math.max(gd, 0) * raw);
       const v = spec.mult ? base * Math.exp(spec.half * e) : base + spec.half * e;
       // NaN-safe on purpose: `<`/`>` both answer false for NaN, so a plain clamp
@@ -628,12 +813,19 @@ export class Modulator {
 
   /**
    * The target vector for an arbitrary ẑ, without touching the sim. Pure, and
-   * the hook the bounds / determinism / group-isolation tests drive.
+   * the hook the bounds / determinism / gain-gating tests drive.
+   *
+   * It writes into its own scratch buffer rather than `zbuf`, which since
+   * Revision 4 is live state: the workbench meters read it every refresh, and in
+   * `frozen` mode `update` deliberately stops resampling it, so stamping a
+   * synthetic vector there would show up on the meters and — frozen — hold as the
+   * ẑ the parameters slew toward. A scripting hook must not be able to do that.
    */
   targetFor(z: ArrayLike<number>, out = new Float64Array(this.length)): Float64Array {
-    const dims = this.signal?.dims ?? 0;
-    for (let d = 0; d < dims; d++) this.zbuf[d] = (z[d] as number) ?? 0;
-    this.computeTarget();
+    const dims = this.drivers?.dims ?? 0;
+    const scratch = this.probe;
+    for (let d = 0; d < dims; d++) scratch[d] = (z[d] as number) ?? 0;
+    this.computeTarget(scratch);
     out.set(this.target);
     return out;
   }
