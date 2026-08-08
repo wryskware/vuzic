@@ -10,7 +10,9 @@
  *
  * Section boundaries are the exception — see `snapClass`.
  */
-import { CLASS_FAST, CLASS_MEDIUM, CLASS_SLOW } from './preset.ts';
+// From modspec.ts, not preset.ts: the limiter only needs the class *vocabulary*,
+// and it has no business depending on physarum's slot table to get it.
+import { CLASS_FAST, CLASS_MEDIUM, CLASS_SLOW } from './modspec.ts';
 
 export interface SlewRates {
   /** brightness, deposit, sensor angle — tracks the 10 Hz signal */

@@ -67,30 +67,48 @@ export function followMultiplier(activity: number, cfg: StemFollowConfig): numbe
  * Per-species brightness multipliers, mutated in place every tick. The sim holds
  * the `multiplier` array by reference (exactly like `ImpulseState`), so nothing
  * is copied per frame and nothing has to be re-fetched.
+ *
+ * **The keying is data, not code.** Which species follows which stem arrives as
+ * a map from the sim (`ModTarget.stemMap`) rather than being the identity baked
+ * in here. That is the seam live-mode-notes asks for — "species keyed to sound
+ * sources should be config, not code" — and it is what lets a second substrate
+ * key three particle types to four stems, or a future UI re-key by hand, without
+ * this class knowing anything about it. Omitting the map reproduces the old
+ * behaviour exactly: species k follows stem k while k < stemDims.
  */
 export class StemFollow {
   /** length K; 1.0 = untouched. Read by PhysarumSim.uploadSpecies. */
   readonly multiplier: Float32Array;
   /** length K; the smoothed stem level behind each multiplier, for the readout */
   readonly activity: Float32Array;
-  /** 1 where species k is keyed to a stem; species past the stem count are left alone */
-  private readonly keyed: Uint8Array;
+  /** length K; species k's stem index, or -1 where it follows nothing */
+  private readonly stem: Int32Array;
 
-  constructor(speciesCount: number, stemDims: number) {
+  constructor(speciesCount: number, stemDims: number, map?: ArrayLike<number>) {
     const k = Math.max(1, speciesCount);
     this.multiplier = new Float32Array(k).fill(1);
     this.activity = new Float32Array(k);
-    this.keyed = new Uint8Array(k);
-    for (let i = 0; i < k; i++) this.keyed[i] = i < stemDims ? 1 : 0;
+    this.stem = new Int32Array(k);
+    for (let i = 0; i < k; i++) {
+      // Sanitised, not trusted: an out-of-range entry would read past the stems
+      // row (or before it) every tick, and `undefined` from a short map would
+      // propagate as NaN through the EMA and latch there.
+      if (map === undefined) {
+        this.stem[i] = i < stemDims ? i : -1;
+        continue;
+      }
+      const s = map[i];
+      this.stem[i] = typeof s === 'number' && s >= 0 && s < stemDims ? Math.floor(s) : -1;
+    }
   }
 
   get speciesCount(): number {
     return this.multiplier.length;
   }
 
-  /** Species k's stem index, or -1 when it has none. Same keying as stem drive. */
+  /** Species k's stem index, or -1 when it has none. */
   stemOf(k: number): number {
-    return this.keyed[k] === 1 ? k : -1;
+    return this.stem[k] ?? -1;
   }
 
   /**
@@ -108,11 +126,12 @@ export class StemFollow {
     const tau = Math.max(cfg.smoothingMs, 1) / 1000;
     const alpha = snap ? 1 : dt > 0 ? 1 - Math.exp(-dt / tau) : 0;
     for (let k = 0; k < this.multiplier.length; k++) {
-      if (this.keyed[k] !== 1 || !stems) {
+      const s = this.stem[k] as number;
+      if (s < 0 || !stems) {
         this.multiplier[k] = 1;
         continue;
       }
-      const raw = stems[k] as number;
+      const raw = stems[s] as number;
       const x = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0;
       const prev = this.activity[k] as number;
       const next = prev + (x - prev) * alpha;

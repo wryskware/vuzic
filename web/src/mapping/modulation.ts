@@ -53,24 +53,15 @@
  * both manual and modulated mode.
  */
 import { hash3 } from '../sim/impulses.ts';
-import type { PhysarumSim } from '../sim/physarum/physarum.ts';
 import { mergeRenderConfig } from '../sim/render/config.ts';
 import type { FeaturesFrame, TimelineSampler } from '../timeline/sampler.ts';
 import type { Timeline } from '../timeline/types.ts';
 import { STEM_NAMES } from '../timeline/types.ts';
-import {
-  applyVector,
-  CLASS_SLOW,
-  fieldClasses,
-  modulationMask,
-  modulationSlots,
-  MOD_GROUPS,
-  presetFromConfig,
-  presetToVector,
-  vectorLength,
-  type ModGroup,
-  type ModSpec,
-} from './preset.ts';
+// Nothing physarum-shaped is imported here any more. The slot table, the
+// vector↔config conversion and the sim itself all arrive through `ModTarget`;
+// what is left is the vocabulary, which is the same for every substrate.
+import { CLASS_SLOW, MOD_GROUPS, type ModGroup, type ModSpec } from './modspec.ts';
+import type { ModTarget } from './target.ts';
 import { SlewLimiter } from './slew.ts';
 import { StemFollow } from './stemfollow.ts';
 import type { ModulationConfig } from './types.ts';
@@ -439,7 +430,8 @@ export class Modulator {
    */
   readonly stemFollow: StemFollow;
 
-  private readonly sim: PhysarumSim;
+  /** What is being driven. Physarum today; the interface is the only thing known here. */
+  private readonly target: ModTarget;
   private readonly sampler: TimelineSampler;
   private readonly events: ModulatorEvents;
 
@@ -452,7 +444,8 @@ export class Modulator {
   /** length x dims, row-major; row i is parameter i's projection direction */
   private readonly w: Float32Array;
   private readonly base: Float64Array;
-  private readonly target: Float64Array;
+  /** where θ is being pulled toward this tick, before the slew limiter smooths it */
+  private readonly targetTheta: Float64Array;
   private readonly defaults: Float64Array;
   /** live z per driver — also what the workbench meters read */
   private readonly zbuf: Float32Array;
@@ -462,7 +455,11 @@ export class Modulator {
   private readonly probe: Float32Array;
   /** per-driver gain, mirrored into cfg.driverGains so it persists */
   private readonly gains: Float32Array;
-  /** stems row for the follow lane; length K, allocation-free */
+  /**
+   * The timeline's stems row, copied raw once per tick and reused. Sized to the
+   * *channel*, not to K: the follow lane indexes it by stem now that the
+   * species→stem keying is a map the target supplies.
+   */
   private readonly stemRow: Float32Array;
   private readonly stemChannel: { offset: number; dims: number } | null;
   private slew!: SlewLimiter;
@@ -474,28 +471,32 @@ export class Modulator {
   private lastTick = Number.NaN;
 
   constructor(
-    sim: PhysarumSim,
+    target: ModTarget,
     sampler: TimelineSampler,
     drivers: DriverBank | null,
     config: ModulationConfig,
     seed: number,
     events: ModulatorEvents = {},
   ) {
-    this.sim = sim;
+    this.target = target;
     this.sampler = sampler;
     this.drivers = drivers;
     this.events = events;
     this.seed = seed >>> 0;
 
-    const k = sim.config.speciesCount;
-    this.length = vectorLength(k);
-    this.slots = modulationSlots(k);
-    this.mask = modulationMask(k);
+    const k = target.config.speciesCount;
+    // The slot table is the target's, not this file's: a second substrate brings
+    // a different registry and everything downstream of here is indifferent to
+    // which one it got.
+    const reg = target.registry();
+    this.length = reg.length;
+    this.slots = reg.slots;
+    this.mask = reg.mask;
     // Defaults are the config as the app started: the shipped art direction,
     // captured before any seed has had a chance to displace it.
-    this.defaults = presetToVector(presetFromConfig(sim.config), k);
+    this.defaults = target.currentVector();
     this.base = new Float64Array(this.length);
-    this.target = new Float64Array(this.length);
+    this.targetTheta = new Float64Array(this.length);
     const dims = drivers?.dims ?? 0;
     this.zbuf = new Float32Array(dims);
     this.gz = new Float32Array(dims);
@@ -505,9 +506,13 @@ export class Modulator {
 
     const stems = sampler.getChannel('stems');
     this.stemChannel = stems && stems.dims > 0 ? { offset: stems.offset, dims: stems.dims } : null;
-    this.stemRow = new Float32Array(k);
-    this.stemFollow = new StemFollow(k, Math.min(this.stemChannel?.dims ?? 0, STEM_NAMES.length));
-    sim.setBrightFollow(this.stemFollow.multiplier);
+    this.stemRow = new Float32Array(this.stemChannel?.dims ?? 0);
+    // STEM_NAMES bounds the keying, not the row: a timeline carrying more stem
+    // columns than the format names would otherwise let a target's map point at
+    // a column nobody can label.
+    const stemDims = Math.min(this.stemChannel?.dims ?? 0, STEM_NAMES.length);
+    this.stemFollow = new StemFollow(k, stemDims, target.stemMap());
+    target.setBrightFollow(this.stemFollow.multiplier);
 
     this.setConfig(config);
     this.rewire();
@@ -574,19 +579,27 @@ export class Modulator {
 
   setConfig(config: ModulationConfig): void {
     this.cfg = config;
-    const k = this.sim.config.speciesCount;
     // The palette is one object shared with the live config: copy the loaded
     // values *into* it (so the panel's colour pickers keep their bindings) and
     // then re-share, so later edits land in the thing that gets serialised.
-    const live = this.sim.config.palette;
+    const live = this.target.config.palette;
     live.colors = live.colors.map((c, i) => config.palette.colors[i] ?? c);
     live.saturation = config.palette.saturation;
     live.brightness = config.palette.brightness;
     config.palette = live;
     // Same trick for the phase-7 render block.
-    mergeRenderConfig(this.sim.config.render, config.render);
-    config.render = this.sim.config.render;
-    this.sim.invalidatePalette();
+    mergeRenderConfig(this.target.config.render, config.render);
+    config.render = this.target.config.render;
+    this.target.invalidatePalette();
+
+    // The opaque per-sim block, same share-by-reference philosophy in spirit but
+    // as a snapshot rather than a shared object: the sim adopts what the file
+    // carried, then hands back its current truth so whoever serialises this
+    // config next gets it. It is a copy, so anything that saves outside this
+    // path has to refresh it first — the workbench's autosave does.
+    this.target.applyExtras?.(config.extras);
+    const extras = this.target.serializeExtras?.();
+    if (extras) config.extras = extras;
 
     // Gains are authored against a driver count the file cannot know (it depends
     // on the track's latent width), so adopt what fits and default the rest to 1,
@@ -606,8 +619,8 @@ export class Modulator {
     }
     config.driverGains = gains;
 
-    this.slew = new SlewLimiter(fieldClasses(k), config.slew);
-    this.slew.reset(presetToVector(presetFromConfig(this.sim.config), k));
+    this.slew = new SlewLimiter(this.target.registry().classes, config.slew);
+    this.slew.reset(this.target.currentVector());
     this.lastSegment = -2;
   }
 
@@ -620,7 +633,7 @@ export class Modulator {
     if (mode === this.mode) return;
     this.mode = mode;
     // Start from where the config actually is, so switching modes never steps.
-    this.slew.reset(presetToVector(presetFromConfig(this.sim.config), this.sim.config.speciesCount));
+    this.slew.reset(this.target.currentVector());
     this.lastSegment = -2;
   }
 
@@ -649,6 +662,9 @@ export class Modulator {
       }
     }
     baseVector(this.seed, this.defaults, this.slots, this.base);
+    // …and then whatever the substrate draws from the seed outright, on top of
+    // the generic jitter. Order is the contract: the wholesale draw wins.
+    this.target.registry().seedBase?.(this.seed, this.base);
   }
 
   /**
@@ -657,9 +673,10 @@ export class Modulator {
    * manual mode, where it is the only thing that writes.
    */
   applyBase(): void {
-    applyVector(this.sim.config, this.base, this.mask);
+    // applyTheta owns the "write θ, then push whatever GPU state it derives"
+    // pairing, so there is no uploadMatrix to remember here any more.
+    this.target.applyTheta(this.base, this.mask);
     this.slew.reset(this.base);
-    this.sim.uploadMatrix();
   }
 
   /** Projection direction of one slot, copied. Exported shape for tests. */
@@ -675,9 +692,55 @@ export class Modulator {
 
   /** θ as the sim currently has it — what the tuning log records. */
   currentTheta(): number[] {
-    return Array.from(
-      presetToVector(presetFromConfig(this.sim.config), this.sim.config.speciesCount),
-    );
+    return Array.from(this.target.currentVector());
+  }
+
+  /**
+   * For the workbench: this seed's aggregate wiring, per group — which drivers
+   * actually move it, with the current gains applied. Share of Σ|w·gain|.
+   *
+   * The projections are the one part of the system that is invisible: a reroll
+   * silently rewires 268 slots and nothing on screen says which of the sixteen
+   * drivers now owns "matrix". This turns that into a readable line, and because
+   * the gains are folded in, muting a driver visibly removes it from every group
+   * it was in — which is how you tell a mute apart from a driver that simply had
+   * no say in the first place.
+   *
+   * Allocates, and that is fine: it is called from the panel's 30-frame refresh,
+   * never from `update()`.
+   */
+  groupDriverWeights(topN = 3): { group: ModGroup; top: { name: string; share: number }[] }[] {
+    const drivers = this.drivers;
+    if (!drivers) return [];
+    const dims = drivers.dims;
+    const acc = MOD_GROUPS.map(() => new Float64Array(dims));
+    for (let i = 0; i < this.length; i++) {
+      if (this.mask[i] !== 1) continue;
+      const spec = this.slots[i];
+      if (!spec) continue;
+      const gi = MOD_GROUPS.indexOf(spec.group);
+      if (gi < 0) continue;
+      const row = acc[gi] as Float64Array;
+      const o = i * dims;
+      for (let d = 0; d < dims; d++) {
+        row[d] = (row[d] as number) + Math.abs(this.w[o + d] as number) * (this.gains[d] as number);
+      }
+    }
+    return MOD_GROUPS.map((group, gi) => {
+      const row = acc[gi] as Float64Array;
+      let sum = 0;
+      for (let d = 0; d < dims; d++) sum += row[d] as number;
+      const top: { name: string; share: number }[] = [];
+      if (sum > 0) {
+        const order = Array.from({ length: dims }, (_, d) => d).sort(
+          (a, b) => (row[b] as number) - (row[a] as number),
+        );
+        for (const d of order.slice(0, Math.max(topN, 0))) {
+          top.push({ name: drivers.names[d] ?? `driver ${d}`, share: (row[d] as number) / sum });
+        }
+      }
+      return { group, top };
+    });
   }
 
   /** Mean |excursion| per group over the last tick, 0…1. */
@@ -724,7 +787,7 @@ export class Modulator {
     const crossed = this.trackSegment(frame.time);
     const boundaryHit = crossed && this.cfg.boundary.enabled;
     if (boundaryHit) {
-      this.sim.partialReseed(this.lastSegment, this.cfg.boundary.respawnFraction);
+      this.target.partialReseed(this.lastSegment, this.cfg.boundary.respawnFraction);
       this.events.onSectionChange?.(this.lastSegment, this.cfg.boundary.respawnFraction);
     }
 
@@ -736,13 +799,14 @@ export class Modulator {
 
     this.computeTarget(this.zbuf);
 
-    if (boundaryHit) this.slew.snapClass(CLASS_SLOW, this.target, this.cfg.boundary.snapFraction);
+    if (boundaryHit) {
+      this.slew.snapClass(CLASS_SLOW, this.targetTheta, this.cfg.boundary.snapFraction);
+    }
 
     // responseSpeed scales time, not the coefficients: doubling it makes every
     // class exactly twice as quick and keeps their ratios (the tuned part) intact.
-    const v = this.slew.step(this.target, dt * Math.max(this.cfg.responseSpeed, 0));
-    applyVector(this.sim.config, v, this.mask);
-    this.sim.uploadMatrix();
+    const v = this.slew.step(this.targetTheta, dt * Math.max(this.cfg.responseSpeed, 0));
+    this.target.applyTheta(v, this.mask);
   }
 
   private updateStemFollow(frame: FeaturesFrame, dt: number, snap: boolean): void {
@@ -751,8 +815,8 @@ export class Modulator {
       this.stemFollow.update(null, dt, this.cfg.stemFollow, snap);
       return;
     }
-    for (let k = 0; k < this.stemRow.length; k++) {
-      this.stemRow[k] = k < c.dims ? (frame.values[c.offset + k] ?? 0) : 0;
+    for (let i = 0; i < this.stemRow.length; i++) {
+      this.stemRow[i] = frame.values[c.offset + i] ?? 0;
     }
     this.stemFollow.update(this.stemRow, dt, this.cfg.stemFollow, snap);
   }
@@ -783,7 +847,7 @@ export class Modulator {
       const spec = this.slots[i];
       const base = this.base[i] as number;
       if (!spec) {
-        this.target[i] = base;
+        this.targetTheta[i] = base;
         continue;
       }
       const gi = MOD_GROUPS.indexOf(spec.group);
@@ -797,7 +861,7 @@ export class Modulator {
       // would pass one through to the slew limiter and latch it forever. The
       // signal is already sanitised at load; this is the second line of defence
       // against a future arithmetic slip in the projection.
-      this.target[i] = Number.isFinite(v)
+      this.targetTheta[i] = Number.isFinite(v)
         ? v < spec.lo
           ? spec.lo
           : v > spec.hi
@@ -826,7 +890,7 @@ export class Modulator {
     const scratch = this.probe;
     for (let d = 0; d < dims; d++) scratch[d] = (z[d] as number) ?? 0;
     this.computeTarget(scratch);
-    out.set(this.target);
+    out.set(this.targetTheta);
     return out;
   }
 }

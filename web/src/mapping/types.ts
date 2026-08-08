@@ -1,6 +1,6 @@
-import type { Palette } from '../sim/physarum/config.ts';
+import type { Palette } from '../sim/palette.ts';
 import type { RenderConfig } from '../sim/render/config.ts';
-import type { ModGroup } from './preset.ts';
+import type { ModGroup } from './modspec.ts';
 import type { SlewRates } from './slew.ts';
 import type { StemFollowConfig } from './stemfollow.ts';
 
@@ -30,6 +30,14 @@ export interface BoundaryOptions {
 export interface ModulationConfig {
   /** 1/2 = anchor era; 3 = raw-embedding projections; 4 = the named driver bank */
   version: 4;
+  /**
+   * Which simulation this mapping drives (`ModTarget.simId`). θ is a different
+   * vector for every substrate, so a file authored against one is meaningless
+   * applied to another even at the same K — which is why this is checked
+   * alongside `speciesCount` rather than trusted. Absent in files written before
+   * the second sim existed, and those are all physarum.
+   */
+  sim: string;
   /** K this was authored for; a mismatch with the live sim cannot be applied */
   speciesCount: number;
   /**
@@ -65,6 +73,14 @@ export interface ModulationConfig {
   responseSpeed: number;
   slew: SlewRates;
   boundary: BoundaryOptions;
+  /**
+   * Opaque per-sim block; the sim that owns the mapping serialises and validates
+   * its own schema here (plife: macros + matrixGen). The mapping layer only
+   * carries it — nothing between the file and `ModTarget.applyExtras` looks
+   * inside, which is what keeps `ModulationConfig` from learning a second
+   * substrate's fields. Absent is simply "defaults", so no version bump.
+   */
+  extras?: Record<string, unknown>;
 }
 
 export const MODULATION_VERSION = 4;

@@ -34,14 +34,20 @@ import {
   type PhysarumConfig,
   type SpeciesConfig,
 } from '../sim/physarum/config.ts';
+// The vocabulary — slew classes, mod groups, ModSpec — is substrate-agnostic and
+// lives in `modspec.ts` so a second simulation can bring its own registry
+// without importing physarum's. It is re-exported here because this file was the
+// original home and every importer already reaches for it by this name.
+import { CLASS_FAST, CLASS_MEDIUM, CLASS_SLOW, type ModGroup, type ModSpec } from './modspec.ts';
 
-/** Per-parameter timescale class. Motion faster than the sim's relaxation time is mush. */
-export type SlewClass = 'fast' | 'medium' | 'slow';
-
-export const CLASS_FAST = 0;
-export const CLASS_MEDIUM = 1;
-export const CLASS_SLOW = 2;
-export const CLASS_NAMES: readonly SlewClass[] = ['fast', 'medium', 'slow'];
+export {
+  CLASS_FAST,
+  CLASS_MEDIUM,
+  CLASS_SLOW,
+  CLASS_NAMES,
+  MOD_GROUPS,
+} from './modspec.ts';
+export type { SlewClass, ModGroup, ModSpec } from './modspec.ts';
 
 /** A species' θ — `SpeciesConfig` minus its identity. */
 export type SpeciesPreset = Omit<SpeciesConfig, 'name'>;
@@ -76,34 +82,6 @@ const G_SENSE_GAIN = 0;
 const G_EXPOSURE = 1;
 const G_GAMMA = 2;
 const G_STEM_GAIN = 3;
-
-/**
- * Which lane of the workbench a slot answers to. One depth slider per group, so a
- * human can say "more shape, less light" without touching 92 numbers.
- */
-export type ModGroup = 'structure' | 'matrix' | 'population' | 'decay';
-
-export const MOD_GROUPS: readonly ModGroup[] = ['structure', 'matrix', 'population', 'decay'];
-
-/**
- * How the music is allowed to move one slot.
- *
- *   additive:        p = clamp(base + half · tanh(depth · w·ẑ), lo, hi)
- *   multiplicative:  p = clamp(base · exp(half · tanh(depth · w·ẑ)), lo, hi)
- *
- * `lo`/`hi` may be *narrower* than the slot's hard θ bound: the hard bound is
- * "what a file may contain", this is "where the music may wander unsupervised".
- * `jitter` is the seeded personality spread applied to the shipped default —
- * additive units, or ln units when `mult`.
- */
-export interface ModSpec {
-  group: ModGroup;
-  lo: number;
-  hi: number;
-  half: number;
-  jitter: number;
-  mult: boolean;
-}
 
 interface Bound {
   min: number;

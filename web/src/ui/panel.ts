@@ -1,10 +1,10 @@
 import { Pane } from 'tweakpane';
 import type { PhysarumSim } from '../sim/physarum/physarum';
 import type { AdaptiveTriple, SpeciesConfig } from '../sim/physarum/config';
-import { MAX_BLOOM_LEVELS, TONEMAPS, type ToneMap } from '../sim/render/config';
 import type { ImpulseEngine } from '../sim/impulses';
 import { randomSeed, setPinnedSeed, syncUrlSeed } from '../sim/seed';
 import { createImpulsePanel, type ImpulsePanelHandle } from './impulses-panel';
+import { addRenderFolder } from './render-folder';
 import { createWorkbench, type WorkbenchHandle, type WorkbenchHost } from './workbench';
 
 type Folder = ReturnType<Pane['addFolder']>;
@@ -93,7 +93,18 @@ export function createPanel(
   run.addBinding(state, 'agents', { readonly: true, label: 'agents alive' });
   run.addBinding(state, 'grid', { readonly: true, label: 'sim grid' });
 
-  const refreshRender = addRenderFolder(pane, sim);
+  // The HDR chain is shared with every other substrate's panel; physarum's only
+  // additions to it are the soil underlay and its own scene-exposure bound.
+  const refreshRender = addRenderFolder(pane, {
+    render: config.render,
+    config,
+    // min matches the θ bound in mapping/preset.ts
+    exposureRange: { min: 0.005, max: 1.5, step: 0.001 },
+    renderPasses: () => sim.stats().renderPasses,
+    autoExposureState: () => sim.post.autoExposureState,
+    invalidatePalette: () => sim.invalidatePalette(),
+    soil: true,
+  });
 
   const sense = pane.addFolder({ title: 'sense response', expanded: false });
   sense.addBinding(config, 'senseGain', {
@@ -247,76 +258,6 @@ export function createPanel(
       workbench?.dispose();
       pane.dispose();
     },
-  };
-}
-
-/**
- * Phase 7's controls, in one folder because they are one instrument: the whole
- * chain runs at once and the only way to tune a grade is to watch it move.
- *
- * Ordered the way the pixels flow — scene exposure, adaptation, bloom, tone,
- * grade, feedback — so scrolling down the folder walks the pipeline.
- */
-function addRenderFolder(pane: Pane, sim: PhysarumSim): () => void {
-  const config = sim.config;
-  const r = config.render;
-  const readout = { passes: '—', adapt: '—' };
-
-  const root = pane.addFolder({ title: 'render · HDR chain (phase 7)', expanded: true });
-  root.addBinding(readout, 'passes', { readonly: true, label: 'render passes' });
-  // The measured HDR mean is the number to aim `target mean` at; the gain is
-  // where the controller has settled. Both are one or two frames stale.
-  root.addBinding(readout, 'adapt', { readonly: true, label: 'gain / mean' });
-
-  // Scene exposure and gamma are in θ but **excluded from modulation** — see the
-  // exclusion note in mapping/preset.ts. They are yours, always.
-  const scene = root.addFolder({ title: 'scene exposure (manual only)', expanded: true });
-  // min matches the θ bound in mapping/preset.ts
-  scene.addBinding(config, 'exposure', { min: 0.005, max: 1.5, step: 0.001, label: 'exposure' });
-  scene.addBinding(config, 'gamma', { min: 1, max: 3, step: 0.05, label: 'display gamma' });
-  scene.addBinding(r.grade, 'exposureEv', { min: -8, max: 8, step: 0.05, label: 'trim (stops)' });
-
-  const auto = root.addFolder({ title: 'auto-exposure', expanded: false });
-  auto.addBinding(r.grade, 'autoExposure', { label: 'enabled' });
-  auto.addBinding(r.grade, 'autoTarget', { min: 0.01, max: 2, step: 0.01, label: 'target mean' });
-  auto.addBinding(r.grade, 'autoTau', { min: 0.2, max: 30, step: 0.1, label: 'τ (seconds)' });
-  auto.addBinding(r.grade, 'autoMinGain', { min: 0.01, max: 1, step: 0.01, label: 'min gain' });
-  auto.addBinding(r.grade, 'autoMaxGain', { min: 1, max: 32, step: 0.5, label: 'max gain' });
-
-  const bloom = root.addFolder({ title: 'bloom', expanded: true });
-  bloom.addBinding(r.bloom, 'enabled');
-  bloom.addBinding(r.bloom, 'threshold', { min: 0, max: 4, step: 0.01 });
-  bloom.addBinding(r.bloom, 'knee', { min: 0.01, max: 2, step: 0.01, label: 'soft knee' });
-  bloom.addBinding(r.bloom, 'intensity', { min: 0, max: 4, step: 0.01 });
-  bloom.addBinding(r.bloom, 'levels', { min: 1, max: MAX_BLOOM_LEVELS, step: 1, label: 'mips' });
-
-  const tone = root.addFolder({ title: 'tone + grade', expanded: true });
-  tone.addBinding(r.grade, 'tonemap', {
-    options: Object.fromEntries(TONEMAPS.map((t) => [t, t])) as Record<string, ToneMap>,
-  });
-  tone.addBinding(r.grade, 'blackPoint', { min: 0, max: 0.3, step: 0.001, label: 'black point' });
-  tone.addBinding(r.grade, 'contrast', { min: 0.5, max: 2.5, step: 0.01 });
-  tone.addBinding(r.grade, 'pivot', { min: 0.05, max: 0.8, step: 0.01, label: 'contrast pivot' });
-  tone.addBinding(r.grade, 'saturation', { min: 0, max: 2, step: 0.01 });
-  tone.addBinding(r.grade, 'vignette', { min: 0, max: 1, step: 0.01 });
-
-  const ground = root.addFolder({ title: 'soil underlay', expanded: false });
-  ground.addBinding(r.grade, 'soilTint', { min: 0, max: 1.5, step: 0.005, label: 'strength' });
-  // Cached alongside the palette, and invalidated the same way.
-  ground
-    .addBinding(r.grade, 'soilColor', { label: 'colour (static)' })
-    .on('change', () => sim.invalidatePalette());
-
-  // Render-domain only: this cannot touch the trail field, so it is safe to
-  // push. It is also the one control here that trades legibility for looks.
-  const fb = root.addFolder({ title: 'feedback (render-domain trail)', expanded: false });
-  fb.addBinding(r.feedback, 'amount', { min: 0, max: 0.95, step: 0.01 });
-  fb.addBinding(r.feedback, 'zoom', { min: 0.98, max: 1.02, step: 0.0005 });
-
-  return (): void => {
-    readout.passes = String(sim.stats().renderPasses);
-    const a = sim.post.autoExposureState;
-    readout.adapt = `${a.gain.toFixed(2)}×  ·  ${a.mean.toFixed(4)}`;
   };
 }
 

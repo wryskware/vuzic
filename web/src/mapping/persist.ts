@@ -19,12 +19,17 @@
  * shipped defaults. One warning, once per session.
  */
 import { MODULATION_VERSION, type BoundaryOptions, type ModulationConfig } from './types.ts';
-import { MOD_GROUPS, type ModGroup } from './preset.ts';
+import { MOD_GROUPS, type ModGroup } from './modspec.ts';
 // The one constant the loader and the live slider must agree on: raising it in
 // one place only would clip loaded files below what the workbench allows.
 import { MAX_DRIVER_GAIN } from './modulation.ts';
 import { defaultStemFollow, type StemFollowConfig } from './stemfollow.ts';
-import { defaultPalette, type Palette, type PhysarumConfig } from '../sim/physarum/config.ts';
+import type { Palette } from '../sim/palette.ts';
+// `defaultPalette` is physarum's shipped art direction and is the only thing
+// here that still knows a specific sim. It is the fallback a hand-trimmed file
+// falls back *to*, not something the format depends on; a second sim's loader
+// would want its own, and that is the next seam to cut if one appears.
+import { defaultPalette } from '../sim/physarum/config.ts';
 import {
   defaultRenderConfig,
   TONEMAPS,
@@ -33,7 +38,14 @@ import {
 } from '../sim/render/config.ts';
 import { DEFAULT_SLEW, type SlewRates } from './slew.ts';
 
-const STORAGE_KEY = 'lmt.mapping';
+/**
+ * One autosave slot per sim. Physarum keeps the original unsuffixed key so every
+ * existing browser autosave survives the day a second simulation lands; anything
+ * else gets its own, because the two files describe different θ and silently
+ * sharing a slot would mean whichever sim you opened last ate the other's tuning
+ * session.
+ */
+const storageKey = (sim: string): string => (sim === 'physarum' ? 'lmt.mapping' : `lmt.mapping.${sim}`);
 
 /**
  * Sanity bound on K, not a hardware limit — the real ceiling is the device's
@@ -61,9 +73,18 @@ export function defaultGroupDepth(): Record<ModGroup, number> {
   };
 }
 
-export function defaultModulationConfig(base: PhysarumConfig): ModulationConfig {
+/**
+ * `base` is structural rather than a `PhysarumConfig`: the three fields below are
+ * all this needs, and every modulatable sim has them (`ModTargetConfig`). Call
+ * sites still hand it their concrete config.
+ */
+export function defaultModulationConfig(
+  base: { speciesCount: number; palette: Palette; render: RenderConfig },
+  sim = 'physarum',
+): ModulationConfig {
   return {
     version: MODULATION_VERSION,
+    sim,
     speciesCount: base.speciesCount,
     // Shared by reference with the live config: a palette edit in the workbench
     // is an edit to the thing that gets serialised, with no sync step to forget.
@@ -211,6 +232,20 @@ function stemFollow(v: unknown): StemFollowConfig {
   };
 }
 
+/**
+ * The opaque per-sim block, carried through unexamined. The only thing checked
+ * is that it is a plain object, because that is the whole of the contract the
+ * mapping layer offers: anything else is dropped and the sim's `applyExtras`
+ * sees `undefined`, which it must already handle. Validating the *contents*
+ * here would mean this file knowing plife's schema, which is exactly what the
+ * channel exists to avoid.
+ */
+function extras(v: unknown): Record<string, unknown> | undefined {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : undefined;
+}
+
 function boundary(v: unknown): BoundaryOptions {
   const o = (v ?? {}) as Record<string, unknown>;
   return {
@@ -252,6 +287,9 @@ export function parseModulation(text: string): ModulationConfig {
     fail(`unsupported version ${String(version)}`);
   }
   const speciesCount = count(o['speciesCount'], 'speciesCount', MAX_SPECIES_COUNT);
+  // Every file written before a second simulation existed is a physarum file,
+  // so an absent discriminator is not ambiguous — it is an answer.
+  const sim = typeof o['sim'] === 'string' ? o['sim'] : 'physarum';
 
   // v1/v2: everything except palette and render described the anchor system.
   // Rebuild the rest from defaults rather than half-translating it.
@@ -259,6 +297,7 @@ export function parseModulation(text: string): ModulationConfig {
     warnLegacy(version);
     return {
       version: MODULATION_VERSION,
+      sim,
       speciesCount,
       palette: palette(o['palette'], speciesCount, 'palette'),
       render: renderBlock(o['render'], 'render'),
@@ -278,8 +317,14 @@ export function parseModulation(text: string): ModulationConfig {
   // simply not read, because that group no longer exists.
   if (version === 3) warnV3();
 
+  const extra = extras(o['extras']);
   return {
+    // Omitted rather than written as `undefined`: `extras` is optional and the
+    // absent case has to stay absent, so a sim with nothing to store never adds
+    // a null key to every file it saves.
+    ...(extra === undefined ? {} : { extras: extra }),
     version: MODULATION_VERSION,
+    sim,
     speciesCount,
     palette: palette(o['palette'], speciesCount, 'palette'),
     render: renderBlock(o['render'], 'render'),
@@ -296,24 +341,30 @@ export function parseModulation(text: string): ModulationConfig {
 
 /**
  * A config authored for a different K cannot be applied field-for-field (the
- * palette is per species). The caller falls back to defaults instead of guessing.
+ * palette is per species), and one authored against a different *simulation*
+ * cannot be applied at all — θ is a different vector. The caller falls back to
+ * defaults instead of guessing.
  */
-export function modulationFits(cfg: ModulationConfig, speciesCount: number): boolean {
-  return cfg.speciesCount === speciesCount;
+export function modulationFits(
+  cfg: ModulationConfig,
+  speciesCount: number,
+  sim = 'physarum',
+): boolean {
+  return cfg.speciesCount === speciesCount && cfg.sim === sim;
 }
 
-export function saveModulationLocal(cfg: ModulationConfig): boolean {
+export function saveModulationLocal(cfg: ModulationConfig, sim = 'physarum'): boolean {
   try {
-    localStorage.setItem(STORAGE_KEY, serializeModulation(cfg));
+    localStorage.setItem(storageKey(sim), serializeModulation(cfg));
     return true;
   } catch {
     return false; // private mode / quota — autosave is a convenience, not a contract
   }
 }
 
-export function loadModulationLocal(): ModulationConfig | null {
+export function loadModulationLocal(sim = 'physarum'): ModulationConfig | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey(sim));
     if (!raw) return null;
     return parseModulation(raw);
   } catch (err) {
@@ -322,9 +373,9 @@ export function loadModulationLocal(): ModulationConfig | null {
   }
 }
 
-export function clearModulationLocal(): void {
+export function clearModulationLocal(sim = 'physarum'): void {
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(storageKey(sim));
   } catch {
     // nothing to do
   }

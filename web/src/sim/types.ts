@@ -14,6 +14,14 @@ export interface Sim {
   init(ctx: GpuContext): Promise<void>;
   tick(frame: FeaturesFrame, simTick: number): void;
   render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void;
+  /**
+   * The sim-specific middle of the app's status line — grid, population, seed,
+   * whatever this substrate's readout is. It lives here rather than in main
+   * because the string is entirely made of numbers only the sim has, and a
+   * second substrate has a different set of them; main owns the track, audio,
+   * mode and gpu segments, which are the same whatever is running.
+   */
+  status(): string;
   dispose(): void;
 }
 
@@ -56,6 +64,11 @@ export class NullSim implements Sim {
       ],
     });
     pass.end();
+  }
+
+  /** Nothing to report: the status line simply loses its middle segment. */
+  status(): string {
+    return '';
   }
 
   dispose(): void {}

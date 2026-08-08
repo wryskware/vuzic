@@ -50,9 +50,9 @@
  *   for a frozen comparison.
  */
 import type { Pane } from 'tweakpane';
-import type { PhysarumSim } from '../sim/physarum/physarum';
+import type { ModTarget } from '../mapping/target';
 import { MAX_DRIVER_GAIN, type Modulator } from '../mapping/modulation';
-import { MOD_GROUPS, type ModGroup } from '../mapping/preset';
+import { MOD_GROUPS, type ModGroup } from '../mapping/modspec';
 import type { TuningLog, TuningAction } from '../mapping/tuninglog';
 import { randomSeed, setPinnedSeed, syncUrlSeed } from '../sim/seed';
 import {
@@ -67,7 +67,12 @@ import {
 } from '../mapping/persist';
 
 export interface WorkbenchHost {
-  sim: PhysarumSim;
+  /**
+   * Typed at the seam, not at physarum: everything this folder touches — the
+   * seed, the snapshot pair, the palette invalidation, the boundary reseed — is
+   * on `ModTarget`, so the workbench is already whatever-sim tooling.
+   */
+  sim: ModTarget;
   modulator: Modulator;
   log: TuningLog;
   trackId: string;
@@ -141,6 +146,22 @@ function meterBar(z: number, muted: boolean): string {
   return `${left}│${right}${tail}`;
 }
 
+/**
+ * The structure drivers' names are written for the meter labels, where there is
+ * a whole row per driver. Three of them have to share one wiring line, so they
+ * get short forms; the pc-N names are already short enough to leave alone.
+ */
+const DRIVER_ABBREV: Readonly<Record<string, string>> = {
+  'novelty·4bar': 'nov4',
+  'novelty·16bar': 'nov16',
+  'chorus-ness': 'chorus',
+};
+
+function shortDriver(name: string): string {
+  const bare = name.replace(' (absent)', '');
+  return DRIVER_ABBREV[bare] ?? bare;
+}
+
 export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandle {
   const { modulator, sim, log } = host;
   const cfg = modulator.config;
@@ -175,10 +196,24 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
   const meterUi: Record<string, string> = {};
   const gainUi: Record<string, number> = {};
   const followUi: Record<string, string> = {};
+  /** group → "pc-1 34% · chorus 22% · pc-4 11%" */
+  const wiringUi: Record<string, string> = {};
+
+  /**
+   * The sim's opaque extras block is a *snapshot* in the config, not a shared
+   * object (unlike the palette and the render block), so anything that writes
+   * the file has to re-take it first — otherwise a macro edit made after the
+   * last `setConfig` would be saved at its old value.
+   */
+  const refreshExtras = (): void => {
+    const extras = sim.serializeExtras?.();
+    if (extras) modulator.config.extras = extras;
+  };
 
   const autosave = (): void => {
     if (!ui.autosave) return;
-    ui.file = saveModulationLocal(modulator.config) ? 'autosaved' : 'autosave failed';
+    refreshExtras();
+    ui.file = saveModulationLocal(modulator.config, sim.simId) ? 'autosaved' : 'autosave failed';
   };
 
   const record = (action: TuningAction, note?: string): void => {
@@ -301,6 +336,17 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     drivers.addButton({ title: 'reset gains to 1' }).on('click', () => setAll(1));
   }
 
+  // ── wiring readout ─────────────────────────────────────────────────────────
+  // The other half of the drivers folder: the gains say how loud each input is,
+  // this says where it lands. Without it a reroll rewires everything invisibly
+  // and there is no way to answer "why did muting pc-3 do nothing to the matrix".
+  // Recomputed in refresh(), so it follows both a reroll and a gain edit.
+  const wiring = root.addFolder({ title: 'wiring · what this seed listens to', expanded: true });
+  for (const g of MOD_GROUPS) {
+    wiringUi[g] = '—';
+    wiring.addBinding(wiringUi, g, { readonly: true, label: GROUP_LABELS[g] });
+  }
+
   // ── depth ──────────────────────────────────────────────────────────────────
   const depth = root.addFolder({ title: 'depth', expanded: true });
   depth
@@ -419,6 +465,7 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
   file.addBinding(ui, 'file', { readonly: true, label: '' });
   file.addBinding(ui, 'autosave', { label: 'autosave (localStorage)' });
   file.addButton({ title: 'download modulation.json' }).on('click', () => {
+    refreshExtras();
     downloadText(`modulation-${host.trackId}.json`, serializeModulation(modulator.config));
     record('save');
     ui.file = 'downloaded';
@@ -428,8 +475,8 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
       if (text === null) return;
       try {
         const parsed = parseModulation(text);
-        if (!modulationFits(parsed, sim.config.speciesCount)) {
-          ui.file = `rejected: authored for K=${parsed.speciesCount}`;
+        if (!modulationFits(parsed, sim.config.speciesCount, sim.simId)) {
+          ui.file = `rejected: authored for ${parsed.sim} K=${parsed.speciesCount}`;
           pane.refresh();
           return;
         }
@@ -446,12 +493,13 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     });
   });
   file.addButton({ title: 'save to browser now' }).on('click', () => {
-    ui.file = saveModulationLocal(modulator.config) ? 'saved' : 'save failed';
+    refreshExtras();
+    ui.file = saveModulationLocal(modulator.config, sim.simId) ? 'saved' : 'save failed';
     pane.refresh();
   });
   file.addButton({ title: 'reset to defaults' }).on('click', () => {
-    clearModulationLocal();
-    modulator.setConfig(defaultModulationConfig(sim.config));
+    clearModulationLocal(sim.simId);
+    modulator.setConfig(defaultModulationConfig(sim.config, sim.simId));
     modulator.setMode(modulator.available ? 'modulated' : 'manual');
     pullFromConfig();
     ui.file = 'reset';
@@ -542,6 +590,17 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
         const base = sim.config.species[s]?.brightness ?? 1;
         followUi[key] =
           `act ${(sf.activity[s] ?? 0).toFixed(2)} · ×${mul.toFixed(2)} → ${(base * mul).toFixed(2)}`;
+      }
+
+      // Wiring: cheap enough at 30-frame cadence, and it has to be recomputed
+      // rather than cached because a gain edit changes it without any event.
+      for (const row of modulator.groupDriverWeights()) {
+        wiringUi[row.group] =
+          row.top.length === 0
+            ? '— (nothing wired)'
+            : row.top
+                .map((t) => `${shortDriver(t.name)} ${(t.share * 100).toFixed(0)}%`)
+                .join(' · ');
       }
 
       const ex = modulator.excursions();

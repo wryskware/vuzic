@@ -1,15 +1,26 @@
 import type { GpuContext } from '../../gpu/context';
+import type { ModTarget, ThetaRegistry } from '../../mapping/target';
+import {
+  applyVector,
+  fieldClasses,
+  fieldNames,
+  modulationMask,
+  modulationSlots,
+  presetFromConfig,
+  presetToVector,
+  vectorLength,
+} from '../../mapping/preset';
 import type { FeaturesFrame } from '../../timeline/sampler';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
+import { hexToLinear, paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { Sim } from '../types';
 import {
   defaultConfig,
-  hexToLinear,
+  defaultPaletteColor,
   MAX_BRIGHTNESS,
   MAX_DEPOSIT,
   MAX_EFFECTIVE_DEPOSIT,
-  paletteLinear,
   type PhysarumConfig,
 } from './config';
 
@@ -57,8 +68,14 @@ export interface PhysarumStats {
   renderPasses: number;
 }
 
-export class PhysarumSim implements Sim {
+export class PhysarumSim implements Sim, ModTarget {
   readonly name = 'physarum';
+  /**
+   * The persistence discriminator (`ModTarget.simId`). Saved mappings are per
+   * sim, so this is what keeps a physarum `modulation.json` from being applied
+   * to a different substrate that happens to share its species count.
+   */
+  readonly simId = 'physarum';
   readonly config: PhysarumConfig;
 
   /**
@@ -160,6 +177,10 @@ export class PhysarumSim implements Sim {
   private respawnKey = 0;
   private snap: SimSnapshot | null = null;
 
+  /** θ registry and stem keying, both pure functions of K — built once, never rebuilt. */
+  private theta: ThetaRegistry | null = null;
+  private stems2stem: Int32Array | null = null;
+
   constructor(seed: number, config: PhysarumConfig = defaultConfig()) {
     this.seed = seed >>> 0;
     this.config = config;
@@ -181,7 +202,10 @@ export class PhysarumSim implements Sim {
   private refreshPalette(): void {
     this.paletteDirty = false;
     for (let k = 0; k < this.config.speciesCount; k++) {
-      const [r, g, b] = paletteLinear(this.config.palette, k);
+      // The fallback is passed explicitly: `paletteLinear` is sim-agnostic now
+      // and cannot know physarum's authored hue walk, which is what a palette
+      // shorter than K should fall back to.
+      const [r, g, b] = paletteLinear(this.config.palette, k, defaultPaletteColor(k));
       this.paletteRgb[k * 3 + 0] = r;
       this.paletteRgb[k * 3 + 1] = g;
       this.paletteRgb[k * 3 + 2] = b;
@@ -235,6 +259,68 @@ export class PhysarumSim implements Sim {
     this.brightFollow = values;
   }
 
+  // ── ModTarget: θ, as the mapping layer sees it ─────────────────────────────
+  //
+  // This block is the whole of physarum's side of the seam. It is thin on
+  // purpose: the registry and the vector↔config conversion already lived in
+  // `mapping/preset.ts`, and all that changed is *who asks whom*. The modulator
+  // used to import preset.ts and reach into `sim.config`; now the sim publishes
+  // its own registry and the modulator holds a `ModTarget`.
+
+  /**
+   * The slot table, precomputed. Every view is a pure function of K, which is
+   * fixed for the life of the sim, so this is built on first ask and then handed
+   * out unchanged — the modulator reads `mask` and `slots` in its per-tick loop.
+   */
+  registry(): ThetaRegistry {
+    if (this.theta) return this.theta;
+    const k = this.config.speciesCount;
+    this.theta = {
+      length: vectorLength(k),
+      slots: modulationSlots(k),
+      mask: modulationMask(k),
+      classes: fieldClasses(k),
+      names: fieldNames(k),
+    };
+    return this.theta;
+  }
+
+  currentVector(): Float64Array {
+    return presetToVector(presetFromConfig(this.config), this.config.speciesCount);
+  }
+
+  /**
+   * θ → the live config, plus the one piece of GPU state derived from θ rather
+   * than re-read from it every step. Everything else in the vector is picked up
+   * by `uploadSpecies` on the next substep; M lives in its own buffer and has to
+   * be pushed, which is why the modulator used to have to remember to call
+   * `uploadMatrix` after every write. It no longer does — that pairing is this
+   * method's job, and a sim whose θ needs different GPU work does it here too.
+   */
+  applyTheta(v: ArrayLike<number>, mask?: Uint8Array): void {
+    applyVector(this.config, v, mask);
+    this.uploadMatrix();
+  }
+
+  /**
+   * Species k is keyed to stem k for the first four species and to nothing after
+   * that — the same keying as stem drive in `tick`, because the stems channel is
+   * 4-dim by contract (STEM_DIMS) and species 4+ have no instrument of their own.
+   *
+   * Returned as data rather than baked into StemFollow because live-mode-notes
+   * wants "which species follows which sound source" to become configuration; a
+   * sim that keys differently (or a future UI that re-keys by hand) writes a
+   * different array here and nothing else changes.
+   */
+  stemMap(): Int32Array {
+    if (this.stems2stem) return this.stems2stem;
+    const k = this.config.speciesCount;
+    const map = new Int32Array(k);
+    for (let i = 0; i < k; i++) map[i] = i < STEM_DIMS ? i : -1;
+    this.stems2stem = map;
+    return map;
+  }
+
   stats(): PhysarumStats {
     let alive = 0;
     for (const s of this.config.species) {
@@ -248,6 +334,19 @@ export class PhysarumSim implements Sim {
       stepsThisFrame: this.stepsThisFrame,
       renderPasses: this.post.passCount + 1,
     };
+  }
+
+  /**
+   * The sim-specific middle of the app's status line (`Sim.status`). This is
+   * exactly the string main.ts used to interpolate by hand; it moved here when a
+   * second substrate arrived with a different set of numbers to report.
+   */
+  status(): string {
+    const st = this.stats();
+    return (
+      `${st.gridW}×${st.gridH}×${this.config.speciesCount} · ` +
+      `${st.aliveAgents.toLocaleString()} agents · seed ${this.seed}`
+    );
   }
 
   requestSingleStep(): void {
