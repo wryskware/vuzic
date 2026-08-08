@@ -37,11 +37,12 @@ more than reactivity.
 
 ## Deliberately out of scope for v1
 
-Multiple songs, multiple simulations, in-browser analysis, user-uploaded music,
-audience-facing interactive controls, video export, sharing links. All are
-plausible later; none are v1. Keep the seams clean enough that they remain
-possible, but do not build for them. (The author-facing workbench is *not*
-in this list — it is in scope and load-bearing.)
+Multiple songs, in-browser analysis, user-uploaded music, audience-facing
+interactive controls, video export, sharing links. All are plausible later;
+none are v1. Keep the seams clean enough that they remain possible, but do not
+build for them. (The author-facing workbench is *not* in this list — it is in
+scope and load-bearing. Multiple simulations left this list in plan.md
+Revision 5: physarum and particle life both ship, selected by `?sim=`.)
 
 ## Boundaries
 

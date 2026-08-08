@@ -429,6 +429,50 @@ and isolate nothing; and nobody can tune 1024 weights.
 - CLAP text-anchor axes (Later) slot in as additional named drivers when
   built — the bank is the seam for them.
 
+## Revision 5 — 2026-08-08: a second simulation (particle life)
+
+"Multiple simulations reading the same timeline" moved from Later to done. The
+mapping layer now drives a `ModTarget` interface instead of the physarum sim
+concretely: each sim publishes its own θ registry (slot table, groups, slew
+classes, vector↔config conversion) and the Modulator, workbench, impulse lane
+and persistence are indifferent to which one they got. Mappings are saved per
+sim (`lmt.mapping` stays physarum's key; `lmt.mapping.plife` is new) and a
+`modulation.json` carries a `sim` discriminator. `?sim=` picks the substrate.
+
+The second substrate is **particle life** (`web/src/sim/plife/`), ported in
+spirit from the author's earlier vuzic implementation with deliberate
+upgrades: a counting-sort spatial grid (the vuzic version was O(N²) brute
+force), toroidally correct force distances (vuzic wrapped positions but not
+forces — a seam bug), dt-scaled semi-implicit Euler, and rendering through the
+phase-7 HDR chain (velocity-stretched additive sprites; the render-domain
+feedback echo *is* the trail — a particle sim has no field of its own).
+
+Design decisions worth recording:
+
+- **8 species = 4 primaries + 4 secondaries.** Primaries key to the four
+  stems and interact through a dense 4×4 attraction block. Secondaries are
+  sparse-coupled accents (own primary, one neighbour, self); uncoupled matrix
+  cells default to 0 and are excluded from modulation, so the partition holds
+  under any seed while staying editable by hand. Species count is "virtually"
+  adjustable by zeroing a secondary's population — the pool stays 8.
+- **Population is a first-class musical axis** (the new thing this sim adds
+  over physarum): per-species alive-count targets = θ aliveFraction (seeded,
+  modulated, group `population`) × stem-follow (τ ≈ 1.2 s, floor 0.35) ×, for
+  secondaries only, an **accent lane** driven by smoothed
+  max(novelty16, actChorus) — the direct wire that makes "the chorus arrived →
+  the accents bloom" legible on every seed, same philosophy as brightness
+  stem-follow. Particles carry an energy that ramps in (~0.4 s) and out
+  (~1.5 s); faders keep interacting so dissolves never read as teleports, and
+  newly woken particles spawn beside a living conspecific, so colonies grow
+  out of existing structure instead of raining in.
+- **The four mod groups kept their meanings** (structure = radii/force/wander/
+  size, matrix = attraction, population = aliveFraction, decay = friction), so
+  the group-depth sliders and driver-bank UI carried over untouched.
+- Impulses map by analogy: deposit→force gain, sensor→radius scale, flash→
+  brightness; splash discs become radial push + swirl velocity kicks applied
+  before the force step. Section boundaries respawn a fraction of particles
+  ("new matter into an old world"), unchanged in meaning.
+
 ## Later, and deliberately not now
 
 Additive to the timeline: SongFormer labels, CLAP text-anchor axes,
@@ -436,8 +480,15 @@ DEAM valence/arousal probe, chord/key tracking, richer recurrence machinery.
 
 Requires new work but the seams exist: **distilled NN mapping trained on
 workbench logs (wide input: raw embedding + stems, no PCA bottleneck)**,
-multiple simulations reading the same timeline, multiple songs, video export,
-sharing links.
+multiple songs, video export, sharing links. (Multiple simulations reading the
+same timeline shipped in Revision 5.)
+
+**Live / ambient mode** — mic/line-in perception (CLAP text anchors, AudioSet
+tagging, streaming MuQ) feeding the driver bank over a socket, for
+installations and live performance. Design and phasing recorded in
+`docs/live-mode-notes.md`; its only demands on v1 are seams that already
+exist (named source-agnostic drivers, sampler behind an interface, open event
+kinds).
 
 Out of scope: in-browser analysis, user uploads, audience-facing interactive
 controls.
