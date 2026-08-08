@@ -173,12 +173,15 @@ async function main(): Promise<void> {
     // which factory they name and take identical options.
     const panelOpts = {
       pinned,
-      // Both restart buttons land here, after sim.reseed() — which has already
+      // Both reroll buttons land here, after sim.reseed() — which has already
       // re-keyed the hotspots via onSeedChange. What is left is dropping any
-      // envelope still ringing and putting the transport back to the top.
+      // envelope still ringing. The transport deliberately keeps its position:
+      // a reroll is "new world, same song", and rewinding to 0:00 on every
+      // reroll made auditioning seeds against a chorus impossible (user call —
+      // the original "never resume against an arbitrary position" rule lost to
+      // practice). The overlay scrub and arrow keys are the way back to the top.
       onRestart: (): void => {
         impulses.reset();
-        clock.seek(0);
       },
       impulses,
       workbench: {

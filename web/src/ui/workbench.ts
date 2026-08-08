@@ -83,7 +83,7 @@ export interface WorkbenchHost {
   /** sim tick the transport is at */
   tick(): number;
   seek(seconds: number): void;
-  /** drop ringing impulse envelopes and rewind the transport */
+  /** drop ringing impulse envelopes; the transport keeps its position */
   restart(): void;
   /** the panel's own species/matrix widgets are bound to the live config and must be re-read */
   onConfigReplaced?: () => void;
