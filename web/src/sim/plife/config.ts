@@ -1,0 +1,621 @@
+/**
+ * Particle life — configuration and shipped art direction.
+ *
+ * The substrate is the second one in the repo (physarum is the first) and it
+ * exists because the two fail differently: physarum makes *networks* — slow,
+ * accreting, structural — and particle life makes *swarms* — fast, granular,
+ * legible on the beat. Both satisfy `ModTarget`, so they share the whole
+ * modulation / impulse / render stack and differ only in what θ means.
+ *
+ * ## The species partition (this is the design, not an implementation detail)
+ *
+ * K = 8, in two halves:
+ *
+ *   0..3  **primaries**  — keyed to the four stems (bass, drums, vocals, other).
+ *                          They interact densely: the full 4×4 attraction block
+ *                          is live and every cell of it is modulated.
+ *   4..7  **secondaries** — sparse-coupled accent species, keyed to the *same*
+ *                          stems (species 4 ↔ stem 0, … species 7 ↔ stem 3).
+ *                          Each couples to exactly three things: its own
+ *                          primary (chases it), one neighbour primary (avoids
+ *                          it) and itself (disperses, so it reads as filigree
+ *                          rather than as another blob).
+ *
+ * Every other cell of the 8×8 matrix is exactly 0 **and excluded from
+ * modulation** — see `coupled()` in `preset.ts`. That is what makes the
+ * partition hold *under* modulation: if the uncoupled cells were modulated they
+ * would drift off zero and within a minute the secondaries would just be four
+ * more primaries, which is the whole difference gone. Secondaries also run small
+ * populations (aliveFraction ~0.12) because an accent that is as dense as the
+ * thing it accents is not an accent.
+ *
+ * ## Units
+ *
+ * World space is `h = 1`, `w = aspect`, toroidal. Every radius, size and speed
+ * below is in those units, so a "0.02" radius is 2% of the screen height and
+ * means the same thing on any canvas. The grid the neighbour search uses has
+ * cells of at least `R_CAP`, which is why `R_CAP` is simultaneously the hard cap
+ * on any effective interaction radius and the grid's cell size: a pair further
+ * apart than one cell would be missed by the 3×3 search, so the cap is not a
+ * taste knob, it is a correctness invariant.
+ */
+import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
+import type { Palette } from '../palette.ts';
+
+/** Sim substeps one clock tick may expand into; folded into the PCG tick key. */
+export const MAX_SUBSTEPS = 4;
+
+/**
+ * Hard cap on any effective interaction radius — `maxR[i][j] · radiusScale[i]`
+ * is clamped to this in the shader — **and** the neighbour grid's cell size.
+ *
+ * The two are the same number on purpose. The force pass searches the 3×3 cell
+ * neighbourhood, which finds every pair within one cell width; if a modulated
+ * radius could exceed the cell size the search would silently start missing
+ * pairs and the field would develop invisible seams. Raising this is therefore
+ * a change to the grid, not to a slider.
+ *
+ * It is also the frame-time lever. The force pass tests every candidate in the
+ * 3×3 neighbourhood, so the per-particle cost goes as R_CAP² · density; the
+ * first build shipped 0.05 and spent ~4,400 candidate tests per particle per
+ * substep at the default density, which did not hold frame rate. 0.02 is ~6×
+ * fewer candidates for a reach that is still a fifth of the screen height at
+ * radiusScale's ceiling.
+ */
+export const R_CAP = 0.02;
+
+/** Floor on the hard-core radius. Below this the repulsion slope explodes. */
+export const MIN_R_FLOOR = 0.002;
+
+/**
+ * Ceiling on `brightness × stem-follow`, matching physarum's `MAX_BRIGHTNESS`
+ * and for the same reason: impulse flashes multiply on top of this and are
+ * deliberately *not* bounded by it, so a kick stays legible on a species the
+ * stem lane is currently holding at its floor.
+ */
+export const MAX_BRIGHTNESS = 2;
+
+/** Sprite clamps, mirrored by nothing in the shader — the CPU is the only guard. */
+export const MAX_SIZE = 0.02;
+export const MAX_STRETCH = 8;
+export const MAX_FRICTION = 16;
+export const MAX_RADIUS_SCALE = 3;
+
+export interface PlifeSpeciesConfig {
+  name: string;
+  role: 'primary' | 'secondary';
+  /** 0..2, the stem-follow *base* — same semantics as physarum's `brightness` */
+  brightness: number;
+  /** HDR weight multiplier, 0..4 */
+  intensity: number;
+  /** fraction of this species' pool segment that is alive */
+  aliveFraction: number;
+  /** multiplies this species' interaction radii as the RECEIVER (row scaling) */
+  radiusScale: number;
+  /** multiplies the total force applied to this species */
+  forceScale: number;
+  /** per-second exponential velocity damping: v *= exp(-friction·dt) */
+  friction: number;
+  /** noise-force amplitude, world units / s² */
+  wander: number;
+  /** sprite radius in world units */
+  size: number;
+  /** velocity stretch factor for the sprite quad */
+  stretch: number;
+}
+
+/**
+ * The population lane's art direction. Outside θ, exactly like physarum's `soil`
+ * block: `presetFromConfig` / `applyVector` never see these fields, so a
+ * modulated run and a hand-tuned run share them unchanged.
+ *
+ * The layering is the same one stem-follow already uses for brightness:
+ *
+ *   target_k = clamp(aliveFraction_k (θ) × popMul_k × accentMul_k, 0, 1) × segSize
+ *
+ * θ owns the base — how big this colony is *as a matter of parameter* — and the
+ * two multipliers own the deviation from it. Neither is allowed to redefine the
+ * base, so the modulator and the population lane cannot fight, and turning the
+ * lane off restores θ's number exactly.
+ */
+export interface PlifePopulationConfig {
+  /** false = aliveFraction is absolute again; every popMul stays at 1 */
+  followStems: boolean;
+  /** what a fully silent instrument keeps, 0..1 — a third of its colony, not none */
+  floor: number;
+  /** exponent on the smoothed stem level; >1 means only loud passages are crowded */
+  curve: number;
+  /**
+   * EMA time constant in ms. Deliberately ~4× stem-follow's 300: brightness may
+   * track a beat, but a colony that gains and sheds a third of its members every
+   * bar reads as flicker, not as breathing. Population is the slow lane.
+   */
+  smoothingMs: number;
+  /** seconds for a spawning particle to reach full presence */
+  riseTau: number;
+  /** seconds for a dismissed particle to reach zero. Longer than riseTau: things
+   * should arrive decisively and leave reluctantly. */
+  fallTau: number;
+  accent: PlifeAccentConfig;
+}
+
+/**
+ * Novelty → the accent species' population. Secondaries (4..7) only.
+ *
+ * The seeded random projections already give the accents *character* — which
+ * ones cluster, how far they reach, what they chase. What they cannot give is
+ * legibility: on one seed the chorus makes the accents bloom, on the next it
+ * makes them wander sideways, and "the chorus arrived" stops being something a
+ * viewer can see. This wire is the fix, and it is direct on purpose: novelty
+ * goes to accent population, on every seed, with no projection in between.
+ */
+export interface PlifeAccentConfig {
+  enabled: boolean;
+  /** what the accents keep in a plain, unsurprising section, 0..1 */
+  floor: number;
+  /** headroom above the θ base at full novelty; 1.0 = the accents can double */
+  boost: number;
+  /** EMA time constant in ms; faster than the stem lane, because a section
+   * boundary is an event and should not take two bars to land */
+  smoothingMs: number;
+}
+
+export function defaultPlifePopulation(): PlifePopulationConfig {
+  return {
+    followStems: true,
+    floor: 0.35,
+    curve: 1,
+    smoothingMs: 1200,
+    riseTau: 0.4,
+    fallTau: 1.5,
+    accent: {
+      enabled: true,
+      floor: 0.15,
+      boost: 1.0,
+      smoothingMs: 800,
+    },
+  };
+}
+
+/**
+ * The performance layer: seven always-yours multipliers, composing OUTSIDE θ
+ * exactly like stem-follow and the impulse lanes do — which is why modulation
+ * can never overwrite them. 1.0 everywhere = neutral.
+ *
+ * This is the rung that was missing between "16 driver gains" (which change what
+ * the music *says*, indirectly, and differently on every seed) and 268 fine
+ * sliders (which the modulator writes over on the next tick). A macro is neither:
+ * it is a multiplier applied where the sim composes its final numbers, so it
+ * survives every reroll, every load and every tick, and it means the same thing
+ * on every seed.
+ */
+export interface PlifeMacros {
+  /** × every species' population target (pre-clamp) */
+  density: number;
+  /** × the effective forceGain */
+  force: number;
+  /** × every species' radiusScale (the shader still clamps at the cell size) */
+  reach: number;
+  /** × maxSpeed, ÷ friction (friction floored at 0.1) */
+  agility: number;
+  /** × every species' wander */
+  chaos: number;
+  /** secondaries only: × population target and × intensity */
+  accents: number;
+  /** × render.feedback.amount (clamped ≤ 0.97) */
+  trails: number;
+}
+
+export function defaultPlifeMacros(): PlifeMacros {
+  return {
+    density: 1,
+    force: 1,
+    reach: 1,
+    agility: 1,
+    chaos: 1,
+    accents: 1,
+    trails: 1,
+  };
+}
+
+/**
+ * Panel range per macro, and the same table `PlifeSim.applyExtras` clamps a
+ * loaded file into. One source so a saved value can never sit outside the slider
+ * that is supposed to show it.
+ */
+export const MACRO_RANGE: Readonly<Record<keyof PlifeMacros, { min: number; max: number }>> = {
+  density: { min: 0, max: 2 },
+  force: { min: 0, max: 2 },
+  reach: { min: 0, max: 2 },
+  agility: { min: 0, max: 2 },
+  chaos: { min: 0, max: 2 },
+  accents: { min: 0, max: 2 },
+  trails: { min: 0, max: 1.5 },
+};
+
+/** Order the macro folder lists them in, with the wiring stated in the label. */
+export const MACRO_LABELS: readonly { key: keyof PlifeMacros; label: string }[] = [
+  { key: 'density', label: 'density  (× all populations)' },
+  { key: 'force', label: 'force  (× forceGain·forceScale)' },
+  { key: 'reach', label: 'reach  (× radius scales)' },
+  { key: 'agility', label: 'agility  (× speed, ÷ friction)' },
+  { key: 'chaos', label: 'chaos  (× wander)' },
+  { key: 'accents', label: 'accents  (× accent pop + glow)' },
+  { key: 'trails', label: 'trails  (× echo persistence)' },
+];
+
+/**
+ * How a seed *draws* the interaction matrix and the radii.
+ *
+ * These are **generation** settings, not parameters: they act once, at reroll
+ * time (`seedMatrixBase` in `genmatrix.ts`), and never per tick. Nothing here is
+ * in θ, nothing here is modulated, and nothing here is read by the shader — what
+ * reaches the GPU is the matrix these numbers produced.
+ *
+ * Why they exist at all: before this the matrix and the radii shipped as
+ * constants and the seed only jittered them, so every seed looked like the same
+ * world wearing a slightly different hat. Drawing the whole matrix from the seed
+ * — the way a hand-rolled particle-life sim does — is what makes a reroll a new
+ * *creature* rather than a new mood.
+ *
+ * **Persistence:** these ride the mapping file's opaque `extras` block (see
+ * `PlifeSim.serializeExtras` / `applyExtras`). A load restores the settings, but
+ * it does *not* re-draw: the drawn θ is already in the saved vector, so a loaded
+ * file reproduces its look regardless, and pressing "redraw from settings" is
+ * how you ask for a new matrix under the restored numbers.
+ */
+export interface MatrixGenConfig {
+  /** stddev of the Gaussian each coupled attraction cell is drawn from */
+  sigma: number;
+  /** 0 = fully asymmetric draw (chasing dynamics), 1 = forced symmetric (the classic rule) */
+  symmetry: number;
+  /** added to every PRIMARY diagonal after the draw; <0 = self-avoiding (filigree), >0 = cohesive blobs */
+  selfBias: number;
+  /**
+   * Added to every SECONDARY diagonal instead. Defaults negative: an accent
+   * that self-attracts collapses its small population into one bright point —
+   * self-dispersal is what makes accents read as filigree threaded through the
+   * primaries rather than as four more blobs.
+   */
+  selfBiasAccent: number;
+  /** multiplier on the drawn value in every secondary-coupled cell (the accents' edges) */
+  accentGain: number;
+  /** uniform band the per-pair inner (hard-core) radius is drawn from, world units */
+  rMin: { lo: number; hi: number };
+  /** uniform band the per-pair outer radius is drawn from, world units */
+  rMax: { lo: number; hi: number };
+}
+
+/**
+ * The shipped generation settings.
+ *
+ * `symmetry` 0.25 is mostly-asymmetric on purpose: a symmetric matrix settles
+ * into static blobs, and the chase/orbit behaviour that makes particle life
+ * worth watching *is* the asymmetry. `selfBias` +0.15 keeps every species
+ * cohesive enough to clump at all, since a zero-mean draw would leave half the
+ * diagonals self-repulsive and those species would never form anything.
+ */
+export function defaultMatrixGen(): MatrixGenConfig {
+  return {
+    sigma: 0.45,
+    symmetry: 0.25,
+    selfBias: 0.15,
+    selfBiasAccent: -0.2,
+    accentGain: 1.0,
+    rMin: { lo: 0.003, hi: 0.005 },
+    rMax: { lo: 0.008, hi: 0.014 },
+  };
+}
+
+export interface PlifeConfig {
+  /** phase-7 render chain. Structural (outside θ) but saved with the mapping. */
+  render: RenderConfig;
+  /** the performance layer: seven multipliers the modulator never writes. Outside θ. */
+  macros: PlifeMacros;
+  /** dynamic population: stems → colony size, novelty → accents. Outside θ. */
+  population: PlifePopulationConfig;
+  /** how a seed draws the matrix and radii. Generation-time only; outside θ. */
+  matrixGen: MatrixGenConfig;
+  /** K. 8 by design — see the partition note at the top of this file. */
+  speciesCount: number;
+  /** pool size; the per-species segment is floor(maxParticles / K) */
+  maxParticles: number;
+  /** global multiplier on the summed pair force */
+  forceGain: number;
+  /** world units per second, hard clamp on |v| */
+  maxSpeed: number;
+  /** scene exposure, multiplied in the particle shader (pre-measure) */
+  exposure: number;
+  gamma: number;
+  /** sim substeps per clock tick, accumulated so fractional values work */
+  speed: number;
+  paused: boolean;
+  /** static per-species colour; not part of θ */
+  palette: Palette;
+  species: PlifeSpeciesConfig[];
+  /** K·K row-major; `[i*K+j]` = force ON species i FROM species j */
+  attraction: number[];
+  /** K·K, world units — per-pair inner (hard-core) radius. Static; not modulated. */
+  minR: number[];
+  /** K·K, world units — per-pair outer radius */
+  maxR: number[];
+}
+
+/**
+ * Shipped hues. 0–3 are the primaries and deliberately reuse physarum's stem
+ * colours — bass is orange in both sims, which is the one piece of identity
+ * worth sharing across substrates. 4–7 are the accents: lighter, higher-key
+ * relatives of their primary, so a secondary reads as "the same instrument,
+ * sparkling" rather than as a fifth voice.
+ */
+const PALETTE_HEX: readonly string[] = [
+  '#ff7a1a', // bass
+  '#ff2f6d', // drums
+  '#35d6ff', // vocals
+  '#a56bff', // other
+  '#ffd24a', // bass·acc   — warm gold off the orange
+  '#ff8a5c', // drums·acc  — coral off the magenta
+  '#8dffe0', // vocals·acc — mint off the cyan
+  '#f0a8ff', // other·acc  — orchid off the violet
+];
+
+/** Fallback colour for `paletteLinear` when the palette is shorter than K. */
+export function defaultPlifePaletteColor(index: number): string {
+  return PALETTE_HEX[index % PALETTE_HEX.length] as string;
+}
+
+export function defaultPlifePalette(k: number): Palette {
+  return {
+    colors: Array.from({ length: Math.max(1, k) }, (_, i) => defaultPlifePaletteColor(i)),
+    saturation: 1,
+    brightness: 1,
+  };
+}
+
+/** How many species are primaries. The rest are accents keyed to the same stems. */
+export const PRIMARY_COUNT = 4;
+
+interface Template extends Omit<PlifeSpeciesConfig, 'name' | 'brightness'> {
+  name: string;
+}
+
+/**
+ * Per-species character. The differentiation is *mild* on purpose: this is the
+ * shipped starting point and the seeded personality jitter (preset.ts) plus the
+ * workbench are what turn it into a look. What each knob buys:
+ *
+ * - **bass** reaches furthest (`radiusScale` 1.25) and slides longest
+ *   (`friction` 1.8) with the largest sprite. Low end should read as mass in
+ *   motion, not as detail.
+ * - **drums** is the opposite in every axis: short reach (0.85), heavy damping
+ *   (3.5) and a small sprite, so a hit resolves *now* and does not smear into
+ *   the next one. This is the species the impulse lane hits hardest.
+ * - **vocals** gets extra wander (0.035), which is the cheapest way to make a
+ *   line feel sung rather than sequenced — it never settles completely.
+ * - **other** gets the longest streak (`stretch` 3.5), which turns pads and
+ *   texture into motion rather than into more dots.
+ *
+ * Secondaries share one template: sparse (0.1 alive), bright (1.6), small,
+ * loose (`forceScale` 1.3, `wander` 0.05) and very streaky (`stretch` 6.5).
+ * Together those make an accent that arrives as a spark and leaves a comet.
+ *
+ * The `stretch` values were raised ~1.6× when the feedback zoom went to 1.0.
+ * A radially expanding echo used to manufacture a fake streak on every particle,
+ * which drowned the real velocity stretch; with that gone the honest cue has to
+ * carry the motion by itself, and at the old numbers it barely read.
+ */
+const TEMPLATES: readonly Template[] = [
+  {
+    name: 'bass',
+    role: 'primary',
+    intensity: 1.2,
+    aliveFraction: 0.35,
+    radiusScale: 1.25,
+    forceScale: 1,
+    friction: 1.8,
+    wander: 0.02,
+    size: 0.0028,
+    stretch: 4,
+  },
+  {
+    name: 'drums',
+    role: 'primary',
+    intensity: 1.2,
+    aliveFraction: 0.35,
+    radiusScale: 0.85,
+    forceScale: 1,
+    friction: 3.5,
+    wander: 0.02,
+    size: 0.0018,
+    stretch: 4,
+  },
+  {
+    name: 'vocals',
+    role: 'primary',
+    intensity: 1.2,
+    aliveFraction: 0.35,
+    radiusScale: 1,
+    forceScale: 1,
+    friction: 2.5,
+    wander: 0.035,
+    size: 0.0022,
+    stretch: 4,
+  },
+  {
+    name: 'other',
+    role: 'primary',
+    intensity: 1.2,
+    aliveFraction: 0.35,
+    radiusScale: 1,
+    forceScale: 1,
+    friction: 2.5,
+    wander: 0.02,
+    size: 0.0022,
+    stretch: 5.5,
+  },
+];
+
+const ACCENT: Omit<Template, 'name'> = {
+  role: 'secondary',
+  intensity: 1.6,
+  aliveFraction: 0.1,
+  radiusScale: 1,
+  forceScale: 1.3,
+  friction: 2,
+  wander: 0.05,
+  size: 0.0016,
+  stretch: 6.5,
+};
+
+export function defaultPlifeSpecies(index: number, k = 8): PlifeSpeciesConfig {
+  const primaries = Math.min(PRIMARY_COUNT, k);
+  if (index < primaries) {
+    const t = TEMPLATES[index % TEMPLATES.length] as Template;
+    return { ...t, brightness: 1 };
+  }
+  const stem = (index - primaries) % TEMPLATES.length;
+  const base = TEMPLATES[stem] as Template;
+  return { ...ACCENT, name: `${base.name}·acc`, brightness: 1 };
+}
+
+/**
+ * The primary 4×4 attraction block. Row i = force on species i; column j = from
+ * species j.
+ *
+ * These are **starting points for the workbench**, not a tuned look. The shape
+ * they encode: every primary is self-cohesive (+0.4…+0.55 on the diagonal, which
+ * is what makes a species clump at all), and the off-diagonals are mixed sign
+ * with mild asymmetry — bass pulls on drums harder than drums pulls back, vocals
+ * pushes 'other' away while 'other' chases it. Asymmetric pairs are the whole
+ * reason particle life produces chase/orbit behaviour instead of settling into
+ * static blobs, so the asymmetry is the load-bearing part; the exact magnitudes
+ * are not.
+ */
+const PRIMARY_BLOCK: readonly number[] = [
+  //  bass  drums vocals other
+  0.5, -0.2, 0.15, 0.3, // bass
+  -0.25, 0.45, 0.35, -0.15, // drums
+  0.2, 0.1, 0.55, -0.3, // vocals
+  0.35, -0.1, -0.2, 0.4, // other
+];
+
+/**
+ * The full K×K attraction matrix, with the secondary partition applied.
+ *
+ * Secondary `4+n`: chases primary n (+0.5), avoids primary n+1 (−0.35), and
+ * disperses from itself (−0.15) so it strings out into filigree instead of
+ * balling up. Primary n barely notices its own accent (+0.08) — enough that the
+ * accent perturbs the primary's shape, far too little to let the accent drag it.
+ * Every other cell is exactly 0 and stays that way (preset.ts excludes them).
+ *
+ * **This is a placeholder, not what you will see.** The modulator's `seedBase`
+ * hook (`genmatrix.ts`) overwrites the whole attraction block on the first
+ * rewire, which happens before the first frame — so on screen the matrix is
+ * always a seeded draw. This function survives because it is the pre-rewire
+ * value (the app is briefly alive without a Modulator, e.g. with no timeline),
+ * and because it is the shape the tests pin the partition against.
+ */
+export function defaultAttraction(k = 8): number[] {
+  const a = new Array<number>(k * k).fill(0);
+  const p = Math.min(PRIMARY_COUNT, k);
+  for (let i = 0; i < p; i++) {
+    for (let j = 0; j < p; j++) {
+      a[i * k + j] = PRIMARY_BLOCK[i * PRIMARY_COUNT + j] ?? 0;
+    }
+  }
+  for (let n = 0; n + p < k && n < p; n++) {
+    const i = p + n;
+    a[i * k + n] = 0.5;
+    a[i * k + ((n + 1) % p)] = -0.35;
+    a[i * k + i] = -0.15;
+    a[n * k + i] = 0.08;
+  }
+  return a;
+}
+
+/**
+ * Per-pair radii, deterministic rather than random.
+ *
+ * The variety here is *shipped art direction*: a matrix where every pair has the
+ * same band produces a single characteristic length and the image looks like one
+ * material. Different bands per pair are what make some pairs form tight shells
+ * and others loose halos at the same attraction strength.
+ *
+ * There is no RNG in this function on purpose — the seeded draw lives in
+ * `genmatrix.ts`, which owns both radius blocks outright and overwrites these on
+ * the first rewire, exactly as it does the attraction matrix. What is left here
+ * is the pre-rewire placeholder and the shape the tests pin the legality rules
+ * (band width, floor, cap) against.
+ */
+export function defaultRadii(k = 8): { minR: number[]; maxR: number[] } {
+  const minR = new Array<number>(k * k).fill(0);
+  const maxR = new Array<number>(k * k).fill(0);
+  for (let i = 0; i < k; i++) {
+    for (let j = 0; j < k; j++) {
+      const o = i * k + j;
+      const lo = 0.003 + (0.002 * ((i * 3 + j * 7) % 5)) / 4;
+      const hi = 0.008 + (0.006 * ((i * 5 + j * 3) % 7)) / 6;
+      minR[o] = lo;
+      // A band narrower than 4 mm of world makes the tent a spike, which reads
+      // as a hard shell with no gradient — always leave room for the ramp.
+      maxR[o] = Math.max(hi, lo + 0.004);
+    }
+  }
+  return { minR, maxR };
+}
+
+export function defaultPlifeConfig(speciesCount = 8): PlifeConfig {
+  const k = Math.max(1, Math.floor(speciesCount));
+  const { minR, maxR } = defaultRadii(k);
+  const render = defaultRenderConfig();
+  // Feedback IS the trail persistence for plife. Physarum accumulates memory in
+  // its own trail field and therefore ships with feedback off; a particle sim
+  // has no field at all, so without a render-domain echo the image is a cloud of
+  // unconnected dots and every motion cue is lost. 0.88 per 60 Hz frame is
+  // roughly a half-second tail — long enough to draw the path, short enough that
+  // the frame does not smear to mush.
+  //
+  // Zoom is 1.0 — no radial drift — and that is a fix, not a taste change. The
+  // fade pass expands the echo away from the centre once per *rendered* frame,
+  // so at 1.0015 on a 240 Hz display the echo crawled outward ~1.4× per second
+  // and every particle grew a streak pointing away from screen centre with a
+  // length proportional to its radius. That fake radial smear is what was being
+  // read as the velocity stretch. Radial drift is now an opt-in effect: the
+  // slider is still there, and the per-frame exponentiation in `writeGlobals`
+  // means whatever you dial reads the same on any refresh rate.
+  render.feedback = { amount: 0.88, zoom: 1.0 };
+  // No soil in this sim, so the ember underlay has nothing to draw from.
+  render.grade.soilTint = 0;
+  return {
+    render,
+    macros: defaultPlifeMacros(),
+    population: defaultPlifePopulation(),
+    matrixGen: defaultMatrixGen(),
+    speciesCount: k,
+    // 2^18. See the perf note in plife.ts: this is the single biggest lever on
+    // frame time, because the force pass cost is (alive particles) × (candidates
+    // per 3×3 neighbourhood) and both terms scale with it. The first build
+    // shipped 2^20; the user's call was to cap around 256k — the fully-swelled
+    // worst case (every population multiplier at its ceiling) is now bounded by
+    // this rather than merely unlikely to be hit.
+    maxParticles: 262_144,
+    forceGain: 1,
+    maxSpeed: 0.3,
+    // The particle shader multiplies colour by exposure · 2^exposureEv and
+    // auto-exposure adapts on top of that, so this only has to put the frame in
+    // the right decade. 1.0 was the first guess and measured wrong: at default
+    // density the controller sat pinned at its 0.05 minimum-gain rail (scene
+    // ~20× too bright before adaptation), which leaves it no room to pull a
+    // dense chorus down. 0.1 parks the adapted gain mid-range with headroom in
+    // both directions — same reasoning that put physarum at 0.01.
+    exposure: 0.1,
+    gamma: 2.2,
+    speed: 1,
+    paused: false,
+    palette: defaultPlifePalette(k),
+    species: Array.from({ length: k }, (_, i) => defaultPlifeSpecies(i, k)),
+    attraction: defaultAttraction(k),
+    minR,
+    maxR,
+  };
+}

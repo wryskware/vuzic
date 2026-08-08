@@ -12,14 +12,19 @@ import { TuningLog } from './mapping/tuninglog';
 import { ImpulseEngine } from './sim/impulses';
 import { defaultConfig } from './sim/physarum/config';
 import { PhysarumSim } from './sim/physarum/physarum';
+import { defaultPlifeConfig } from './sim/plife/config';
+import { PlifeSim } from './sim/plife/plife';
 import { resolveSeed } from './sim/seed';
-import type { Sim } from './sim/types';
 import { loadTimeline } from './timeline/loader';
 import { TimelineSampler } from './timeline/sampler';
 import { createPanel, type PanelHandle } from './ui/panel';
+import { createPlifePanel } from './ui/plife-panel';
 
 const DEFAULT_TRACK = 'free-fall';
 const FALLBACK_TRACK = 'synthetic';
+const DEFAULT_SIM = 'physarum';
+/** Every `?sim=` value that resolves to a real substrate. */
+const SIMS = ['physarum', 'plife'] as const;
 const SECONDS_PER_TICK = 1 / 60;
 const MAX_FREE_TICKS_PER_FRAME = 4;
 const PANEL_REFRESH_FRAMES = 30;
@@ -34,6 +39,17 @@ const fatalHost = document.getElementById('fatal-host') as HTMLElement;
 function requestedTrack(): string {
   const param = new URLSearchParams(location.search).get('track');
   return param !== null && /^[A-Za-z0-9._-]+$/.test(param) ? param : DEFAULT_TRACK;
+}
+
+/**
+ * `?sim=` picks the simulation, the same way `?track=` picks the timeline. It is
+ * also the persistence key (`ModTarget.simId`), so an unknown value has to be
+ * refused rather than passed through — otherwise `?sim=typo` would quietly start
+ * physarum against an empty autosave slot named after the typo.
+ */
+function requestedSim(): string {
+  const param = new URLSearchParams(location.search).get('sim');
+  return param !== null && /^[a-z-]+$/.test(param) ? param : DEFAULT_SIM;
 }
 
 async function main(): Promise<void> {
@@ -70,20 +86,43 @@ async function main(): Promise<void> {
     onSeek: (t) => clock.seek(t),
   });
 
-  const physarum = new PhysarumSim(seed, defaultConfig(4));
-  physarum.setStemChannel(sampler.getChannel('stems'));
-  const sim: Sim = physarum;
+  // Resolve which sim to build before building it, so a second substrate slots
+  // in here rather than being threaded through the twenty call sites below —
+  // those all talk to `ModTarget` now and do not care which one they got.
+  const wantedSim = requestedSim();
+  if (!(SIMS as readonly string[]).includes(wantedSim)) {
+    console.warn(`sim "${wantedSim}" not available; using ${DEFAULT_SIM}`);
+  }
+  // Typed as the union rather than as `Sim`: everything below this line talks to
+  // either `Sim` or `ModTarget`, both of which both substrates satisfy, and the
+  // union is only needed for the two physarum-specific call sites (the stems
+  // channel and the parameter panel) that are guarded by an instanceof.
+  const sim: PhysarumSim | PlifeSim =
+    wantedSim === 'plife'
+      ? new PlifeSim(seed, defaultPlifeConfig())
+      : new PhysarumSim(seed, defaultConfig(4));
+  // Both substrates read the stems channel directly now, for different things:
+  // physarum drives deposit with it, plife drives population. Neither is the
+  // Modulator's stem-follow lane, which owns brightness and is wired separately.
+  sim.setStemChannel(sampler.getChannel('stems'));
+  if (sim instanceof PlifeSim) {
+    // Novelty → accent population. Deliberately a direct wire rather than a
+    // seeded projection: the projections give the accents character, this is
+    // what makes "the chorus arrived" legible on every seed.
+    sim.setAccentChannels(sampler.getChannel('novelty16'), sampler.getChannel('actChorus'));
+  }
+  const simId = sim.simId;
 
   // The impulse lane. It exists whether or not the timeline carries events: with
   // none, every multiplier stays at 1 and the workbench's test-fire buttons are
   // still the way to tune the responses.
   const impulses = new ImpulseEngine(
     seed,
-    physarum.config.speciesCount,
+    sim.config.speciesCount,
     sampler.events,
     SECONDS_PER_TICK,
   );
-  physarum.setImpulses(impulses.state);
+  sim.setImpulses(impulses.state);
   if (sampler.events.length === 0) {
     console.info(`timeline "${track}" has no events array; impulses idle until test-fired`);
   }
@@ -92,13 +131,13 @@ async function main(): Promise<void> {
   // structure channels and its 64-dim latent channel, variance-reordered and
   // z-scored once, here (plan.md Revision 4). No sidecar, no background upgrade.
   const drivers = buildDriverBank(timeline);
-  const stored = loadModulationLocal();
+  const stored = loadModulationLocal(simId);
   const modConfig =
-    stored && modulationFits(stored, physarum.config.speciesCount)
+    stored && modulationFits(stored, sim.config.speciesCount, simId)
       ? stored
-      : defaultModulationConfig(physarum.config);
+      : defaultModulationConfig(sim.config, simId);
   const modulator = new Modulator(
-    physarum,
+    sim,
     sampler,
     drivers,
     modConfig,
@@ -114,7 +153,7 @@ async function main(): Promise<void> {
   // One seed, three consumers. Hotspot placement, projection wiring and the
   // seeded personality all re-key from here, so a reseed, a reroll and a snapshot
   // restore each move all three together without any caller remembering to.
-  physarum.onSeedChange = (s) => {
+  sim.onSeedChange = (s) => {
     impulses.setSeed(s);
     modulator.setSeed(s);
   };
@@ -128,26 +167,32 @@ async function main(): Promise<void> {
   try {
     gpu = await initGpu(stage);
     await sim.init(gpu);
-    panel = createPanel(physarum, {
+    // A panel binds tweakpane widgets to its sim's config fields by name, so each
+    // substrate has its own. Everything *around* the widgets — the workbench, the
+    // impulse folder, the HDR chain — is shared, so the two calls differ only in
+    // which factory they name and take identical options.
+    const panelOpts = {
       pinned,
       // Both restart buttons land here, after sim.reseed() — which has already
       // re-keyed the hotspots via onSeedChange. What is left is dropping any
       // envelope still ringing and putting the transport back to the top.
-      onRestart: () => {
+      onRestart: (): void => {
         impulses.reset();
         clock.seek(0);
       },
       impulses,
       workbench: {
-        sim: physarum,
+        sim,
         modulator,
         log: tuningLog,
         trackId: timeline.manifest.track.id,
         time: () => clock.time,
         tick: () => clock.simTick,
-        seek: (t) => clock.seek(t),
+        seek: (t: number) => clock.seek(t),
       },
-    });
+    };
+    panel =
+      sim instanceof PhysarumSim ? createPanel(sim, panelOpts) : createPlifePanel(sim, panelOpts);
     panel.refresh();
   } catch (err) {
     console.error(err);
@@ -161,7 +206,7 @@ async function main(): Promise<void> {
   // (snapshot/restore fidelity, mapping behaviour across sections) need a way in.
   if (import.meta.env.DEV) {
     (globalThis as unknown as Record<string, unknown>)['terrarium'] = {
-      sim: physarum,
+      sim,
       modulator,
       sampler,
       clock,
@@ -249,18 +294,18 @@ async function main(): Promise<void> {
     overlay.draw(clock.tickTime, {
       tick: clock.simTick,
       playing: clock.isPlaying,
-      seed: physarum.currentSeed,
+      seed: sim.currentSeed,
     });
 
     if (panel && frameCount % PANEL_REFRESH_FRAMES === 0) panel.refresh();
     frameCount++;
 
     playButton.textContent = clock.isPlaying ? 'pause' : 'play';
-    const st = physarum.stats();
+    // The middle segment is the sim's own (`Sim.status`); everything around it is
+    // the same whichever substrate is running.
     statusEl.textContent =
       `${track} · ${clock.sourceKind} audio · sim "${sim.name}" ` +
-      `${st.gridW}×${st.gridH}×${physarum.config.speciesCount} · ` +
-      `${st.aliveAgents.toLocaleString()} agents · seed ${physarum.currentSeed} · ` +
+      `${sim.status()} · ` +
       `${modulator.mode}${
         modulator.mode === 'modulated' ? ` ${modulator.sourceLabel}` : ''
       } · ${gpuState}`;
