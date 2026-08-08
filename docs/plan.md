@@ -376,6 +376,40 @@ Three user decisions from watching the phase 1–5 build run on Free Fall:
    remaining phases (events, soil, rendering) are expected to carry most of
    the visible reactivity.
 
+## Revision 3 — 2026-08-07: no scenes. Continuous modulation.
+
+The preset-simplex / anchor model (Decision 4) is **rejected by the user** after
+hands-on use. Verbatim intent: "I do not care about scenes. I want real time
+reactivity and morphing parameters… we should basically be taking the whole
+embedding and using that somehow to drive species params in real time." Tuning
+per-anchor presets is exactly the workload the user does not want.
+
+Replacement: **seeded random projection modulation.**
+
+- Each modulatable parameter p has a random unit direction w_p in embedding
+  space, keyed on (seed, paramIndex). Per tick:
+  `p = clamp(base_p + halfRange_p · tanh(depth · (w_p · ẑ)), lo, hi)`.
+  Bounded by construction; continuously morphing at timeline rate. Safe because
+  physarum tolerates arbitrary in-range sweeps (the substrate was chosen for
+  exactly this).
+- **base_p is seeded too** — jittered within safe bounds around curated
+  defaults. A new seed is a new personality AND new wiring; the workflow is
+  reroll-and-pin, not tune-and-capture. (Direct user ask: "species parameters
+  should be randomized too.")
+- Input ẑ: the raw pooled 1024-dim MuQ embedding (embedding.bin), per-dim
+  z-scored per track at load; fallback to the PCA-64 latent channel when the
+  raw file is absent. The PCA intermediate is no longer load-bearing.
+- Slew stays (per-class response speeds), depths default LEGIBLE. The impulse
+  lane, stems→population drive, soil, static palette, and render chain are
+  unchanged and compose after modulation as before.
+- Anchors, k-means, simplex, solo/capture are deleted. Boundary partial
+  reseeds survive as an optional event (they are events, not scenes). The
+  mapping file becomes a ModulationConfig (depths, speeds, palette, render);
+  v2 files load with anchors discarded and a warning.
+- The distilled-NN idea in "Later" survives — random projection is the
+  zero-training baseline of exactly that mapping, and reroll choices are
+  themselves preference data.
+
 ## Later, and deliberately not now
 
 Additive to the timeline: SongFormer labels, CLAP text-anchor axes,
