@@ -3,7 +3,7 @@ import type { PhysarumSim } from '../sim/physarum/physarum';
 import type { AdaptiveTriple, SpeciesConfig } from '../sim/physarum/config';
 import { MAX_BLOOM_LEVELS, TONEMAPS, type ToneMap } from '../sim/render/config';
 import type { ImpulseEngine } from '../sim/impulses';
-import { randomSeed, setPinnedSeed } from '../sim/seed';
+import { randomSeed, setPinnedSeed, syncUrlSeed } from '../sim/seed';
 import { createImpulsePanel, type ImpulsePanelHandle } from './impulses-panel';
 import { createWorkbench, type WorkbenchHandle, type WorkbenchHost } from './workbench';
 
@@ -14,8 +14,11 @@ export interface PanelHandle {
   dispose(): void;
 }
 
-/** Everything the phase-5 workbench needs from the app, minus what the panel supplies itself. */
-export type PanelWorkbench = Omit<WorkbenchHost, 'onConfigReplaced'>;
+/**
+ * Everything the workbench needs from the app, minus what the panel supplies
+ * itself. `restart` comes from the panel's own `onRestart`.
+ */
+export type PanelWorkbench = Omit<WorkbenchHost, 'onConfigReplaced' | 'pinned' | 'restart'>;
 
 interface RunState {
   seed: string;
@@ -25,9 +28,13 @@ interface RunState {
 }
 
 /**
- * The embryo of the phase-5 workbench. Everything here binds straight to the live
- * config object; the sim re-reads it every step, so there are no change handlers
- * except where GPU state has to be rebuilt (matrix upload, reseed).
+ * The live control panel. Everything here binds straight to the live config
+ * object; the sim re-reads it every step, so there are no change handlers except
+ * where GPU state has to be rebuilt (matrix upload, reseed).
+ *
+ * Seed controls appear here **only when there is no workbench**. With one, the
+ * seed is the world seed — wiring, personality and agent placement at once — and
+ * it lives in the modulation folder, in one place rather than two.
  */
 export function createPanel(
   sim: PhysarumSim,
@@ -35,7 +42,7 @@ export function createPanel(
     pinned: boolean;
     /** rewind the transport: a restart must not resume against an arbitrary timeline position */
     onRestart?: () => void;
-    /** omit to get the phase-4 panel with no mapping layer at all */
+    /** omit to get the phase-4 panel with no modulation layer at all */
     workbench?: PanelWorkbench;
     /** omit to hide the events folder entirely */
     impulses?: ImpulseEngine;
@@ -54,22 +61,28 @@ export function createPanel(
   };
 
   const run = pane.addFolder({ title: 'run' });
-  run.addBinding(state, 'seed', { readonly: true });
-  run.addBinding(state, 'pin', { label: 'pin seed' }).on('change', (ev) => {
-    setPinnedSeed(ev.value ? sim.currentSeed : null);
-  });
-  run.addButton({ title: 'reseed + restart' }).on('click', () => {
-    const seed = randomSeed();
-    sim.reseed(seed);
-    opts.onRestart?.();
-    state.seed = String(seed);
-    if (state.pin) setPinnedSeed(seed);
-    pane.refresh();
-  });
-  run.addButton({ title: 'restart (same seed)' }).on('click', () => {
-    sim.reseed(sim.currentSeed);
-    opts.onRestart?.();
-  });
+  if (!opts.workbench) {
+    run.addBinding(state, 'seed', { readonly: true });
+    run.addBinding(state, 'pin', { label: 'pin seed' }).on('change', (ev) => {
+      setPinnedSeed(ev.value ? sim.currentSeed : null);
+      syncUrlSeed(ev.value ? sim.currentSeed : null);
+    });
+    run.addButton({ title: 'reseed + restart' }).on('click', () => {
+      const seed = randomSeed();
+      sim.reseed(seed);
+      opts.onRestart?.();
+      state.seed = String(seed);
+      // Keep an existing ?seed= pointing at the live world; without this a URL
+      // param outranks both the reroll and the pin on the next reload.
+      syncUrlSeed(seed);
+      if (state.pin) setPinnedSeed(seed);
+      pane.refresh();
+    });
+    run.addButton({ title: 'restart (same seed)' }).on('click', () => {
+      sim.reseed(sim.currentSeed);
+      opts.onRestart?.();
+    });
+  }
   run.addBinding(config, 'paused');
   run.addButton({ title: 'single step' }).on('click', () => {
     config.paused = true;
@@ -90,14 +103,14 @@ export function createPanel(
     label: 'sense gain (x)',
   });
 
-  // Stems bypass the simplex by design: the mapping layer does character, stems
-  // do "an instrument just came in".
+  // Stems bypass the modulator by design: the projections do character, stems do
+  // "an instrument just came in".
   const music = pane.addFolder({ title: 'music · stems (direct path)', expanded: false });
   music.addBinding(config, 'stemDrive', { label: 'stems → deposit' });
   music.addBinding(config, 'stemGain', { min: 0, max: 6, step: 0.1, label: 'stem gain' });
 
   // Track-scale memory. Structural, like the grid: outside θ, so nothing here is
-  // blended or slewed — you set it once for a track and let it run.
+  // modulated or slewed — you set it once for a track and let it run.
   const soil = pane.addFolder({ title: 'soil · track-scale memory', expanded: false });
   soil.addBinding(config.soil, 'debugView', { label: 'debug view (soil only)' });
   // τ ≈ 1/(1-decay) ticks; 0.999 ≈ 17 s and 0.9999 ≈ 3 min at 60 fps, which is the
@@ -130,8 +143,7 @@ export function createPanel(
     sim.clearSoil();
   });
 
-  // Above the mapping folder on purpose: impulses are the fastest-moving lane and
-  // the one being tuned in this round.
+  // Above the modulation folder on purpose: impulses are the fastest-moving lane.
   let impulsePanel: ImpulsePanelHandle | null = null;
   if (opts.impulses) {
     impulsePanel = createImpulsePanel(pane, opts.impulses, (i) => config.species[i]?.name ?? `${i}`);
@@ -141,8 +153,10 @@ export function createPanel(
   if (opts.workbench) {
     workbench = createWorkbench(pane, {
       ...opts.workbench,
-      // A load/refit/solo rewrites the live config wholesale; the species and
-      // matrix widgets below are bound to that object and must be re-read.
+      pinned: opts.pinned,
+      restart: () => opts.onRestart?.(),
+      // A reroll or a file load rewrites the live config wholesale; the species
+      // and matrix widgets below are bound to that object and must be re-read.
       onConfigReplaced: () => {
         syncMatrixProxy();
         pane.refresh();
@@ -150,9 +164,9 @@ export function createPanel(
     });
   }
 
-  // Static art direction, outside the anchor system entirely (plan.md Revision 2).
-  // Editing these edits the object the mapping file serialises.
-  const palette = pane.addFolder({ title: 'palette (static — never blended)', expanded: false });
+  // Static art direction, outside the modulation registry entirely (plan.md
+  // Revision 2). Editing these edits the object the config file serialises.
+  const palette = pane.addFolder({ title: 'palette (static — never modulated)', expanded: false });
   const colorProxy: Record<string, string> = {};
   for (let i = 0; i < k; i++) {
     const key = `c${i}`;
@@ -174,7 +188,7 @@ export function createPanel(
     .on('change', () => sim.invalidatePalette());
 
   const speciesRoot = pane.addFolder({
-    title: opts.workbench ? 'species  (live values in mapped mode)' : 'species',
+    title: opts.workbench ? 'species  (live values while modulating)' : 'species',
   });
   for (let i = 0; i < k; i++) {
     const s = config.species[i];
@@ -206,7 +220,7 @@ export function createPanel(
     }
   }
 
-  /** The matrix and palette widgets edit proxies, so a load/refit has to be pulled back in. */
+  /** The matrix and palette widgets edit proxies, so a load or reroll has to be pulled back in. */
   function syncMatrixProxy(): void {
     for (let i = 0; i < k; i++) {
       colorProxy[`c${i}`] = config.palette.colors[i] ?? '#ffffff';
@@ -254,10 +268,10 @@ function addRenderFolder(pane: Pane, sim: PhysarumSim): () => void {
   // where the controller has settled. Both are one or two frames stale.
   root.addBinding(readout, 'adapt', { readonly: true, label: 'gain / mean' });
 
-  // Scene exposure and gamma stay in θ: they are the two grading knobs the
-  // mapper is allowed to move, and moving them per anchor predates phase 7.
-  const scene = root.addFolder({ title: 'scene exposure (θ)', expanded: true });
-  // min matches the θ bound in mapping/preset.ts; below it the mapper clamps back
+  // Scene exposure and gamma are in θ but **excluded from modulation** — see the
+  // exclusion note in mapping/preset.ts. They are yours, always.
+  const scene = root.addFolder({ title: 'scene exposure (manual only)', expanded: true });
+  // min matches the θ bound in mapping/preset.ts
   scene.addBinding(config, 'exposure', { min: 0.005, max: 1.5, step: 0.001, label: 'exposure' });
   scene.addBinding(config, 'gamma', { min: 1, max: 3, step: 0.05, label: 'display gamma' });
   scene.addBinding(r.grade, 'exposureEv', { min: -8, max: 8, step: 0.05, label: 'trim (stops)' });

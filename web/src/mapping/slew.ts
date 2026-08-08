@@ -1,8 +1,8 @@
 /**
- * Per-parameter-class slew limiting, applied between the simplex output and the
- * sim. Plan.md's rule: "parameter motion faster than the sim's relaxation time
+ * Per-parameter-class slew limiting, applied between the modulator's output and
+ * the sim. Plan.md's rule: "parameter motion faster than the sim's relaxation time
  * produces mush", so each slot approaches its target with a time constant chosen
- * by its class rather than snapping to the blended value.
+ * by its class rather than snapping to the projected value.
  *
  * Exponential approach (a first-order low pass), not a constant-rate ramp:
  * α = 1 − exp(−dt/τ) is frame-rate independent, never overshoots, and is
@@ -13,7 +13,7 @@
 import { CLASS_FAST, CLASS_MEDIUM, CLASS_SLOW } from './preset.ts';
 
 export interface SlewRates {
-  /** deposit, sensor angle, colour — tracks the 10 Hz timeline */
+  /** brightness, deposit, sensor angle — tracks the 10 Hz signal */
   fast: number;
   /** geometry the trail field has to catch up with */
   medium: number;
@@ -21,7 +21,16 @@ export interface SlewRates {
   slow: number;
 }
 
-export const DEFAULT_SLEW: SlewRates = { fast: 0.12, medium: 1.2, slow: 8 };
+/**
+ * Revision 3 defaults, materially faster than the scene era's {0.12, 1.2, 8}.
+ * The old numbers were sized to make a jump *between anchors* look like a
+ * dissolve; there are no anchors now and the target is already continuous, so
+ * heavy smoothing only buys latency. τ=0.05 s tracks the 10 Hz input almost
+ * exactly (the input's own hop is 0.1 s), 0.5 s is the "shape is changing"
+ * timescale, and 8 s keeps decay/alive-fraction/M at section scale where the
+ * trail field can follow them without turning to mush.
+ */
+export const DEFAULT_SLEW: SlewRates = { fast: 0.05, medium: 0.5, slow: 8 };
 
 export class SlewLimiter {
   readonly value: Float64Array;
@@ -43,7 +52,7 @@ export class SlewLimiter {
     this.tau[CLASS_SLOW] = Math.max(rates.slow, 0);
   }
 
-  /** Jump the whole state to `v` — used on load, on solo, and after a restore. */
+  /** Jump the whole state to `v` — used on load, on a reroll, and after a mode switch. */
   reset(v: ArrayLike<number>): void {
     for (let i = 0; i < this.value.length; i++) this.value[i] = (v[i] as number) ?? 0;
   }

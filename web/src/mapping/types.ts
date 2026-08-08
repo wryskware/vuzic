@@ -1,19 +1,14 @@
 import type { Palette } from '../sim/physarum/config.ts';
 import type { RenderConfig } from '../sim/render/config.ts';
-import type { Preset } from './preset.ts';
+import type { ModGroup } from './preset.ts';
 import type { SlewRates } from './slew.ts';
 
-/** One vertex of the simplex: a point in latent space and the θ that belongs there. */
-export interface Anchor {
-  /** stable across refits only if the anchor was hand-named; generated ids are positional */
-  id: string;
-  name: string;
-  /** k-means centre in the timeline's latent space, `latentDims` long */
-  center: number[];
-  preset: Preset;
-}
-
 export interface BoundaryOptions {
+  /**
+   * Optional, and no longer part of any scene machinery (plan.md Revision 3):
+   * a section boundary is an *event*, so it steps the slow lane and injects
+   * matter. Nothing else in the runtime knows what a section is.
+   */
   enabled: boolean;
   /** how far the slow parameters jump towards target on a section change (0..1) */
   snapFraction: number;
@@ -21,50 +16,39 @@ export interface BoundaryOptions {
   respawnFraction: number;
 }
 
-export interface KMeansSettings {
-  k: number;
-  /** fixed literal by default; changing it is a different (still reproducible) anchor set */
-  seed: number;
-  iterations: number;
-}
-
 /**
- * The whole mapping, as data. This file IS the art direction — nothing in the
- * runtime holds tuning state that is not serialised here.
+ * The whole mapping, as data. Version 3 is the Revision 3 rewrite: no anchors, no
+ * k-means, no simplex, no per-scene presets — a handful of depths and speeds, plus
+ * the two static art-direction blocks that survived unchanged.
+ *
+ * **The seed is deliberately not in here.** The seed is a run input (Decision 5)
+ * and lives in the URL or the pin, so a config file describes *how much* the music
+ * moves things, not *which* world you happened to be looking at. Sharing a file
+ * and sharing a world are two different acts.
  */
-export interface MappingConfig {
-  /** 1 = colours inside every anchor preset; 2 = one static top-level palette */
-  version: 2;
-  /** K the presets were authored for; a mismatch with the live sim forces a refit */
+export interface ModulationConfig {
+  /** 1/2 = anchor era; 3 = seeded random-projection modulation */
+  version: 3;
+  /** K this was authored for; a mismatch with the live sim cannot be applied */
   speciesCount: number;
   /**
-   * Static per-species colour, art-directed once. Top level, NOT per anchor —
-   * blending hue between anchors was the mistake Revision 2 undoes. The runtime
-   * shares this object with `PhysarumConfig.palette`, so a palette edit in the
-   * workbench is saved without any syncing step.
+   * Static per-species colour, art-directed once. The runtime shares this object
+   * with `PhysarumConfig.palette`, so a palette edit in the workbench is saved
+   * without any syncing step.
    */
   palette: Palette;
-  /**
-   * Phase 7's exposure/tone/bloom settings. Like the palette, a single top-level
-   * object shared by reference with the live `PhysarumConfig.render` and never
-   * blended per anchor — the image's grade is the track's identity, not one
-   * section's mood. Older files without it get the defaults.
-   */
+  /** Phase 7's exposure/tone/bloom settings, shared by reference like the palette. */
   render: RenderConfig;
-  /** dims of the anchors' centres, i.e. the timeline's latent channel width */
-  latentDims: number;
-  kmeans: KMeansSettings;
-  /**
-   * Simplex temperature as a multiple of `distanceScale`, so the same number
-   * means the same sharpness on any track. Effective T = temperature * distanceScale.
-   * ~0.1 is near-nearest-neighbour; ~1 blends a handful of anchors visibly.
-   */
-  temperature: number;
-  /** typical squared distance between neighbouring anchors, from the fit */
-  distanceScale: number;
+  /** false = manual: the sliders are absolute and nothing modulates */
+  enabled: boolean;
+  /** global excursion depth; 1 ≈ typical |tanh| of 0.55 on a unit projection */
+  depth: number;
+  /** per-group trim on top of `depth` */
+  groupDepth: Record<ModGroup, number>;
+  /** multiplier on the slew clock; 2 = everything reacts twice as fast */
+  responseSpeed: number;
   slew: SlewRates;
   boundary: BoundaryOptions;
-  anchors: Anchor[];
 }
 
-export const MAPPING_VERSION = 2;
+export const MODULATION_VERSION = 3;

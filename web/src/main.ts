@@ -2,16 +2,19 @@ import './style.css';
 import { AudioClock } from './audio/clock';
 import { DebugOverlay } from './debug/overlay';
 import { initGpu, renderUnsupportedPage, type GpuContext } from './gpu/context';
-import { fitMapping, latentMatrix, refitCenters } from './mapping/anchors';
-import { Mapper } from './mapping/mapper';
-import { loadMappingLocal, mappingFits, saveMappingLocal } from './mapping/persist';
+import { chooseSignal, embeddingSignal, Modulator } from './mapping/modulation';
+import {
+  defaultModulationConfig,
+  loadModulationLocal,
+  modulationFits,
+} from './mapping/persist';
 import { TuningLog } from './mapping/tuninglog';
 import { ImpulseEngine } from './sim/impulses';
 import { defaultConfig } from './sim/physarum/config';
 import { PhysarumSim } from './sim/physarum/physarum';
 import { resolveSeed } from './sim/seed';
 import type { Sim } from './sim/types';
-import { loadTimeline } from './timeline/loader';
+import { loadEmbedding, loadTimeline } from './timeline/loader';
 import { TimelineSampler } from './timeline/sampler';
 import { createPanel, type PanelHandle } from './ui/panel';
 
@@ -81,27 +84,53 @@ async function main(): Promise<void> {
     SECONDS_PER_TICK,
   );
   physarum.setImpulses(impulses.state);
-  // Hotspot placement hashes the seed, and the engine keeps its own copy — so it
-  // follows every seed change the sim makes, restores from a snapshot included.
-  physarum.onSeedChange = (s) => impulses.setSeed(s);
   if (sampler.events.length === 0) {
     console.info(`timeline "${track}" has no events array; impulses idle until test-fired`);
   }
 
-  // Anchors come from the track: k-means over its own latent channel, run once
-  // here (a few ms) and identical on every load. A saved mapping wins if it was
-  // authored for this K and this latent width; otherwise it cannot be applied
-  // field-for-field and we refit rather than guess.
-  const latent = latentMatrix(timeline);
-  const fitDefault = (): ReturnType<typeof fitMapping> =>
-    fitMapping(latent, { base: physarum.config });
-  const stored = loadMappingLocal();
-  const mappingConfig =
-    stored && mappingFits(stored, physarum.config.speciesCount, latent?.dims ?? 0)
+  // The modulation input: the wide 1024-dim embedding sidecar when the track
+  // shipped one, the 64-dim PCA latent channel when it did not (plan.md
+  // Revision 3). z-scoring happens once, here, inside the signal.
+  const signal = chooseSignal(timeline);
+  const stored = loadModulationLocal();
+  const modConfig =
+    stored && modulationFits(stored, physarum.config.speciesCount)
       ? stored
-      : fitDefault();
-  const mapper = new Mapper(physarum, sampler, mappingConfig);
+      : defaultModulationConfig(physarum.config);
+  const modulator = new Modulator(
+    physarum,
+    sampler,
+    signal,
+    modConfig,
+    seed,
+  );
+  modulator.setMode(modConfig.enabled && modulator.available ? 'modulated' : 'manual');
+  console.info(
+    `modulation: ${modulator.sourceLabel} → ${modulator.modulatedCount} parameters, ` +
+      `seed ${seed}${pinned ? ' (pinned)' : ''}`,
+  );
   const tuningLog = new TuningLog();
+
+  // …and the upgrade to the wide input, in the background. The sidecar is ~11 MB;
+  // blocking the first frame on it is a multi-second blank screen off localhost,
+  // so the app boots on the fallback and swaps when this lands. The Embedding is
+  // dropped as soon as the signal has z-scored it — only the z copy is retained.
+  void loadEmbedding(timelineUrl(track)).then((emb) => {
+    const wide = emb ? embeddingSignal(emb) : null;
+    if (wide) modulator.attachSignal(wide);
+  });
+
+  // One seed, three consumers. Hotspot placement, projection wiring and the
+  // seeded personality all re-key from here, so a reseed, a reroll and a snapshot
+  // restore each move all three together without any caller remembering to.
+  physarum.onSeedChange = (s) => {
+    impulses.setSeed(s);
+    modulator.setSeed(s);
+  };
+  // The sim has not been initialised yet (that happens below, and fires
+  // onSeedChange), but in the WebGPU-unavailable path it never will — so stamp
+  // the personality on now rather than depending on a callback that may not run.
+  modulator.applyBase();
 
   let gpu: GpuContext | null = null;
   let panel: PanelHandle | null = null;
@@ -120,24 +149,12 @@ async function main(): Promise<void> {
       impulses,
       workbench: {
         sim: physarum,
-        mapper,
+        modulator,
         log: tuningLog,
         trackId: timeline.manifest.track.id,
         time: () => clock.time,
         tick: () => clock.simTick,
         seek: (t) => clock.seek(t),
-        refit: (k) => {
-          mapper.config.kmeans.k = k;
-          const next = refitCenters(mapper.config, latent, physarum.config);
-          mapper.setConfig(next);
-          saveMappingLocal(next);
-          return next;
-        },
-        resetToFitted: () => {
-          const next = fitDefault();
-          mapper.setConfig(next);
-          return next;
-        },
       },
     });
     panel.refresh();
@@ -154,7 +171,7 @@ async function main(): Promise<void> {
   if (import.meta.env.DEV) {
     (globalThis as unknown as Record<string, unknown>)['terrarium'] = {
       sim: physarum,
-      mapper,
+      modulator,
       sampler,
       clock,
       tuningLog,
@@ -199,15 +216,15 @@ async function main(): Promise<void> {
     const wallDelta = Math.min((now - lastNow) / 1000, 0.25);
     lastNow = now;
 
-    // The mapping layer runs on the same fixed timestep as the sim, ahead of it:
-    // z → simplex → slew → config, then the sim reads that config for its step.
-    // Impulses run after the mapper and before the sim: they are a separate lane
-    // applied on top of whatever the mapper's slew limiter just wrote, never
-    // through it, so a transient is not smoothed into a ramp.
+    // The modulation layer runs on the same fixed timestep as the sim, ahead of
+    // it: ẑ → projections → tanh → slew → config, then the sim reads that config
+    // for its step. Impulses run after the modulator and before the sim: they are
+    // a separate lane applied on top of whatever the slew limiter just wrote,
+    // never through it, so a transient is not smoothed into a ramp.
     clock.pump((tick) => {
       stepIndex++;
       const features = sampler.sampleAt(tick);
-      mapper.update(features, SECONDS_PER_TICK);
+      modulator.update(features, SECONDS_PER_TICK);
       impulses.update(tick, SECONDS_PER_TICK);
       sim.tick(features, stepIndex);
     });
@@ -219,7 +236,7 @@ async function main(): Promise<void> {
         freeAccum -= SECONDS_PER_TICK;
         stepIndex++;
         const features = sampler.sampleAt(clock.simTick);
-        mapper.update(features, SECONDS_PER_TICK);
+        modulator.update(features, SECONDS_PER_TICK);
         // clock.simTick does not move while idle, so no timeline event re-fires;
         // envelopes still decay, which is what makes test-fire work while paused.
         impulses.update(clock.simTick, SECONDS_PER_TICK);
@@ -253,7 +270,9 @@ async function main(): Promise<void> {
       `${track} · ${clock.sourceKind} audio · sim "${sim.name}" ` +
       `${st.gridW}×${st.gridH}×${physarum.config.speciesCount} · ` +
       `${st.aliveAgents.toLocaleString()} agents · seed ${physarum.currentSeed} · ` +
-      `${mapper.solo !== null ? `solo ${mapper.solo}` : mapper.mode} · ${gpuState}`;
+      `${modulator.mode}${
+        modulator.mode === 'modulated' ? ` ${modulator.sourceLabel}` : ''
+      } · ${gpuState}`;
 
     requestAnimationFrame(frame);
   };

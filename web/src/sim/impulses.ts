@@ -14,12 +14,12 @@
  *
  * Why this is a separate lane and not another θ field:
  *
- * - The mapper slew-limits everything it writes, by design — parameter motion
+ * - The modulator slew-limits everything it writes, by design — parameter motion
  *   faster than the sim's relaxation time produces mush. A transient is exactly
  *   the thing that must *not* be slewed, so impulses are applied downstream of
  *   the slew limiter, multiplicatively on top of whatever set the base value.
  *   That makes them work identically in manual and mapped mode, and it means
- *   neither lane can fight the other: the mapper still owns the base, impulses
+ *   neither lane can fight the other: the modulator still owns the base, impulses
  *   own the deviation, and the deviation always decays back to 1.0.
  *
  * - Envelopes advance per *sim tick*, not per rAF, so the shape of a hit does

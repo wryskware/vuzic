@@ -1,4 +1,11 @@
-import { isEventKind, type ChannelSpec, type Timeline, type TimelineEvent, type TimelineManifest } from './types.ts';
+import {
+  isEventKind,
+  type ChannelSpec,
+  type Embedding,
+  type Timeline,
+  type TimelineEvent,
+  type TimelineManifest,
+} from './types.ts';
 
 /**
  * The `events` array is optional and additive, and the analysis half that emits it
@@ -48,6 +55,74 @@ function validate(m: TimelineManifest): number {
   return cursor;
 }
 
+interface EmbeddingManifest {
+  version?: number;
+  frames?: number;
+  dims?: number;
+  hopSeconds?: number;
+  source?: string;
+  dtype?: string;
+}
+
+/**
+ * The wide sidecar, fetched best-effort. Every failure path — 404 because the
+ * file is gitignored, a truncated .bin, a manifest that disagrees with the bytes —
+ * resolves to null with one `console.info`, because the modulator has a working
+ * 64-dim fallback and a missing optional file must never dead-end a load.
+ */
+export async function loadEmbedding(baseUrl: string): Promise<Embedding | null> {
+  const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  try {
+    const [manifestRes, binRes] = await Promise.all([
+      fetch(`${base}embedding.json`),
+      fetch(`${base}embedding.bin`),
+    ]);
+    // Vite's dev server answers an unknown path with index.html and a 200, so
+    // `ok` alone does not mean "the file exists" — check that we were actually
+    // handed JSON before parsing, or a missing sidecar logs a syntax error.
+    const isJson = manifestRes.headers.get('content-type')?.includes('json') ?? false;
+    if (!manifestRes.ok || !binRes.ok || !isJson) {
+      console.info(
+        `timeline: no embedding sidecar (embedding.json ${manifestRes.status}${
+          manifestRes.ok && !isJson ? ' but not JSON' : ''
+        } / embedding.bin ${binRes.status}) — modulation falls back to the latent channel`,
+      );
+      return null;
+    }
+    const m = (await manifestRes.json()) as EmbeddingManifest;
+    const frames = Number(m.frames);
+    const dims = Number(m.dims);
+    const hopSeconds = Number(m.hopSeconds);
+    if (!Number.isInteger(frames) || !Number.isInteger(dims) || frames < 1 || dims < 1) {
+      console.info('timeline: embedding.json has no usable frames/dims; ignoring the sidecar');
+      return null;
+    }
+    if (m.dtype !== undefined && m.dtype !== 'float32-le') {
+      console.info(`timeline: embedding dtype "${m.dtype}" is not float32-le; ignoring the sidecar`);
+      return null;
+    }
+    const buf = await binRes.arrayBuffer();
+    const expected = frames * dims * 4;
+    if (buf.byteLength !== expected) {
+      console.info(
+        `timeline: embedding.bin is ${buf.byteLength} bytes, expected ${expected} ` +
+          `(${frames}x${dims} f32); ignoring the sidecar`,
+      );
+      return null;
+    }
+    return {
+      frames,
+      dims,
+      hopSeconds: Number.isFinite(hopSeconds) && hopSeconds > 0 ? hopSeconds : 0.1,
+      data: new Float32Array(buf),
+      source: typeof m.source === 'string' ? m.source : 'embedding',
+    };
+  } catch (err) {
+    console.info('timeline: embedding sidecar unavailable —', err);
+    return null;
+  }
+}
+
 export async function loadTimeline(baseUrl: string): Promise<Timeline> {
   const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
 
@@ -70,5 +145,10 @@ export async function loadTimeline(baseUrl: string): Promise<Timeline> {
 
   const channels = new Map<string, ChannelSpec>(manifest.channels.map((c) => [c.name, c]));
   const events = normalizeEvents(manifest.events, manifest.track.duration);
-  return { manifest, data: new Float32Array(buf), stride, channels, events };
+  // The wide sidecar is deliberately NOT awaited here. It is ~11 MB and this
+  // promise gates GPU init, the panel and the first rAF, so awaiting it meant a
+  // blank screen for the whole download. `main` fetches it in the background and
+  // hands it to `Modulator.attachSignal`; until then modulation runs on the
+  // 64-dim PCA `latent` channel, which is what a fresh clone gets anyway.
+  return { manifest, data: new Float32Array(buf), stride, channels, events, embedding: null };
 }

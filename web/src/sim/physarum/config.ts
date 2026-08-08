@@ -59,9 +59,9 @@ export interface SpeciesConfig {
 
 /**
  * Static colour, art-directed once per track and never blended (plan.md
- * Revision 2). Blending hue per anchor muddied the image and made species
+ * Revision 2). Modulating hue muddied the image and made species
  * impossible to follow; the palette therefore lives *outside* θ, here and in
- * `MappingConfig.palette`, as a single object shared by both.
+ * `ModulationConfig.palette`, as a single object shared by both.
  */
 export interface Palette {
   /** per species, sRGB hex; index k is species k. Shorter than K falls back to the default. */
@@ -86,7 +86,7 @@ export interface Palette {
  * costs 1/K the memory and folds into one grid-sized branch instead of K.
  *
  * These knobs are structural, like depositScale and gridScale — they are NOT part
- * of the blended θ, so the mapper never moves them.
+ * in the modulation registry, so the music never moves them.
  */
 export interface SoilConfig {
   /** multiplicative per tick; τ ≈ 1/(1-decay) ticks. 0.999 ≈ 17 s at 60 fps */
@@ -104,7 +104,7 @@ export interface SoilConfig {
 export interface PhysarumConfig {
   /**
    * Phase 7: exposure/tone/bloom/feedback. Structural like `soil` — outside θ, so
-   * nothing here is blended between anchors, but it *is* saved with the mapping.
+   * nothing here is modulated, but it *is* saved with the modulation config.
    */
   render: RenderConfig;
   /** K. Any value >= 1; bounded only by maxTextureArrayLayers (>= 256 everywhere). */

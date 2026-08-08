@@ -1,27 +1,27 @@
 /**
- * θ — the art-directable parameter vector.
+ * θ — the parameter vector, and the registry of what the music is allowed to move.
  *
  * A `Preset` is exactly the subset of `PhysarumConfig` that a human tunes: every
  * per-species field except its name, the K×K sense matrix, and the four global
  * knobs. Structural fields (speciesCount, maxAgents, gridScale, depositScale,
  * speed, paused, stemDrive) are *not* part of θ — they describe the machine, not
- * the art direction, and blending them would resize buffers mid-run.
+ * the art direction, and moving them would resize buffers mid-run.
  *
  * θ has two representations and they are interchangeable:
  *
- *   Preset  — JSON-shaped, mirrors PhysarumConfig field for field. What gets
- *             saved, loaded, hand-edited and captured.
- *   vector  — Float64Array of length 18·K + K² + 4. What gets blended, slewed
+ *   Preset  — JSON-shaped, mirrors PhysarumConfig field for field.
+ *   vector  — Float64Array of length 18·K + K² + 4. What gets modulated, slewed
  *             and clamped.
  *
- * Colour is NOT in here (plan.md Revision 2). Blending hue between anchors
- * muddied the image and made species impossible to track, so the palette is
- * static and lives in `PhysarumConfig.palette` / `MappingConfig.palette`. What
- * θ carries instead is a per-species `brightness` in the fast slew class: light
- * responds to the music, hue does not.
+ * Colour is NOT in here (plan.md Revision 2). Modulating hue muddied the image
+ * and made species impossible to track, so the palette is static and lives in
+ * `PhysarumConfig.palette` / `ModulationConfig.palette`. What θ carries instead
+ * is a per-species `brightness`: light responds to the music, hue does not.
  *
- * Everything downstream (simplex blend, slew limiter, convex-hull test) works on
- * the vector; nothing downstream needs to know a field's name.
+ * **Revision 3.** The simplex is gone; the same slot table now feeds a seeded
+ * random-projection modulator. Each slot therefore carries a `ModSpec` — group,
+ * excursion half-range, personality jitter, additive vs multiplicative — or
+ * `null`, meaning "the sliders own this, the music never touches it".
  */
 import {
   MAX_EFFECTIVE_DEPOSIT,
@@ -72,51 +72,209 @@ const G_EXPOSURE = 1;
 const G_GAMMA = 2;
 const G_STEM_GAIN = 3;
 
+/**
+ * Which lane of the workbench a slot answers to. One depth slider per group, so a
+ * human can say "more shape, less light" without touching 92 numbers.
+ */
+export type ModGroup = 'structure' | 'matrix' | 'population' | 'brightness' | 'decay';
+
+export const MOD_GROUPS: readonly ModGroup[] = [
+  'structure',
+  'matrix',
+  'population',
+  'brightness',
+  'decay',
+];
+
+/**
+ * How the music is allowed to move one slot.
+ *
+ *   additive:        p = clamp(base + half · tanh(depth · w·ẑ), lo, hi)
+ *   multiplicative:  p = clamp(base · exp(half · tanh(depth · w·ẑ)), lo, hi)
+ *
+ * `lo`/`hi` may be *narrower* than the slot's hard θ bound: the hard bound is
+ * "what a file may contain", this is "where the music may wander unsupervised".
+ * `jitter` is the seeded personality spread applied to the shipped default —
+ * additive units, or ln units when `mult`.
+ */
+export interface ModSpec {
+  group: ModGroup;
+  lo: number;
+  hi: number;
+  half: number;
+  jitter: number;
+  mult: boolean;
+}
+
 interface Bound {
   min: number;
   max: number;
   cls: number;
   name: string;
+  /** null = excluded from modulation; the panel sliders keep it. */
+  mod: ModSpec | null;
 }
 
+const add = (
+  group: ModGroup,
+  lo: number,
+  hi: number,
+  half: number,
+  jitter: number,
+): ModSpec => ({ group, lo, hi, half, jitter, mult: false });
+
+const mul = (
+  group: ModGroup,
+  lo: number,
+  hi: number,
+  half: number,
+  jitter: number,
+): ModSpec => ({ group, lo, hi, half, jitter, mult: true });
+
+/**
+ * p1 (constant term) and p2 (gain on intensity) modulate; **p3, the exponent,
+ * does not**. p3 sits inside `p2·xᵖ³` where x ∈ [0,1), so moving it rescales the
+ * whole adaptive curve non-linearly and small changes near x→0 are violent — it
+ * is a shape-of-response knob, not a value, and plan.md Revision 3 explicitly
+ * says keep exponents fixed. It stays on the sliders.
+ */
 const TRIPLE_BOUNDS = (
   label: string,
   cls: number,
   lo: number,
   hi: number,
+  p1: ModSpec | null,
+  p2: ModSpec | null,
   expLo = 0.1,
   expHi = 4,
 ): Bound[] => [
-  { name: `${label}.p1`, cls, min: lo, max: hi },
-  { name: `${label}.p2`, cls, min: lo - (hi - lo), max: hi },
-  { name: `${label}.p3`, cls, min: expLo, max: expHi },
+  { name: `${label}.p1`, cls, min: lo, max: hi, mod: p1 },
+  { name: `${label}.p2`, cls, min: lo - (hi - lo), max: hi, mod: p2 },
+  { name: `${label}.p3`, cls, min: expLo, max: expHi, mod: null },
 ];
 
 /**
- * Slot table for one species. Classes follow plan.md: deposit / sensor angle /
- * brightness track 10 Hz; decay and alive-fraction are section-scale; the rest
- * sit in between because they move geometry the trail field has to catch up with.
+ * Slot table for one species. Classes follow plan.md Revision 3: brightness /
+ * deposit / sensor angle track the 10 Hz signal; decay and alive-fraction are
+ * section-scale; the rest sit in between because they move geometry the trail
+ * field has to catch up with.
+ *
+ * Excursions are sized to be LEGIBLE (Revision 2 §3, Revision 3): with a
+ * z-scored input and a unit projection, w·ẑ is roughly N(0,1), so at depth 1 the
+ * typical |tanh| is ~0.55 and a slot spends most of its life at ±0.55·half from
+ * its base. Every `half` below is therefore about twice the excursion you should
+ * expect to see, not the excursion itself.
  */
 const SPECIES_BOUNDS: Bound[] = [
-  { name: 'brightness', cls: CLASS_FAST, min: 0, max: 2 },
-  { name: 'intensity', cls: CLASS_FAST, min: 0, max: 4 },
-  { name: 'deposit', cls: CLASS_FAST, min: 0, max: MAX_EFFECTIVE_DEPOSIT },
-  { name: 'decay', cls: CLASS_SLOW, min: 0.8, max: 1 },
-  { name: 'aliveFraction', cls: CLASS_SLOW, min: 0, max: 1 },
-  { name: 'diffuseCentre', cls: CLASS_MEDIUM, min: 0.111, max: 1 },
-  ...TRIPLE_BOUNDS('sensorDist', CLASS_MEDIUM, 0, 80),
-  ...TRIPLE_BOUNDS('sensorAngle', CLASS_FAST, -Math.PI, Math.PI),
-  ...TRIPLE_BOUNDS('rotate', CLASS_MEDIUM, -Math.PI, Math.PI),
-  ...TRIPLE_BOUNDS('moveDist', CLASS_MEDIUM, 0, 8),
+  // Light. Revision 2 kept hue static and handed brightness to the music instead,
+  // so this is the group that must never be subtle.
+  { name: 'brightness', cls: CLASS_FAST, min: 0, max: 2, mod: add('brightness', 0.1, 2, 0.6, 0.3) },
+  { name: 'intensity', cls: CLASS_FAST, min: 0, max: 4, mod: add('brightness', 0.15, 3, 0.7, 0.4) },
+  // Deposit is multiplicative: it is a rate, and ±0.7 in ln space is ×0.5…×2,
+  // which reads the same whether the base landed at 0.4 or at 3.
+  {
+    name: 'deposit',
+    cls: CLASS_FAST,
+    min: 0,
+    max: MAX_EFFECTIVE_DEPOSIT,
+    mod: mul('population', 0.08, MAX_EFFECTIVE_DEPOSIT, 0.7, 0.4),
+  },
+  // Narrow and slow, on purpose: decay is the trail's memory constant. 0.88 vs
+  // 0.95 is already a different world, and anything below ~0.85 erases structure
+  // faster than agents can build it.
+  { name: 'decay', cls: CLASS_SLOW, min: 0.8, max: 1, mod: add('decay', 0.86, 0.99, 0.035, 0.025) },
+  {
+    name: 'aliveFraction',
+    cls: CLASS_SLOW,
+    min: 0,
+    max: 1,
+    mod: add('population', 0.08, 1, 0.32, 0.22),
+  },
+  {
+    name: 'diffuseCentre',
+    cls: CLASS_MEDIUM,
+    min: 0.111,
+    max: 1,
+    mod: add('structure', 0.111, 1, 0.3, 0.2),
+  },
+  ...TRIPLE_BOUNDS(
+    'sensorDist',
+    CLASS_MEDIUM,
+    0,
+    80,
+    add('structure', 0.5, 50, 9, 6),
+    add('structure', -18, 40, 9, 6),
+  ),
+  ...TRIPLE_BOUNDS(
+    'sensorAngle',
+    CLASS_FAST,
+    -Math.PI,
+    Math.PI,
+    add('structure', -1.4, 1.4, 0.4, 0.3),
+    add('structure', -1.4, 1.4, 0.35, 0.25),
+  ),
+  ...TRIPLE_BOUNDS(
+    'rotate',
+    CLASS_MEDIUM,
+    -Math.PI,
+    Math.PI,
+    add('structure', -1.5, 1.5, 0.35, 0.25),
+    add('structure', -1.5, 1.5, 0.5, 0.4),
+  ),
+  ...TRIPLE_BOUNDS(
+    'moveDist',
+    CLASS_MEDIUM,
+    0,
+    8,
+    add('structure', 0.15, 5, 0.8, 0.6),
+    add('structure', -2, 5, 0.7, 0.5),
+  ),
 ];
 
-const MATRIX_BOUND: Bound = { name: 'matrix', cls: CLASS_SLOW, min: -2, max: 2 };
+/**
+ * Off-diagonal M. The diagonal is special-cased in `modulationSlots` — self
+ * attraction has to stay positive or the species stops forming a network at all,
+ * which is a dead frame rather than a different look.
+ */
+const MATRIX_BOUND: Bound = {
+  name: 'matrix',
+  cls: CLASS_SLOW,
+  min: -2,
+  max: 2,
+  mod: add('matrix', -1.7, 1.7, 0.75, 0.6),
+};
 
+const MATRIX_DIAGONAL_MOD: ModSpec = add('matrix', 0.3, 2, 0.5, 0.45);
+
+/**
+ * Globals, and the three deliberate exclusions:
+ *
+ * - **exposure / gamma** — phase 7 put an auto-exposure controller downstream of
+ *   both. Modulating scene exposure makes the controller chase it and the image
+ *   breathes for reasons that have nothing to do with the music; modulating
+ *   display gamma is a monitor calibration knob, not art direction. The render
+ *   chain's own `exposureEv` trim is the right place to push light, and
+ *   per-species brightness already carries the modulated version of it.
+ * - **stemGain** — it is the depth of the *other* input lane (stems → deposit).
+ *   Letting the embedding modulate how loudly the stems speak means an
+ *   instrument entering reads differently depending on where the track sits in
+ *   embedding space, which is exactly the legibility Revision 2 §2 bought.
+ *
+ * `senseGain` is in, multiplicatively: it sets where the adaptive curves
+ * saturate, so it changes the *character* of every species at once — a good
+ * global to have moving, and safe in any range because it only rescales x∈[0,1).
+ */
 const GLOBAL_BOUNDS: Bound[] = [
-  { name: 'senseGain', cls: CLASS_MEDIUM, min: 0.02, max: 4 },
-  { name: 'exposure', cls: CLASS_MEDIUM, min: 0.005, max: 1.5 },
-  { name: 'gamma', cls: CLASS_MEDIUM, min: 1, max: 3 },
-  { name: 'stemGain', cls: CLASS_FAST, min: 0, max: 6 },
+  {
+    name: 'senseGain',
+    cls: CLASS_MEDIUM,
+    min: 0.02,
+    max: 4,
+    mod: mul('structure', 0.02, 2, 0.7, 0.5),
+  },
+  { name: 'exposure', cls: CLASS_MEDIUM, min: 0.005, max: 1.5, mod: null },
+  { name: 'gamma', cls: CLASS_MEDIUM, min: 1, max: 3, mod: null },
+  { name: 'stemGain', cls: CLASS_FAST, min: 0, max: 6, mod: null },
 ];
 
 if (SPECIES_BOUNDS.length !== PER_SPECIES) {
@@ -165,6 +323,33 @@ function boundAt(slot: number, k: number): Bound {
   return GLOBAL_BOUNDS[slot - globalsBase(k)] as Bound;
 }
 
+/**
+ * The modulation registry, in vector order: one `ModSpec` per slot the music may
+ * move, `null` for every slot it may not. This is the single source of truth the
+ * modulator, the tests and the workbench readout all index by slot.
+ */
+export function modulationSlots(k: number): (ModSpec | null)[] {
+  const out: (ModSpec | null)[] = new Array<ModSpec | null>(vectorLength(k));
+  const mBase = matrixBase(k);
+  const gBase = globalsBase(k);
+  for (let i = 0; i < mBase; i++) out[i] = (SPECIES_BOUNDS[i % PER_SPECIES] as Bound).mod;
+  for (let i = 0; i < k; i++) {
+    for (let j = 0; j < k; j++) {
+      out[mBase + i * k + j] = i === j ? MATRIX_DIAGONAL_MOD : MATRIX_BOUND.mod;
+    }
+  }
+  for (let i = 0; i < GLOBAL_SLOTS; i++) out[gBase + i] = (GLOBAL_BOUNDS[i] as Bound).mod;
+  return out;
+}
+
+/** 1 where a slot is modulated, 0 where the sliders own it. */
+export function modulationMask(k: number): Uint8Array {
+  const slots = modulationSlots(k);
+  const out = new Uint8Array(slots.length);
+  for (let i = 0; i < slots.length; i++) out[i] = slots[i] ? 1 : 0;
+  return out;
+}
+
 /** Clamp every slot into its authored range. Applied to generated/loaded presets, not per tick. */
 export function clampVector(v: Float64Array, k: number): Float64Array {
   for (let i = 0; i < v.length; i++) {
@@ -205,7 +390,7 @@ export function clonePreset(p: Preset): Preset {
   };
 }
 
-/** θ ← the live config. This is "capture current params into this anchor's preset". */
+/** θ ← the live config. The snapshot the modulator takes of the shipped defaults. */
 export function presetFromConfig(cfg: PhysarumConfig): Preset {
   return {
     species: cfg.species.slice(0, cfg.speciesCount).map(cloneSpeciesPreset),
@@ -281,40 +466,57 @@ function writeTriple(v: Float64Array, o: number, t: AdaptiveTriple): void {
   v[o + 2] = t.p3;
 }
 
-function readTriple(dst: AdaptiveTriple, v: ArrayLike<number>, o: number): void {
-  dst.p1 = (v[o] as number) ?? 0;
-  dst.p2 = (v[o + 1] as number) ?? 0;
-  dst.p3 = (v[o + 2] as number) ?? 1;
+function readTriple(
+  dst: AdaptiveTriple,
+  v: ArrayLike<number>,
+  o: number,
+  mask?: Uint8Array,
+): void {
+  if (mask === undefined || mask[o] === 1) dst.p1 = (v[o] as number) ?? 0;
+  if (mask === undefined || mask[o + 1] === 1) dst.p2 = (v[o + 1] as number) ?? 0;
+  if (mask === undefined || mask[o + 2] === 1) dst.p3 = (v[o + 2] as number) ?? 1;
 }
 
 /**
- * Write a vector straight into the live config. The per-tick path in mapped mode:
- * no intermediate Preset object, no allocation.
+ * Write a vector straight into the live config. The per-tick path: no intermediate
+ * Preset object, no allocation.
+ *
+ * `mask`, when given, restricts the write to the slots it marks — that is how a
+ * modulated run leaves the excluded slots (p3 exponents, exposure, gamma,
+ * stemGain) under the panel's control instead of stamping a stale copy over
+ * every edit.
  */
-export function applyVector(cfg: PhysarumConfig, v: ArrayLike<number>): void {
+export function applyVector(
+  cfg: PhysarumConfig,
+  v: ArrayLike<number>,
+  mask?: Uint8Array,
+): void {
   const k = cfg.speciesCount;
+  const on = (i: number): boolean => mask === undefined || mask[i] === 1;
   for (let s = 0; s < k; s++) {
     const dst = cfg.species[s];
     if (!dst) continue;
     const o = s * PER_SPECIES;
-    dst.brightness = v[o + S_BRIGHTNESS] as number;
-    dst.intensity = v[o + S_INTENSITY] as number;
-    dst.deposit = v[o + S_DEPOSIT] as number;
-    dst.decay = v[o + S_DECAY] as number;
-    dst.aliveFraction = v[o + S_ALIVE] as number;
-    dst.diffuseCentre = v[o + S_DIFFUSE] as number;
-    readTriple(dst.sensorDist, v, o + S_SENSOR_DIST);
-    readTriple(dst.sensorAngle, v, o + S_SENSOR_ANGLE);
-    readTriple(dst.rotate, v, o + S_ROTATE);
-    readTriple(dst.moveDist, v, o + S_MOVE);
+    if (on(o + S_BRIGHTNESS)) dst.brightness = v[o + S_BRIGHTNESS] as number;
+    if (on(o + S_INTENSITY)) dst.intensity = v[o + S_INTENSITY] as number;
+    if (on(o + S_DEPOSIT)) dst.deposit = v[o + S_DEPOSIT] as number;
+    if (on(o + S_DECAY)) dst.decay = v[o + S_DECAY] as number;
+    if (on(o + S_ALIVE)) dst.aliveFraction = v[o + S_ALIVE] as number;
+    if (on(o + S_DIFFUSE)) dst.diffuseCentre = v[o + S_DIFFUSE] as number;
+    readTriple(dst.sensorDist, v, o + S_SENSOR_DIST, mask);
+    readTriple(dst.sensorAngle, v, o + S_SENSOR_ANGLE, mask);
+    readTriple(dst.rotate, v, o + S_ROTATE, mask);
+    readTriple(dst.moveDist, v, o + S_MOVE, mask);
   }
   const mBase = matrixBase(k);
-  for (let i = 0; i < k * k; i++) cfg.matrix[i] = v[mBase + i] as number;
+  for (let i = 0; i < k * k; i++) {
+    if (on(mBase + i)) cfg.matrix[i] = v[mBase + i] as number;
+  }
   const gBase = globalsBase(k);
-  cfg.senseGain = v[gBase + G_SENSE_GAIN] as number;
-  cfg.exposure = v[gBase + G_EXPOSURE] as number;
-  cfg.gamma = v[gBase + G_GAMMA] as number;
-  cfg.stemGain = v[gBase + G_STEM_GAIN] as number;
+  if (on(gBase + G_SENSE_GAIN)) cfg.senseGain = v[gBase + G_SENSE_GAIN] as number;
+  if (on(gBase + G_EXPOSURE)) cfg.exposure = v[gBase + G_EXPOSURE] as number;
+  if (on(gBase + G_GAMMA)) cfg.gamma = v[gBase + G_GAMMA] as number;
+  if (on(gBase + G_STEM_GAIN)) cfg.stemGain = v[gBase + G_STEM_GAIN] as number;
 }
 
 export function vectorToPreset(v: ArrayLike<number>, k: number): Preset {
@@ -351,24 +553,4 @@ export function vectorToPreset(v: ArrayLike<number>, k: number): Preset {
     gamma: v[gBase + G_GAMMA] as number,
     stemGain: v[gBase + G_STEM_GAIN] as number,
   };
-}
-
-/**
- * θ = Σ wₘ θₘ. Weights are assumed non-negative and summing to 1 (the simplex
- * guarantees it), which is exactly what makes the result a convex combination:
- * every slot lands inside the min/max of that slot across the presets.
- */
-export function blendVectors(
-  vectors: readonly Float64Array[],
-  weights: ArrayLike<number>,
-  out: Float64Array,
-): Float64Array {
-  out.fill(0);
-  for (let m = 0; m < vectors.length; m++) {
-    const w = weights[m] ?? 0;
-    if (w === 0) continue;
-    const v = vectors[m] as Float64Array;
-    for (let i = 0; i < out.length; i++) out[i] = (out[i] as number) + w * (v[i] as number);
-  }
-  return out;
 }

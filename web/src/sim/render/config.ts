@@ -15,7 +15,7 @@
  * drive": there is no longer an 8-bit surface anywhere upstream of the tone map,
  * and the tone map chosen has no clipping point at all.
  *
- * These knobs are art direction, not θ. They are NOT blended between anchors
+ * These knobs are art direction, not θ. They are NOT modulated
  * (the whole point of Revision 2's static palette is that the image's identity
  * holds still while the music moves brightness and structure), but they *are*
  * serialised with the mapping so a tuning session survives a reload.

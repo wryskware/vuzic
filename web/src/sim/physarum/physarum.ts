@@ -83,7 +83,7 @@ export class PhysarumSim implements Sim {
   /**
    * Live impulse lane, owned by the ImpulseEngine and mutated in place. It is read,
    * never written, and it is applied *after* whatever set the base parameters — the
-   * mapper's slew limiter included — so transients are never smoothed away.
+   * modulator's slew limiter included — so transients are never smoothed away.
    */
   private impulses: ImpulseState | null = null;
   private splashCount = 0;
