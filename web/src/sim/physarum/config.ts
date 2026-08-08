@@ -110,12 +110,79 @@ export interface SoilConfig {
   debugView: boolean;
 }
 
+/**
+ * The performance layer: five always-yours multipliers that compose OUTSIDE θ,
+ * at exactly the points where stem-follow and the impulse lanes already compose.
+ * That placement is the whole design — it is what makes it impossible for the
+ * modulator to write over them, because the modulator's only reach is θ and
+ * these are applied after θ has been read. 1.0 everywhere = neutral.
+ *
+ * They exist because there was no rung between "driver gains" (which change what
+ * the music *says*, indirectly, and differently on every seed) and the hundreds
+ * of fine θ sliders (which the modulator overwrites on the next tick). A macro is
+ * neither: it survives every reroll, every load and every tick, and it means the
+ * same thing on every seed.
+ *
+ * Physarum has no per-species force term and no primary/accent partition, so
+ * plife's `force` and `accents` have no counterpart here. `deposit` is physarum's
+ * "energy into the system" knob — the same role plife's `force` plays, in this
+ * substrate's currency.
+ */
+export interface PhysarumMacros {
+  /** × every species' aliveFraction (clamped back into 0..1 after) */
+  density: number;
+  /** × every species' deposit, inside the MAX_EFFECTIVE_DEPOSIT clamp */
+  deposit: number;
+  /** × the sensorDist curve, p1 and p2 both — the same lane the impulse sensorMul uses */
+  reach: number;
+  /** × the moveDist curve, p1 and p2 */
+  agility: number;
+  /** × render.feedback.amount (clamped ≤ 0.95, physarum's ceiling) */
+  trails: number;
+}
+
+export function defaultPhysarumMacros(): PhysarumMacros {
+  return {
+    density: 1,
+    deposit: 1,
+    reach: 1,
+    agility: 1,
+    trails: 1,
+  };
+}
+
+/**
+ * Panel range per macro, and the same table `PhysarumSim.applyExtras` clamps a
+ * loaded file into. One source, so a saved value can never sit outside the
+ * slider that is supposed to show it.
+ */
+export const PHYSARUM_MACRO_RANGE: Readonly<
+  Record<keyof PhysarumMacros, { min: number; max: number }>
+> = {
+  density: { min: 0, max: 2 },
+  deposit: { min: 0, max: 2 },
+  reach: { min: 0, max: 2 },
+  agility: { min: 0, max: 2 },
+  trails: { min: 0, max: 1.5 },
+};
+
+/** Order the macro folder lists them in, with the wiring stated in the label. */
+export const PHYSARUM_MACRO_LABELS: readonly { key: keyof PhysarumMacros; label: string }[] = [
+  { key: 'density', label: 'density  (× all alive fractions)' },
+  { key: 'deposit', label: 'deposit  (× all deposit rates)' },
+  { key: 'reach', label: 'reach  (× sensor distance)' },
+  { key: 'agility', label: 'agility  (× move distance)' },
+  { key: 'trails', label: 'trails  (× echo persistence)' },
+];
+
 export interface PhysarumConfig {
   /**
    * Phase 7: exposure/tone/bloom/feedback. Structural like `soil` — outside θ, so
    * nothing here is modulated, but it *is* saved with the modulation config.
    */
   render: RenderConfig;
+  /** the performance layer: five multipliers the modulator never writes. Outside θ. */
+  macros: PhysarumMacros;
   /** K. Any value >= 1; bounded only by maxTextureArrayLayers (>= 256 everywhere). */
   speciesCount: number;
   /** pool size before rounding down to a whole number per species */
@@ -315,6 +382,7 @@ export function defaultConfig(speciesCount = 4): PhysarumConfig {
     stemDrive: false,
     stemGain: 1.5,
     render: defaultRenderConfig(),
+    macros: defaultPhysarumMacros(),
     soil: defaultSoil(),
     palette: defaultPalette(k),
     species: Array.from({ length: k }, (_, i) => defaultSpecies(i)),

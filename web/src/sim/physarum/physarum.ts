@@ -18,10 +18,14 @@ import type { Sim } from '../types';
 import {
   defaultConfig,
   defaultPaletteColor,
+  defaultPhysarumMacros,
   MAX_BRIGHTNESS,
   MAX_DEPOSIT,
   MAX_EFFECTIVE_DEPOSIT,
+  PHYSARUM_MACRO_RANGE,
   type PhysarumConfig,
+  type PhysarumMacros,
+  type SpeciesConfig,
 } from './config';
 
 import commonWgsl from './shaders/common.wgsl?raw';
@@ -168,6 +172,16 @@ export class PhysarumSim implements Sim, ModTarget {
   private speciesData!: Float32Array<ArrayBuffer>;
   private matrixData!: Float32Array<ArrayBuffer>;
   private readonly splashData = new Float32Array(MAX_SPLASHES * FLOATS_PER_SPLASH);
+
+  /**
+   * `performance.now()` at the last `render`, and the frame length that follows
+   * from it expressed in 60 Hz frames. The feedback lane is the only thing that
+   * reads them — see the note in `render` — and they are fields rather than
+   * locals because `writeGlobals` also runs from the substep path and has to
+   * publish the same corrected numbers there.
+   */
+  private lastRenderAt = 0;
+  private renderDtFrames = 1;
 
   private stepAccumulator = 0;
   private pendingSingleStep = false;
@@ -321,10 +335,58 @@ export class PhysarumSim implements Sim, ModTarget {
     return map;
   }
 
+  // ── ModTarget: the opaque per-sim extras block ─────────────────────────────
+  //
+  // The macro rig is outside θ *and* outside everything the mapping layer knows
+  // how to carry. It does not belong in `ModulationConfig`'s schema — that file
+  // describes a mapping, not a substrate — so it travels in the opaque `extras`
+  // channel and this pair is the only code that understands its shape.
+  //
+  // Unlike plife there is no `matrixGen` block here: physarum's M is authored,
+  // not drawn from the seed, so `macros` is the whole of it.
+
+  /** A plain snapshot of everything physarum wants saved outside θ. */
+  serializeExtras(): Record<string, unknown> {
+    return { macros: { ...this.config.macros } };
+  }
+
+  /**
+   * The inverse, and deliberately paranoid: `extras` is opaque to every layer
+   * between the file and here, so nothing upstream has validated it. Every macro
+   * is clamped into the range its slider shows, anything missing or non-finite
+   * falls back to the shipped default, and this never throws.
+   *
+   * Runs on load (`Modulator.setConfig`).
+   */
+  applyExtras(raw: Record<string, unknown> | undefined): void {
+    const o = (raw ?? {}) as Record<string, unknown>;
+    const m = this.config.macros;
+    const src = plainObject(o['macros']);
+    const def = defaultPhysarumMacros();
+    for (const key of Object.keys(def) as (keyof PhysarumMacros)[]) {
+      const r = PHYSARUM_MACRO_RANGE[key];
+      m[key] = clampNum(src[key], def[key], r.min, r.max);
+    }
+  }
+
+  /**
+   * The alive fraction actually in force for one species: θ's base scaled by the
+   * `density` macro and clamped back into 0..1. Two callers — `uploadSpecies`,
+   * which writes it to the GPU, and `stats`, which recomputes the agent count
+   * from the config — and they must agree, or the readout describes a world that
+   * is not running.
+   */
+  private effectiveAlive(s: SpeciesConfig): number {
+    return Math.min(
+      Math.max(s.aliveFraction, 0) * Math.max(this.config.macros.density, 0),
+      1,
+    );
+  }
+
   stats(): PhysarumStats {
     let alive = 0;
     for (const s of this.config.species) {
-      alive += Math.floor(Math.min(Math.max(s.aliveFraction, 0), 1) * this.agentsPerSpecies);
+      alive += Math.floor(this.effectiveAlive(s) * this.agentsPerSpecies);
     }
     return {
       gridW: this.gridW,
@@ -927,6 +989,35 @@ export class PhysarumSim implements Sim, ModTarget {
     if (this.post.sizeVersion !== this.compositeSizeVersion) this.rebuildCompositeBinds();
     this.post.gamma = this.config.gamma;
 
+    // How long this frame is, in 60 Hz frames. The feedback lane is applied once
+    // per *rendered* frame by the compositor, so both of its constants are
+    // per-frame quantities, and both are silently wrong on any display that is
+    // not 60 Hz: at 240 Hz the echo would decay four times too fast and the
+    // radial zoom would accumulate four times as much. Raising both to the
+    // dtFrames power makes the authored numbers mean "per 60 Hz frame" on every
+    // monitor. Physarum ships feedback at 0, so this is a latent bug being
+    // closed rather than one anybody has seen.
+    //
+    // The 0.25 s ceiling is for a tab that was backgrounded: a two-second gap
+    // would otherwise raise the amount to the 120th power and clear the echo
+    // outright, which is a black flash on the first frame back.
+    //
+    // The 1e-3 s floor is not cosmetic. `performance.now()` is coarsened by some
+    // browsers, so two renders can report the same timestamp; that would make
+    // the exponent 0, and `Math.pow(0, 0)` is **1**, which with physarum's
+    // shipped `amount = 0` would switch the feedback lane fully on for one
+    // frame. A frame is never zero seconds long, so the floor costs nothing and
+    // keeps `pow(0, dtFrames)` at 0 for every reachable input.
+    const now = performance.now();
+    this.renderDtFrames =
+      this.lastRenderAt === 0
+        ? 1
+        : Math.min(Math.max((now - this.lastRenderAt) / 1000, 1e-3), 0.25) * 60;
+    this.lastRenderAt = now;
+
+    // This is the LAST Globals write before the composite pass, which is what
+    // lets the substep path publish an uncorrected `renderDtFrames` harmlessly —
+    // the only reader of words 25/26 is the compositor, and it runs after this.
     this.writeGlobals(this.lastPcgTick);
     this.uploadSpecies();
 
@@ -1042,9 +1133,27 @@ export class PhysarumSim implements Sim, ModTarget {
     f[22] = this.soilTint[1] as number;
     f[23] = this.soilTint[2] as number;
     f[24] = Math.max(grade.soilTint, 0);
-    // Clamped below 1: the feedback lane is geometric, so >= 1 never decays.
-    f[25] = Math.min(Math.max(this.config.render.feedback.amount, 0), 0.95);
-    f[26] = Math.max(this.config.render.feedback.zoom, 1e-3);
+    // The feedback lane, converted from "per 60 Hz frame" (what the slider and
+    // the shipped default mean) to "per frame at this display's refresh rate"
+    // (what the compositor actually applies). Both are geometric per frame, so
+    // the conversion is a power, and `renderDtFrames` is 1 on a 60 Hz display —
+    // the numbers are unchanged there, which is the point.
+    //
+    // Amount is clamped below 1 first: the lane is geometric, so >= 1 never
+    // decays, and exponentiating a value >= 1 would not fix that.
+    //
+    // Macro `trails` multiplies the authored amount BEFORE the clamp and the
+    // power, because the per-60-Hz-frame semantics belong to the *effective*
+    // value: applying the macro after the exponentiation would make it mean
+    // something different on every refresh rate.
+    const fbAmount = Math.min(
+      Math.max(this.config.render.feedback.amount, 0) *
+        Math.max(this.config.macros.trails, 0),
+      0.95,
+    );
+    const fbZoom = Math.max(this.config.render.feedback.zoom, 1e-3);
+    f[25] = Math.pow(fbAmount, this.renderDtFrames);
+    f[26] = Math.pow(fbZoom, this.renderDtFrames);
     f[27] = MAX_DEPOSIT;
     ctx.device.queue.writeBuffer(this.globalsBuf, 0, this.globalsBytes);
   }
@@ -1055,6 +1164,7 @@ export class PhysarumSim implements Sim, ModTarget {
     const d = this.speciesData;
     const list = this.config.species;
     const imp = this.impulses;
+    const macros = this.config.macros;
     for (let k = 0; k < this.config.speciesCount; k++) {
       const s = list[k];
       const o = k * FLOATS_PER_SPECIES;
@@ -1071,8 +1181,11 @@ export class PhysarumSim implements Sim, ModTarget {
 
       // Sensor pop scales the whole curve p1 + p2·x^p3, not just its base, so the
       // reach grows at every trail intensity instead of only in empty space.
-      d[o + 0] = s.sensorDist.p1 * sensorMul;
-      d[o + 1] = s.sensorDist.p2 * sensorMul;
+      // Macro `reach` rides the same lane and multiplies alongside it: both are
+      // outside θ, and both mean "how far this species looks".
+      const reach = Math.max(macros.reach, 0);
+      d[o + 0] = s.sensorDist.p1 * reach * sensorMul;
+      d[o + 1] = s.sensorDist.p2 * reach * sensorMul;
       d[o + 2] = s.sensorDist.p3;
       d[o + 3] = 0;
       d[o + 4] = s.sensorAngle.p1;
@@ -1083,8 +1196,11 @@ export class PhysarumSim implements Sim, ModTarget {
       d[o + 9] = s.rotate.p2;
       d[o + 10] = s.rotate.p3;
       d[o + 11] = 0;
-      d[o + 12] = s.moveDist.p1;
-      d[o + 13] = s.moveDist.p2;
+      // Macro `agility`, the whole move curve — same treatment as `reach`, one
+      // lane down: how far an agent travels per step at any trail intensity.
+      const agility = Math.max(macros.agility, 0);
+      d[o + 12] = s.moveDist.p1 * agility;
+      d[o + 13] = s.moveDist.p2 * agility;
       d[o + 14] = s.moveDist.p3;
       d[o + 15] = 0;
       // Hue is static art direction (palette); brightness is the reactive half.
@@ -1121,14 +1237,24 @@ export class PhysarumSim implements Sim, ModTarget {
       // The i32 deposit atomic wraps to a large negative trail (and blacks out
       // the species) past 2^31 / (deposit * depositScale) agents in one cell;
       // MAX_DEPOSIT is what that headroom is sized against.
+      //
+      // Macro `deposit` joins the *base* lane, inside MAX_EFFECTIVE_DEPOSIT
+      // rather than outside it: it is a re-statement of the authored rate, not a
+      // transient, so it saturates with the slider it scales. The impulse burst
+      // still multiplies outside that clamp, exactly as before.
       const stem = this.config.stemDrive ? Math.max(this.stems[k] ?? 0, 0) : 0;
       const base = Math.min(
-        Math.max(s.deposit, 0) * (1 + Math.max(this.config.stemGain, 0) * stem),
+        Math.max(s.deposit, 0) *
+          Math.max(macros.deposit, 0) *
+          (1 + Math.max(this.config.stemGain, 0) * stem),
         MAX_EFFECTIVE_DEPOSIT,
       );
       d[o + 20] = Math.min(base * Math.max(depositMul, 0), MAX_DEPOSIT);
       d[o + 21] = s.decay;
-      d[o + 22] = s.aliveFraction;
+      // Macro `density`, clamped back into 0..1. `stats()` recomputes the same
+      // number from the config — hence the shared helper, so the readout and the
+      // GPU can never disagree.
+      d[o + 22] = this.effectiveAlive(s);
       d[o + 23] = s.diffuseCentre;
     }
     ctx.device.queue.writeBuffer(this.speciesBuf, 0, d);
@@ -1163,4 +1289,25 @@ export class PhysarumSim implements Sim, ModTarget {
       Math.max(256, Math.floor(v / GRID_WORKGROUP) * GRID_WORKGROUP);
     return { w: snap(w), h: snap(h) };
   }
+}
+
+// ── extras validation helpers ────────────────────────────────────────────────
+//
+// Deliberately total functions: `applyExtras` is handed whatever was in the
+// file, and the contract is that it never throws — a broken block loses its
+// values to the defaults, not the whole load.
+//
+// Duplicated from plife.ts rather than shared. They are four lines each, and the
+// alternative is one sim importing from the other (a dependency neither wants)
+// or a new module whose whole content is two clamps.
+
+function plainObject(v: unknown): Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
+function clampNum(v: unknown, fallback: number, lo: number, hi: number): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  return Math.min(Math.max(n, lo), hi);
 }

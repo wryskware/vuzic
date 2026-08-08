@@ -68,6 +68,13 @@ fn fsMain(in: VSOut) -> @location(0) vec4f {
 
   // Render-domain feedback: last frame's *graded-input* HDR, decayed. Purely a
   // look; the trail field is untouched, so this cannot change how the world grows.
+  //
+  // Both constants are applied once per RENDERED frame, so they are per-frame
+  // quantities and their unit is this display's refresh rate. The CPU hands them
+  // over already corrected: `writeGlobals` raises the authored "per 60 Hz frame"
+  // numbers to the frame's length in 60 Hz frames, so a 240 Hz monitor receives
+  // the fourth root and the accumulated effect over a second is the same
+  // everywhere. Nothing here has to know the frame rate.
   if (g.feedbackAmount > 0.0) {
     let z = max(g.feedbackZoom, 1e-3);
     let fuv = vec2f(0.5) + (in.uv - vec2f(0.5)) / z;

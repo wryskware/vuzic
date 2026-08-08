@@ -1,6 +1,13 @@
 import { Pane } from 'tweakpane';
+import { saveModulationLocal } from '../mapping/persist';
 import type { PhysarumSim } from '../sim/physarum/physarum';
-import type { AdaptiveTriple, SpeciesConfig } from '../sim/physarum/config';
+import {
+  defaultPhysarumMacros,
+  PHYSARUM_MACRO_LABELS,
+  PHYSARUM_MACRO_RANGE,
+  type AdaptiveTriple,
+  type SpeciesConfig,
+} from '../sim/physarum/config';
 import type { ImpulseEngine } from '../sim/impulses';
 import { randomSeed, setPinnedSeed, syncUrlSeed } from '../sim/seed';
 import { createImpulsePanel, type ImpulsePanelHandle } from './impulses-panel';
@@ -59,6 +66,45 @@ export function createPanel(
     agents: '—',
     grid: '—',
   };
+
+  // ── macros: the performance layer, first because it is what you reach for ──
+  //
+  // Five multipliers that compose outside θ, exactly where stem-follow and the
+  // impulse lanes do, which is the whole reason the modulator can never write
+  // over them. Everything below this folder is either θ (mirrored, overwritten
+  // on the next tick while modulating) or structural; this is the only block
+  // that is unconditionally yours.
+  //
+  // Persistence: macros ride the mapping file's opaque `extras` block, so an
+  // edit here has to reach the same autosave the workbench's own bindings use.
+  // The panel does it directly rather than through a new callback — it already
+  // holds both halves (the sim, for the snapshot, and the modulator's config,
+  // for the file) — and debounces, because these are sliders and a drag would
+  // otherwise write localStorage on every pointer move.
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const persistMacros = (): void => {
+    const wb = opts.workbench;
+    if (!wb) return;
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      wb.modulator.config.extras = sim.serializeExtras();
+      saveModulationLocal(wb.modulator.config, sim.simId);
+    }, 400);
+  };
+
+  const macros = pane.addFolder({ title: 'macros · always yours (never modulated)' });
+  for (const { key, label } of PHYSARUM_MACRO_LABELS) {
+    const r = PHYSARUM_MACRO_RANGE[key];
+    macros
+      .addBinding(config.macros, key, { min: r.min, max: r.max, step: 0.01, label })
+      .on('change', persistMacros);
+  }
+  macros.addButton({ title: 'reset macros to 1' }).on('click', () => {
+    Object.assign(config.macros, defaultPhysarumMacros());
+    persistMacros();
+    pane.refresh();
+  });
 
   const run = pane.addFolder({ title: 'run' });
   if (!opts.workbench) {
@@ -254,6 +300,7 @@ export function createPanel(
       pane.refresh();
     },
     dispose(): void {
+      if (saveTimer !== null) clearTimeout(saveTimer);
       impulsePanel?.dispose();
       workbench?.dispose();
       pane.dispose();

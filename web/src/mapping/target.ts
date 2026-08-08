@@ -98,9 +98,9 @@ export interface ModTarget {
    * The sim's own out-of-θ state, as an opaque block for `ModulationConfig.extras`.
    *
    * The mapping layer carries this and never inspects it: plife puts its macro
-   * rig and its matrix-generation settings here, physarum has nothing that needs
-   * it and leaves both methods undefined. That is the whole point of the seam —
-   * `ModulationConfig` never learns a second substrate's schema.
+   * rig and its matrix-generation settings here, physarum its macro rig. That
+   * is the whole point of the seam — `ModulationConfig` never learns any
+   * substrate's schema, and a sim with nothing to save leaves both undefined.
    */
   serializeExtras?(): Record<string, unknown>;
   /**

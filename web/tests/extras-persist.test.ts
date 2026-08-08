@@ -29,6 +29,13 @@ import { MOD_GROUPS, type ModGroup, type ModSpec } from '../src/mapping/modspec.
 import type { ModTarget, ThetaRegistry } from '../src/mapping/target.ts';
 import type { TimelineSampler } from '../src/timeline/sampler.ts';
 import { defaultRenderConfig } from '../src/sim/render/config.ts';
+import {
+  defaultConfig,
+  defaultPhysarumMacros,
+  PHYSARUM_MACRO_LABELS,
+  PHYSARUM_MACRO_RANGE,
+  type PhysarumMacros,
+} from '../src/sim/physarum/config.ts';
 import type { ModulationConfig } from '../src/mapping/types.ts';
 
 // ── a v4 file, as text, with whatever extras the caller wants ────────────────
@@ -81,6 +88,48 @@ test('a legacy file cannot smuggle extras through the v1/v2 lift', () => {
   const text = JSON.stringify({ version: 2, speciesCount: 4, extras: { macros: { density: 2 } } });
   const cfg = parseModulation(text);
   assert.equal('extras' in cfg, false);
+});
+
+// ── the physarum end of the channel ──────────────────────────────────────────
+
+/**
+ * Physarum's macro rig, pinned at the only level this harness can reach.
+ *
+ * `PhysarumSim` itself is not importable here — `node --test` resolves the
+ * specifiers in src/ literally, and the sim's imports are extensionless and
+ * include `?raw` WGSL — which is why no test in this directory constructs a Sim.
+ * What is testable, and what `serializeExtras` / `applyExtras` actually lean on,
+ * is that the three macro tables agree: `applyExtras` walks the keys of
+ * `defaultPhysarumMacros()` and indexes `PHYSARUM_MACRO_RANGE` for each, and the
+ * panel walks `PHYSARUM_MACRO_LABELS` and indexes the same range table. A key
+ * present in one table and missing from another is an undefined range — a
+ * silently unclamped load, or a slider with no bounds — and that is the failure
+ * this catches.
+ */
+test('the physarum macro tables are one source of truth, and neutral by default', () => {
+  const def = defaultPhysarumMacros();
+  const keys = Object.keys(def) as (keyof PhysarumMacros)[];
+
+  // Every macro is neutral at 1.0 — the shipped config must be bit-identical to
+  // a build with no macro rig at all, which is the whole premise of the layer.
+  for (const key of keys) assert.equal(def[key], 1, `${key} must ship neutral`);
+  assert.deepEqual(defaultConfig(4).macros, def);
+
+  // Range table: exactly the same key set, and 1.0 inside every range, or "reset
+  // to 1" would land outside the slider that is supposed to show it.
+  assert.deepEqual(Object.keys(PHYSARUM_MACRO_RANGE).sort(), [...keys].sort());
+  for (const key of keys) {
+    const r = PHYSARUM_MACRO_RANGE[key];
+    assert.ok(r.min < r.max, `${key}: empty range`);
+    assert.ok(r.min <= 1 && 1 <= r.max, `${key}: the neutral value is outside its own slider`);
+  }
+
+  // Label table: same key set again, no duplicates, and every label states its
+  // wiring — the labels are the only place the panel says what a macro touches.
+  const labelled = PHYSARUM_MACRO_LABELS.map((l) => l.key);
+  assert.equal(new Set(labelled).size, labelled.length, 'a macro is listed twice');
+  assert.deepEqual([...labelled].sort(), [...keys].sort());
+  for (const { label } of PHYSARUM_MACRO_LABELS) assert.match(label, /\(×/);
 });
 
 // ── groupDriverWeights ───────────────────────────────────────────────────────

@@ -1258,10 +1258,14 @@ export class PlifeSim implements Sim, ModTarget {
     // would otherwise raise 0.88 to the 120th power and clear the echo outright,
     // which is a black flash on the first frame back.
     const now = performance.now();
+    // Floored at 1e-3 s, not 0: performance.now() is coarsened and two renders
+    // can share a timestamp, making the exponent 0 — and pow(x, 0) is 1 for
+    // every x, which would switch a disabled or heavily-faded echo fully on
+    // for that frame. The floor is a no-op at any real frame rate.
     this.renderDtFrames =
       this.lastRenderAt === 0
         ? 1
-        : Math.min(Math.max((now - this.lastRenderAt) / 1000, 0), 0.25) * 60;
+        : Math.min(Math.max((now - this.lastRenderAt) / 1000, 1e-3), 0.25) * 60;
     this.lastRenderAt = now;
 
     // Both render passes read Globals (exposure, feedback) and the species block
