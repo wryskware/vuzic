@@ -410,6 +410,25 @@ Replacement: **seeded random projection modulation.**
   zero-training baseline of exactly that mapping, and reroll choices are
   themselves preference data.
 
+## Revision 4 — 2026-08-07: the driver bank
+
+Refines Revision 3 after use. Raw-1024 random projections react to everything
+and isolate nothing; and nobody can tune 1024 weights.
+
+- **Driver bank, ~16 named signals, each with a live meter in the workbench:**
+  novelty4, novelty16, actChorus (structure channels, previously unused), plus
+  the top ~13 PCA components of the latent — variance-reordered at load
+  (post-PCA smoothing broke variance ordering; fix it at load), z-scored.
+  Modulation directions are seeded random vectors in *driver* space.
+- **The tuning surface is per-driver gain sliders** (mute the unimportant,
+  boost the important) + the existing group depths + reroll. Not weights.
+- **Brightness is out of embedding modulation** (it flashed constantly and
+  looked bad — user call). Per-species brightness = base × stem-follow
+  (its own stem's smoothed activity, with a floor and depth/curve controls,
+  so an instrument cutting out visibly dims its species) × impulse flashes.
+- CLAP text-anchor axes (Later) slot in as additional named drivers when
+  built — the bank is the seam for them.
+
 ## Later, and deliberately not now
 
 Additive to the timeline: SongFormer labels, CLAP text-anchor axes,
