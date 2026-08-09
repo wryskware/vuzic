@@ -51,6 +51,44 @@
  * Brightness is **not** here any more (Revision 4): it left the registry for the
  * stem-follow lane in `stemfollow.ts`, which this class drives every tick in
  * both manual and modulated mode.
+ *
+ * ## The base is the user's, not the seed's (VST semantics)
+ *
+ * `base` starts as the seeded personality, but it is not read-only after that.
+ * A modulated slider used to be a pure readout — the panel wrote a number, the
+ * next tick stamped `base ± excursion` straight over it, and the knob snapped
+ * back. That is the one behaviour every hardware synth and every VST gets right
+ * and this did not: on a modulated parameter the control is the **base**, the
+ * modulation breathes around wherever you leave it, and a drag re-anchors rather
+ * than being overwritten.
+ *
+ * So this class watches for writes it did not make. `applied` is θ exactly as it
+ * last wrote it, read back from the target; any masked slot that differs from it
+ * at the top of a tick was written by the only other writer there is — a panel
+ * widget with a human on the end of it — and that slot's base moves to the
+ * edited value. The slew state moves with it, or the very next step would drag
+ * the value back toward where it was and the drag would still snap.
+ *
+ * The detector runs **only in modulated mode**, after the mode gate: in manual
+ * mode nothing here writes θ so there is nothing to re-anchor, and the explorer
+ * (which forces manual on entry) runs its own recenter detector over the same
+ * vector — two detectors reacting to one write is a fight, not a feature.
+ *
+ * `markApplied()` is the other half and it is not optional. Tweakpane's
+ * `refresh()` pushes every bound number back through its widget's `step`, which
+ * means every panel refresh writes a *quantised* copy of the live value into the
+ * config. Against a stale reference that reads as a human edit on dozens of
+ * slots at once, and since the live value is `base ± excursion` the base would
+ * random-walk by the excursion every half second. Whoever refreshes the panel
+ * re-takes the reference immediately afterwards — see `ui/mod-fill.ts`, which
+ * installs that pairing on the pane itself so no call site has to remember it.
+ * This is the same hazard, and the same fix, as `explorerMarkApplied` in main.
+ *
+ * The base is **session state**. θ has never been persisted (the modulation file
+ * carries depths, palette and grade, not parameters) and that does not change
+ * here: a reload starts from the seeded personality again, and `setSeed` /
+ * `rewire` still rebuild it from the seed outright — a reroll is how you throw
+ * your edits away and get a new creature.
  */
 import { hash3 } from '../sim/impulses.ts';
 import { mergeRenderConfig } from '../sim/render/config.ts';
@@ -371,7 +409,7 @@ export function unitDirection(seed: number, index: number, dims: number, out: Fl
  * the draw to symmetric headroom would have been the other obvious fix and is
  * worse, because for exactly those slots the headroom is nearly zero.
  */
-function reflect(x: number, lo: number, hi: number): number {
+export function reflect(x: number, lo: number, hi: number): number {
   if (!(hi > lo)) return lo;
   const span = hi - lo;
   let t = (x - lo) % (2 * span);
@@ -446,6 +484,14 @@ export class Modulator {
   private readonly base: Float64Array;
   /** where θ is being pulled toward this tick, before the slew limiter smooths it */
   private readonly targetTheta: Float64Array;
+  /**
+   * θ exactly as this modulator last wrote it, read back from the target rather
+   * than assumed — the reference the rebase detector diffs against. Only the
+   * masked slots are ever compared; the rest are carried for completeness.
+   */
+  private readonly applied: Float64Array;
+  /** Diagnostics: how many slot rebases a human has caused this session. */
+  private rebases = 0;
   private readonly defaults: Float64Array;
   /** live z per driver — also what the workbench meters read */
   private readonly zbuf: Float32Array;
@@ -497,6 +543,7 @@ export class Modulator {
     this.defaults = target.currentVector();
     this.base = new Float64Array(this.length);
     this.targetTheta = new Float64Array(this.length);
+    this.applied = new Float64Array(this.length);
     const dims = drivers?.dims ?? 0;
     this.zbuf = new Float32Array(dims);
     this.gz = new Float32Array(dims);
@@ -516,6 +563,10 @@ export class Modulator {
 
     this.setConfig(config);
     this.rewire();
+    // Nothing has been written yet, so "what we last applied" is simply what the
+    // config already holds. Without this the first modulated tick would read the
+    // entire shipped θ as an edit and rebase every slot onto it.
+    this.markApplied();
   }
 
   get config(): ModulationConfig {
@@ -622,6 +673,10 @@ export class Modulator {
     this.slew = new SlewLimiter(this.target.registry().classes, config.slew);
     this.slew.reset(this.target.currentVector());
     this.lastSegment = -2;
+    // `applyExtras` above can move things the sim keys off θ, and a load is
+    // followed by a `pane.refresh()` anyway; re-taking the reference here keeps
+    // the detector from reading any of that as a human edit.
+    this.markApplied();
   }
 
   /** Re-read slew rates after the panel edits them. */
@@ -629,12 +684,49 @@ export class Modulator {
     this.slew.setRates(this.cfg.slew);
   }
 
+  /**
+   * Switch between "the sliders are absolute" and "the music breathes around
+   * them".
+   *
+   * Turning modulation **on** adopts the current config θ as the base for every
+   * modulated slot. This is a behaviour change and a deliberate one: the sliders
+   * are wherever the human left them during a manual session, and the old
+   * behaviour — keep the seeded base, let the slew glide everything back to it —
+   * silently undid all of that the moment the toggle was ticked. Modulation is a
+   * modifier of a value you own, so it starts from the value you own. The seeded
+   * personality is still exactly one act away: reroll (or `setSeed`) rebuilds
+   * `base` from the seed outright.
+   */
   setMode(mode: ModulationMode): void {
     if (mode === this.mode) return;
     this.mode = mode;
+    if (mode === 'modulated') this.adoptBase();
     // Start from where the config actually is, so switching modes never steps.
     this.slew.reset(this.target.currentVector());
     this.lastSegment = -2;
+    this.markApplied();
+  }
+
+  /**
+   * Take the live config's θ as the base of every modulated slot, clamped into
+   * each slot's authored modulation range.
+   *
+   * The clamp is the one place the two ranges have to be reconciled: a panel
+   * slider is bounded by the slot's *hard* θ bound, which is deliberately wider
+   * than the `ModSpec` range the music is allowed to wander in (see modspec.ts),
+   * so a hand-set value can legitimately sit outside it. Leaving it there would
+   * make `computeTarget`'s own clamp pin the parameter at the bound for every ẑ
+   * — a modulated slot that does not move.
+   */
+  adoptBase(): void {
+    const live = this.target.currentVector();
+    for (let i = 0; i < this.length; i++) {
+      if (this.mask[i] !== 1) continue;
+      const spec = this.slots[i];
+      const v = live[i] as number;
+      if (!spec || !Number.isFinite(v)) continue;
+      this.base[i] = v < spec.lo ? spec.lo : v > spec.hi ? spec.hi : v;
+    }
   }
 
   /**
@@ -677,6 +769,85 @@ export class Modulator {
     // pairing, so there is no uploadMatrix to remember here any more.
     this.target.applyTheta(this.base, this.mask);
     this.slew.reset(this.base);
+    this.markApplied();
+  }
+
+  /**
+   * Re-take "θ as we last wrote it", from the target rather than from what we
+   * believe we wrote.
+   *
+   * **Call this immediately after any `pane.refresh()`.** Tweakpane's refresh is
+   * not a passive read: it pushes each bound number through its widget's `step`
+   * and writes the quantised result back into the config, so a refresh rounds
+   * dozens of modulated slots by up to half a step. Against a stale reference
+   * `rebaseFromEdits` reads every one of those as a human edit and re-anchors
+   * the base onto `base ± excursion` — twice a second, forever. `ui/mod-fill.ts`
+   * installs the pairing on the pane so no individual call site carries it.
+   */
+  markApplied(): void {
+    this.applied.set(this.target.currentVector());
+  }
+
+  /**
+   * Adopt a human's edit of a modulated slot as that slot's new base.
+   *
+   * "Differs from what we last wrote" is the whole test, and it is sound because
+   * a modulated slot has exactly two writers: this class, which records what it
+   * wrote, and a panel widget, which writes the config directly and tells nobody.
+   * Exact comparison, not an epsilon — the panel writes whatever number the
+   * slider produced, and a tolerance would swallow the fine end of a 0.001 step.
+   *
+   * Live, per tick, rather than settle-debounced like the explorer's recenter.
+   * The explorer debounces because reacting means regenerating nine worlds;
+   * reacting here costs one array write, and the point of the feature is that
+   * the base follows the finger *during* the drag the way a VST's does. The slew
+   * state has to move with the base or the next step would pull the value back
+   * toward where the parameter was and the drag would still fight the music.
+   */
+  private rebaseFromEdits(): void {
+    const live = this.target.currentVector();
+    for (let i = 0; i < this.length; i++) {
+      if (this.mask[i] !== 1) continue;
+      const v = live[i] as number;
+      if (v === (this.applied[i] as number)) continue;
+      const spec = this.slots[i];
+      // NaN cannot come from a slider, but it also cannot be un-latched once it
+      // is in `base`, so it is refused here rather than clamped (both `<` and
+      // `>` answer false for it).
+      if (!spec || !Number.isFinite(v)) continue;
+      const b = v < spec.lo ? spec.lo : v > spec.hi ? spec.hi : v;
+      this.base[i] = b;
+      // Where the human actually put it, not the clamped base: the slew is the
+      // value on screen, and yanking it to the ModSpec bound mid-drag would be a
+      // visible jump away from the pointer.
+      this.slew.value[i] = v;
+      this.applied[i] = v;
+      this.rebases++;
+    }
+  }
+
+  /** How many slot rebases human edits have caused. A drift check, for the console. */
+  get rebaseCount(): number {
+    return this.rebases;
+  }
+
+  /**
+   * The `ModSpec` of one slot, or null where the sliders own it outright. The
+   * panel's modulation-range bands are drawn from this plus `baseValue`.
+   *
+   * A copy, like `baseValues()` and `direction()`: the registry's specs are
+   * shared by reference with the slew limiter and every projection, so a caller
+   * that "just clamps the object it was given" would silently rewrite the
+   * modulation range for the whole app.
+   */
+  spec(index: number): ModSpec | null {
+    const s = this.slots[index];
+    return s ? { ...s } : null;
+  }
+
+  /** One slot's current base. The band helper reads this per slider per refresh. */
+  baseValue(index: number): number {
+    return this.base[index] ?? 0;
   }
 
   /** Projection direction of one slot, copied. Exported shape for tests. */
@@ -797,6 +968,12 @@ export class Modulator {
 
     if (this.mode !== 'modulated' || !this.drivers) return;
 
+    // Deliberately *inside* the mode gate. In manual mode nothing here writes θ,
+    // so there is no such thing as an edit to notice; and the explorer forces
+    // manual on entry precisely because it is writing the live config itself and
+    // polling the same vector for the same reason. One detector per writer.
+    this.rebaseFromEdits();
+
     this.computeTarget(this.zbuf);
 
     if (boundaryHit) {
@@ -807,6 +984,10 @@ export class Modulator {
     // class exactly twice as quick and keeps their ratios (the tuned part) intact.
     const v = this.slew.step(this.targetTheta, dt * Math.max(this.cfg.responseSpeed, 0));
     this.target.applyTheta(v, this.mask);
+    // Read back rather than assume `v` landed: this is the reference the next
+    // tick's edit detector diffs against, so anything `applyTheta` does on the
+    // way in must be part of it or it would look like a human did it.
+    this.markApplied();
   }
 
   private updateStemFollow(frame: FeaturesFrame, dt: number, snap: boolean): void {

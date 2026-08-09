@@ -243,9 +243,12 @@ const MATRIX_DIAGONAL_MOD: ModSpec = add('matrix', 0.3, 2, 0.5, 0.45);
  *   instrument entering reads differently depending on where the track sits in
  *   embedding space, which is exactly the legibility Revision 2 §2 bought.
  *
- * `senseGain` is in, multiplicatively: it sets where the adaptive curves
- * saturate, so it changes the *character* of every species at once — a good
- * global to have moving, and safe in any range because it only rescales x∈[0,1).
+ * - **senseGain** — was in on the argument that it changes the *character* of
+ *   every species at once; removed for exactly that reason (user call,
+ *   2026-08-08, alongside plife's forceGain/maxSpeed). A whole-sim scalar has
+ *   no musical referent to tie it to, so the music sweeping it reads as drift
+ *   rather than response. It stays a θ slot — files and the panel still own
+ *   it, absolute in every mode.
  */
 const GLOBAL_BOUNDS: Bound[] = [
   {
@@ -253,7 +256,7 @@ const GLOBAL_BOUNDS: Bound[] = [
     cls: CLASS_MEDIUM,
     min: 0.02,
     max: 4,
-    mod: mul('structure', 0.02, 2, 0.7, 0.5),
+    mod: null,
   },
   { name: 'exposure', cls: CLASS_MEDIUM, min: 0.005, max: 1.5, mod: null },
   { name: 'gamma', cls: CLASS_MEDIUM, min: 1, max: 3, mod: null },

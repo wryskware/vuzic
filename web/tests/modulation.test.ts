@@ -22,9 +22,13 @@ import {
   PC_DRIVER_COUNT,
   STRUCTURE_DRIVERS,
   unitDirection,
+  Modulator,
   varianceOrder,
   Z_CLAMP,
 } from '../src/mapping/modulation.ts';
+import type { ModTarget, ThetaRegistry } from '../src/mapping/target.ts';
+import type { TimelineSampler } from '../src/timeline/sampler.ts';
+import type { ModulationConfig } from '../src/mapping/types.ts';
 import { SlewLimiter } from '../src/mapping/slew.ts';
 import { defaultStemFollow, followMultiplier, StemFollow } from '../src/mapping/stemfollow.ts';
 import {
@@ -163,13 +167,15 @@ test('the exclusions are exactly the documented ones', () => {
   const names = fieldNames(K);
   const excluded = names.filter((_, i) => SLOTS[i] === null);
   // every p3 exponent, brightness + intensity per species (Revision 4), plus
-  // exposure / gamma / stemGain
-  assert.equal(excluded.length, 6 * K + 3);
+  // all four globals — senseGain joined the excluded set 2026-08-08 (whole-sim
+  // scalars have no musical referent; the user's macros own global character)
+  assert.equal(excluded.length, 6 * K + 4);
   for (const n of excluded) {
     assert.ok(
       n.endsWith('.p3') ||
         n.endsWith('.brightness') ||
         n.endsWith('.intensity') ||
+        n === 'senseGain' ||
         n === 'exposure' ||
         n === 'gamma' ||
         n === 'stemGain',
@@ -1007,4 +1013,521 @@ test('stem-follow: the shipped default leaves a visible ghost, not a blackout', 
   assert.ok(d.enabled, 'the lane is on by default');
   assert.ok(d.floor >= 0.15 && d.floor <= 0.4, `floor ${d.floor} is not a ghost`);
   assert.ok(d.smoothingMs >= 200 && d.smoothingMs <= 400, `smoothing ${d.smoothingMs} ms`);
+});
+
+// ── rebase-on-edit: the base is the user's, not the seed's (VST semantics) ────
+
+/**
+ * The rebase lane is driven through a real `Modulator` — the class under test —
+ * against a **synthetic** registry rather than physarum's.
+ *
+ * Two reasons, and the second is the load-bearing one. First, the properties
+ * here are about exactly which slot moved, so the slot table has to be small
+ * enough to state them over by index: one ordinary masked additive slot, one
+ * more in a different group, an excluded slot with no spec at all, a
+ * multiplicative slot, and — the case no shipped registry offers — a slot that
+ * *has* a `ModSpec` but is **not** in the mask, which is the only way to test the
+ * two halves of the "never rebase what we never write" gate apart. Second, a
+ * registry assembled here cannot shift underneath the run when someone edits a
+ * sim's slot table.
+ */
+const RIG_SLOTS: (ModSpec | null)[] = [
+  { group: 'structure', lo: 0, hi: 10, half: 1, jitter: 0.1, mult: false },
+  { group: 'matrix', lo: -2, hi: 2, half: 0.5, jitter: 0.1, mult: false },
+  null,
+  { group: 'decay', lo: 0.1, hi: 10, half: 0.5, jitter: 0.1, mult: true },
+  { group: 'population', lo: 0, hi: 1, half: 0.25, jitter: 0.1, mult: false },
+];
+/** Slot 4 carries a spec and is deliberately out of the mask; slot 2 has neither. */
+const RIG_MASK = Uint8Array.from([1, 1, 0, 1, 0]);
+/** The shipped θ this rig starts from — every value inside its slot's range. */
+const RIG_THETA = [5, 0, 7.5, 1, 0.5];
+const RIG_LEN = RIG_SLOTS.length;
+/** The masked slots, i.e. the only ones the modulator ever writes or rebases. */
+const RIG_MASKED = [0, 1, 3];
+
+interface Rig {
+  mod: Modulator;
+  /** θ as the "sim" holds it — the panel writes straight into this. */
+  theta: Float64Array;
+  /** what a panel widget does: write the config directly and tell nobody */
+  edit: (index: number, value: number) => void;
+  /** one modulator tick */
+  tick: (dt?: number) => void;
+  /** θ as the modulator last left it */
+  read: (index: number) => number;
+  /** the θ the constructor captured as `defaults`, for seeded-base expectations */
+  defaults: Float64Array;
+  cfg: ModulationConfig;
+}
+
+/**
+ * @param tau slew time constant. 0 makes the limiter a passthrough, so a readback
+ *   is the *target* and the assertions are about `base`. A huge value freezes it,
+ *   so a readback is the limiter's internal state and the assertions are about
+ *   where the slew was left — which is how "the drag does not snap back" is
+ *   observable at all without reaching into a private field.
+ */
+function makeRig(tau = 0): Rig {
+  const registry: ThetaRegistry = {
+    length: RIG_LEN,
+    slots: RIG_SLOTS,
+    mask: RIG_MASK,
+    classes: new Uint8Array(RIG_LEN).fill(CLASS_FAST),
+    names: RIG_SLOTS.map((_, i) => `rig${i}`),
+  };
+  const theta = Float64Array.from(RIG_THETA);
+  const target: ModTarget = {
+    simId: 'rig',
+    config: {
+      speciesCount: 1,
+      palette: { colors: ['#ffffff'], saturation: 1, brightness: 1 },
+      render: defaultRenderConfig(),
+      species: [{ name: 'a', brightness: 1 }],
+    },
+    currentSeed: 1,
+    onSeedChange: null,
+    registry: () => registry,
+    // A fresh copy every call, exactly like a real target's
+    // presetToVector(presetFromConfig(...)): the modulator must not be able to
+    // alias the live vector and accidentally diff it against itself.
+    currentVector: () => Float64Array.from(theta),
+    // Masked write only, which is what every real `applyVector` does — and what
+    // makes an edit to an unmasked slot stay put instead of being stamped over.
+    applyTheta: (v, mask) => {
+      for (let i = 0; i < RIG_LEN; i++) {
+        if (!mask || mask[i] === 1) theta[i] = v[i] as number;
+      }
+    },
+    invalidatePalette: () => {},
+    setBrightFollow: () => {},
+    setImpulses: () => {},
+    stemMap: () => Int32Array.from([-1]),
+    partialReseed: () => {},
+    reseed: () => {},
+    snapshot: () => false,
+    restoreSnapshot: () => false,
+    clearSnapshot: () => {},
+    hasSnapshot: false,
+  };
+  const sampler = {
+    getChannel: () => undefined,
+    segmentIndexAt: () => -1,
+  } as unknown as TimelineSampler;
+
+  // Every driver constant, so each one z-scores to exactly 0 and the modulated
+  // target of a slot is exactly its base. That makes "the base moved" an exact
+  // equality rather than a tolerance, and leaves `targetFor` as the way to probe
+  // a non-zero z deliberately.
+  const dims = 4;
+  const frames = 16;
+  const bank = bankOf(new Float32Array(frames * dims).fill(1), frames, dims);
+
+  const defaults = Float64Array.from(theta);
+  const cfg = defaultModulationConfig(target.config, 'rig');
+  cfg.depth = 1;
+  for (const g of MOD_GROUPS) cfg.groupDepth[g] = 1;
+  cfg.responseSpeed = 1;
+  cfg.slew = { fast: tau, medium: tau, slow: tau };
+  const mod = new Modulator(target, sampler, bank, cfg, 0xa5a5);
+
+  let t = 0;
+  return {
+    mod,
+    theta,
+    defaults,
+    cfg,
+    edit: (index, value) => {
+      theta[index] = value;
+    },
+    tick: (dt = 1 / 60) => {
+      t++;
+      mod.update({ tick: t, time: t * dt, values: new Float32Array(4) }, dt);
+    },
+    read: (index) => theta[index] as number,
+  };
+}
+
+/** The rig's registry is the shape the tests below are stated over. */
+test('the rebase rig registry has the mask/spec combinations the gate needs', () => {
+  assert.equal(RIG_MASK.length, RIG_LEN);
+  assert.equal(RIG_SLOTS[2], null, 'slot 2 must be excluded outright');
+  assert.equal(RIG_MASK[2], 0);
+  assert.ok(RIG_SLOTS[4], 'slot 4 must carry a spec');
+  assert.equal(RIG_MASK[4], 0, 'slot 4 must be out of the mask — the isolating case');
+  for (const i of RIG_MASKED) assert.ok(RIG_SLOTS[i] && RIG_MASK[i] === 1, `slot ${i}`);
+});
+
+test('a modulated tick with every driver constant leaves theta exactly on the base', () => {
+  // The premise the exactness of every assertion below rests on: z = 0, so the
+  // target is the base itself and nothing drifts tick to tick.
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  const before = rig.mod.baseValues();
+  for (let i = 0; i < 10; i++) rig.tick();
+  for (const i of RIG_MASKED) {
+    assert.equal(rig.read(i), before[i], `slot ${i} drifted with a silent bank`);
+    assert.equal(rig.mod.baseValue(i), before[i], `slot ${i} base drifted`);
+  }
+  assert.equal(rig.mod.rebaseCount, 0, 'a silent bank produced phantom edits');
+});
+
+// ── 1. markApplied ───────────────────────────────────────────────────────────
+
+test('markApplied makes a write read as ours: the quantisation path is not an edit', () => {
+  // Tweakpane's refresh pushes every bound number through its widget's `step` and
+  // writes the rounded result back. Paired with markApplied that must be inert;
+  // unpaired it is indistinguishable from a drag, which is the bug the pairing
+  // exists to prevent — and the contrast below is the whole contract.
+  const quantise = (v: number): number => Math.round(v * 100) / 100 + 0.005;
+
+  const paired = makeRig(0);
+  paired.mod.setMode('modulated');
+  paired.tick();
+  const base0 = paired.mod.baseValue(0);
+  const count0 = paired.mod.rebaseCount;
+  for (const i of RIG_MASKED) paired.edit(i, quantise(paired.read(i)));
+  paired.mod.markApplied();
+  paired.tick();
+  assert.equal(paired.mod.rebaseCount, count0, 'a marked write was read as a human edit');
+  assert.equal(paired.mod.baseValue(0), base0, 'the base moved on a marked write');
+
+  // …and without the pairing the identical write is an edit, on every masked slot
+  // at once — the "random-walk by the excursion twice a second" failure.
+  const unpaired = makeRig(0);
+  unpaired.mod.setMode('modulated');
+  unpaired.tick();
+  const was = unpaired.mod.baseValue(0);
+  const quantised = quantise(unpaired.read(0));
+  for (const i of RIG_MASKED) unpaired.edit(i, quantise(unpaired.read(i)));
+  unpaired.tick();
+  assert.equal(unpaired.mod.rebaseCount, RIG_MASKED.length, 'the unmarked write was not detected');
+  assert.equal(unpaired.mod.baseValue(0), quantised, 'the base did not follow the write');
+  assert.notEqual(unpaired.mod.baseValue(0), was);
+});
+
+test('markApplied with no update in between still counts as ours on the next tick', () => {
+  // The ordering the contract actually promises: edit -> markApplied -> update.
+  // There is no tick between the write and the mark, which is exactly the
+  // situation a refresh creates.
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  rig.tick();
+  const base = rig.mod.baseValues();
+  rig.edit(0, 9.25);
+  rig.edit(3, 4.5);
+  rig.mod.markApplied();
+  rig.tick();
+  rig.tick();
+  assert.equal(rig.mod.rebaseCount, 0);
+  for (const i of RIG_MASKED) assert.equal(rig.mod.baseValue(i), base[i], `slot ${i} base moved`);
+});
+
+// ── 2. rebase on edit ────────────────────────────────────────────────────────
+
+test('an edit during a modulated tick becomes the slot’s new base', () => {
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  rig.tick();
+  const others = rig.mod.baseValues();
+
+  rig.edit(0, 7.25);
+  rig.tick();
+  assert.equal(rig.mod.baseValue(0), 7.25, 'the base did not follow the drag');
+  assert.equal(rig.mod.rebaseCount, 1, 'one edited slot is one rebase');
+  // …and only that slot moved
+  for (const i of [1, 3]) assert.equal(rig.mod.baseValue(i), others[i], `slot ${i} moved too`);
+
+  // A second edit in the same drag keeps re-anchoring, one rebase per slot write.
+  rig.edit(0, 7.5);
+  rig.tick();
+  assert.equal(rig.mod.baseValue(0), 7.5);
+  assert.equal(rig.mod.rebaseCount, 2);
+
+  // Two slots in one tick is two rebases, not one.
+  rig.edit(0, 6);
+  rig.edit(1, 1.25);
+  rig.tick();
+  assert.equal(rig.mod.rebaseCount, 4, 'rebaseCount counts slot writes, not ticks');
+  assert.equal(rig.mod.baseValue(1), 1.25);
+});
+
+test('after a rebase the excursion band recentres on the edited value', () => {
+  // The point of the feature: the music now breathes around where the human left
+  // the slider, so the *pure* target path has to agree with the new base.
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  rig.tick();
+
+  const spec0 = RIG_SLOTS[0] as ModSpec;
+  const spec3 = RIG_SLOTS[3] as ModSpec;
+  const zero = new Float32Array(4);
+  const before = rig.mod.targetFor(zero)[0] as number;
+  assert.equal(before, rig.mod.baseValue(0), 'z = 0 must land exactly on the base');
+
+  rig.edit(0, 7.25); // additive
+  rig.edit(3, 2); // multiplicative
+  rig.tick();
+
+  assert.equal(rig.mod.targetFor(zero)[0], 7.25, 'z = 0 no longer lands on the edited base');
+  assert.equal(rig.mod.targetFor(zero)[3], 2);
+  assert.notEqual(rig.mod.targetFor(zero)[0], before);
+
+  // …and the band around it is base ± half (× exp(±half) for a mult slot),
+  // clamped into the slot's own range, for every z the drivers can produce.
+  const rng = makeRng(0x1eaf);
+  const z = new Float32Array(4);
+  let sawHigh = false;
+  let sawLow = false;
+  for (let trial = 0; trial < 2000; trial++) {
+    for (let d = 0; d < 4; d++) z[d] = (rng() * 2 - 1) * Z_CLAMP;
+    const out = rig.mod.targetFor(z);
+    const a = out[0] as number;
+    const m = out[3] as number;
+    assert.ok(
+      a >= Math.max(7.25 - spec0.half, spec0.lo) - 1e-12 && a <= Math.min(7.25 + spec0.half, spec0.hi) + 1e-12,
+      `additive target ${a} outside 7.25 +/- ${spec0.half}`,
+    );
+    assert.ok(
+      m >= Math.max(2 * Math.exp(-spec3.half), spec3.lo) - 1e-12 &&
+        m <= Math.min(2 * Math.exp(spec3.half), spec3.hi) + 1e-12,
+      `multiplicative target ${m} outside 2 * exp(+/-${spec3.half})`,
+    );
+    if (a > 7.25 + spec0.half * 0.8) sawHigh = true;
+    if (a < 7.25 - spec0.half * 0.8) sawLow = true;
+  }
+  // The band is a band, not a pin: a clamp bug that collapsed it would still
+  // satisfy the bounds above.
+  assert.ok(sawHigh && sawLow, 'the recentred band never reached either end');
+});
+
+test('the slew continues from under the pointer: a drag does not snap back', () => {
+  // With the limiter effectively frozen, a readback is its internal state. If the
+  // rebase had moved only `base`, the next step would drag the value back toward
+  // where the parameter was and the drag would still fight the music.
+  const rig = makeRig(1e6);
+  rig.mod.setMode('modulated');
+  rig.tick();
+  const was = rig.read(0);
+  assert.ok(Math.abs(was - 9) > 3, 'the fixture needs the edit to be far from the old value');
+
+  rig.edit(0, 9);
+  rig.tick();
+  assert.ok(Math.abs(rig.read(0) - 9) < 1e-3, `the value snapped back to ${rig.read(0)}`);
+  for (let i = 0; i < 30; i++) rig.tick();
+  assert.ok(Math.abs(rig.read(0) - 9) < 1e-2, 'the value crept away from the pointer');
+});
+
+test('manual mode never rebases, however much the panel writes', () => {
+  const rig = makeRig(0);
+  assert.equal(rig.mod.mode, 'manual', 'the modulator starts manual');
+  const base = rig.mod.baseValues();
+  for (let round = 0; round < 5; round++) {
+    for (const i of RIG_MASKED) rig.edit(i, round + 1);
+    rig.tick();
+  }
+  assert.equal(rig.mod.rebaseCount, 0, 'manual mode rebased');
+  for (const i of RIG_MASKED) assert.equal(rig.mod.baseValue(i), base[i], `slot ${i} base moved`);
+  // …and manual mode wrote nothing either: the edits are still standing.
+  for (const i of RIG_MASKED) assert.equal(rig.read(i), 5);
+});
+
+test('an unmasked slot is never rebased — the modulator does not write it', () => {
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  rig.tick();
+  const base = rig.mod.baseValues();
+
+  // Slot 2 has no spec; slot 4 has one but is out of the mask. Both are edits by
+  // any other measure, and neither may move a base or the counter.
+  rig.edit(2, 99);
+  rig.edit(4, 0.75);
+  rig.tick();
+  rig.tick();
+  assert.equal(rig.mod.rebaseCount, 0, 'an unmasked edit was rebased');
+  assert.equal(rig.mod.baseValue(2), base[2]);
+  assert.equal(rig.mod.baseValue(4), base[4]);
+  // …and the modulator left the values alone, rather than stamping over them
+  assert.equal(rig.read(2), 99, 'the modulator wrote an unmasked slot');
+  assert.equal(rig.read(4), 0.75, 'the modulator wrote an unmasked slot');
+
+  // The very same tick shape on a masked slot is one rebase, so the test above
+  // is not passing because nothing was detected at all.
+  rig.edit(0, 3.5);
+  rig.tick();
+  assert.equal(rig.mod.rebaseCount, 1);
+});
+
+test('an edit outside the modulation range clamps the base but not the pointer', () => {
+  // A panel slider is bounded by the slot's *hard* theta bound, which is wider
+  // than the ModSpec range. Base has to clamp or the target sits pinned at the
+  // bound for every z; the slew must not, or the value jumps off the pointer.
+  const spec = RIG_SLOTS[1] as ModSpec;
+  for (const [label, edited, want] of [
+    ['above hi', 5, spec.hi],
+    ['below lo', -5, spec.lo],
+  ] as [string, number, number][]) {
+    const rig = makeRig(1e6);
+    rig.mod.setMode('modulated');
+    rig.tick();
+    rig.edit(1, edited);
+    rig.tick();
+    assert.equal(rig.mod.baseValue(1), want, `${label}: the base was not clamped`);
+    assert.ok(Math.abs(rig.read(1) - edited) < 1e-3, `${label}: the value jumped to ${rig.read(1)}`);
+
+    // …and with the limiter live it settles onto the clamped base, not past it.
+    const settled = makeRig(0);
+    settled.mod.setMode('modulated');
+    settled.tick();
+    settled.edit(1, edited);
+    settled.tick();
+    settled.tick();
+    assert.equal(settled.read(1), want, `${label}: the settled value left the range`);
+  }
+});
+
+test('a non-finite write is refused rather than latched into the base', () => {
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  rig.tick();
+  const base = rig.mod.baseValues();
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    rig.edit(0, bad);
+    rig.tick();
+    assert.ok(Number.isFinite(rig.mod.baseValue(0)), `${bad} reached the base`);
+    assert.equal(rig.mod.baseValue(0), base[0], `${bad} moved the base`);
+    assert.ok(Number.isFinite(rig.read(0)), `${bad} survived into theta`);
+  }
+  assert.equal(rig.mod.rebaseCount, 0, 'a non-finite write was counted as a rebase');
+});
+
+// ── 3. adoptBase and the mode flip ───────────────────────────────────────────
+
+test('setMode("modulated") adopts the sliders rather than gliding back to the seed', () => {
+  const rig = makeRig(0);
+  const seeded = rig.mod.baseValues();
+  // A manual session: the human moves things, and nothing rebases while they do.
+  rig.edit(0, 8.5);
+  rig.edit(1, -1.5);
+  rig.edit(3, 3);
+  rig.tick();
+  assert.equal(rig.mod.rebaseCount, 0);
+  assert.equal(rig.mod.baseValue(0), seeded[0], 'manual mode moved the base');
+
+  rig.mod.setMode('modulated');
+  assert.equal(rig.mod.baseValue(0), 8.5, 'the flip did not adopt the slider');
+  assert.equal(rig.mod.baseValue(1), -1.5);
+  assert.equal(rig.mod.baseValue(3), 3);
+  // …and it is an adoption, not a rebase: the counter is a human-edit diagnostic.
+  assert.equal(rig.mod.rebaseCount, 0, 'adoptBase inflated the rebase counter');
+  // …and the first modulated tick holds there instead of stepping.
+  rig.tick();
+  assert.equal(rig.read(0), 8.5, 'the flip stepped the value');
+});
+
+test('adoptBase clamps into the modulation range and leaves unmasked slots alone', () => {
+  const rig = makeRig(0);
+  const base = rig.mod.baseValues();
+  rig.edit(0, 999); // hi is 10
+  rig.edit(1, -99); // lo is -2
+  rig.edit(2, 42); // excluded
+  rig.edit(4, 9); // spec, but unmasked
+  rig.mod.adoptBase();
+  assert.equal(rig.mod.baseValue(0), (RIG_SLOTS[0] as ModSpec).hi);
+  assert.equal(rig.mod.baseValue(1), (RIG_SLOTS[1] as ModSpec).lo);
+  assert.equal(rig.mod.baseValue(2), base[2], 'an excluded slot was adopted');
+  assert.equal(rig.mod.baseValue(4), base[4], 'an unmasked slot was adopted');
+
+  // A non-finite live value is refused here too, not clamped into the base.
+  rig.edit(3, Number.NaN);
+  const b3 = rig.mod.baseValue(3);
+  rig.mod.adoptBase();
+  assert.equal(rig.mod.baseValue(3), b3, 'NaN was adopted');
+});
+
+test('setMode("manual") leaves the base exactly where it was', () => {
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  rig.edit(0, 2.5);
+  rig.tick();
+  const base = rig.mod.baseValues();
+  rig.mod.setMode('manual');
+  assert.deepEqual(Array.from(rig.mod.baseValues()), Array.from(base), 'going manual disturbed the base');
+  // …and flipping back is an adopt of wherever the sliders now are, which is a
+  // no-op when nothing moved in between.
+  rig.mod.setMode('modulated');
+  assert.deepEqual(Array.from(rig.mod.baseValues()), Array.from(base));
+});
+
+test('setSeed still throws the edits away — a reroll is how you get a new creature', () => {
+  const rig = makeRig(0);
+  rig.mod.setMode('modulated');
+  rig.edit(0, 9.75);
+  rig.edit(1, 1.75);
+  rig.tick();
+  assert.equal(rig.mod.baseValue(0), 9.75);
+
+  const seed = 0xbeef_1234;
+  rig.mod.setSeed(seed);
+  assert.equal(rig.mod.currentSeed, seed >>> 0);
+
+  // The expectation is the seeded personality computed independently from the
+  // theta the constructor captured as `defaults` — not from what the edits left.
+  const want = baseVector(seed, rig.defaults, RIG_SLOTS, new Float64Array(RIG_LEN));
+  for (let i = 0; i < RIG_LEN; i++) {
+    assert.equal(rig.mod.baseValue(i), want[i], `slot ${i} did not come back from the seed`);
+  }
+  assert.notEqual(rig.mod.baseValue(0), 9.75, 'the edit survived a reroll');
+  // …and the reroll is visible immediately, including through the mask.
+  for (const i of RIG_MASKED) assert.equal(rig.read(i), want[i], `slot ${i} was not applied`);
+  // …and it is not itself read as an edit on the next tick.
+  const count = rig.mod.rebaseCount;
+  rig.tick();
+  assert.equal(rig.mod.rebaseCount, count, 'a reroll was read as a human edit');
+});
+
+// ── 4. accessors ─────────────────────────────────────────────────────────────
+
+test('the diagnostic accessors report the registry and the base, and copy what they must', () => {
+  const rig = makeRig(0);
+  // spec(i) is a copy of the registry's spec, never the shared object itself —
+  // the registry is aliased into the slew limiter and every projection, so a
+  // caller mutating what it was handed must not rewrite the app's ranges.
+  for (let i = 0; i < RIG_LEN; i++) {
+    const s = rig.mod.spec(i);
+    const expected = RIG_SLOTS[i] ?? null;
+    if (expected === null) {
+      assert.equal(s, null);
+      continue;
+    }
+    assert.notEqual(s, expected, `spec(${i}) must not alias the registry`);
+    assert.deepEqual(s, expected, `spec(${i}) must match the registry's values`);
+  }
+  assert.equal(rig.mod.spec(2), null, 'an excluded slot has no spec');
+  assert.equal(rig.mod.spec(RIG_LEN), null, 'out of range is null, not undefined');
+  assert.equal(rig.mod.spec(-1), null);
+
+  // baseValue(i) agrees with baseValues(), and is 0 rather than undefined off
+  // the end.
+  const all = rig.mod.baseValues();
+  for (let i = 0; i < RIG_LEN; i++) assert.equal(rig.mod.baseValue(i), all[i], `slot ${i}`);
+  assert.equal(rig.mod.baseValue(RIG_LEN), 0);
+  assert.equal(rig.mod.baseValue(-1), 0);
+
+  // baseValues() is a copy: the panel refreshes off it every frame.
+  all.fill(-1234);
+  assert.notEqual(rig.mod.baseValue(0), -1234, 'baseValues() aliased the live base');
+
+  // rebaseCount starts at zero and only ever climbs.
+  assert.equal(rig.mod.rebaseCount, 0);
+  rig.mod.setMode('modulated');
+  rig.tick();
+  let last = rig.mod.rebaseCount;
+  for (let round = 0; round < 4; round++) {
+    rig.edit(0, 1 + round);
+    rig.tick();
+    assert.ok(rig.mod.rebaseCount >= last, 'the counter went backwards');
+    last = rig.mod.rebaseCount;
+  }
+  assert.equal(last, 4);
 });
