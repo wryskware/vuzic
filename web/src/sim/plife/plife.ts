@@ -53,6 +53,7 @@ import {
   defaultPlifeConfig,
   defaultPlifeMacros,
   defaultPlifePaletteColor,
+  defaultPlifePopulation,
   MACRO_RANGE,
   MAX_BRIGHTNESS,
   MAX_FRICTION,
@@ -500,19 +501,37 @@ export class PlifeSim implements Sim, ModTarget {
 
   // ── ModTarget: the opaque per-sim extras block ─────────────────────────────
   //
-  // Two blocks of plife's config are outside θ *and* outside everything the
-  // mapping layer knows how to carry: the macro rig and the matrix generation
-  // settings. Neither belongs in `ModulationConfig`'s schema — that file
-  // describes a mapping, not a substrate — so they travel in the opaque `extras`
-  // channel and this pair is the only code that understands their shape.
+  // Three blocks of plife's config are outside θ *and* outside everything the
+  // mapping layer knows how to carry: the macro rig, the matrix generation
+  // settings, and the population lane. None belongs in `ModulationConfig`'s
+  // schema — that file describes a mapping, not a substrate — so they travel in
+  // the opaque `extras` channel and this pair is the only code that understands
+  // their shape.
+  //
+  // The channel has two consumers, and the second is why `population` is here at
+  // all. The first is persistence (autosave / `modulation.json`). The second is
+  // explorer mode: `ExplorerRig.syncStyle` fans the serialised block out to all
+  // nine tiles twice a second, so anything outside both θ and extras is a panel
+  // edit the tiles never see — which is exactly how the population sliders came
+  // to do nothing while the grid was open.
 
   /** A plain snapshot of everything plife wants saved outside θ. */
   serializeExtras(): Record<string, unknown> {
     const m = this.config.macros;
     const g = this.config.matrixGen;
+    const p = this.config.population;
     return {
       macros: { ...m },
       matrixGen: { ...g, rMin: { ...g.rMin }, rMax: { ...g.rMax } },
+      population: { ...p, accent: { ...p.accent } },
+      // Length K, index-aligned with `config.species`. A flat boolean array
+      // rather than a list of names, because the species *are* their indices
+      // everywhere else in this sim (the matrix, the palette, the stem map), and
+      // a name list would invite the question of what happens when K changes —
+      // which `applyExtras` answers by length instead.
+      speciesEnabled: this.config.species
+        .slice(0, this.config.speciesCount)
+        .map((s) => s.enabled !== false),
     };
   }
 
@@ -522,10 +541,17 @@ export class PlifeSim implements Sim, ModTarget {
    * is clamped into the range its slider shows, anything missing or non-finite
    * falls back to the shipped default, and this never throws.
    *
-   * Runs on load (`Modulator.setConfig`). It restores the matrix *generation*
-   * settings but does not re-draw — the drawn matrix is already in the saved θ,
-   * so a loaded file reproduces its look, and the redraw button is how you ask
-   * for a new one under the restored numbers.
+   * Runs on load (`Modulator.setConfig`) and, nine times over, on every explorer
+   * style sync. It restores the matrix *generation* settings but does not
+   * re-draw — the drawn matrix is already in the saved θ, so a loaded file
+   * reproduces its look, and the redraw button is how you ask for a new one
+   * under the restored numbers.
+   *
+   * Every write is **in place** into the existing sub-objects, and that is load
+   * bearing rather than incidental: the panel's tweakpane bindings and the
+   * per-species population readout hold `config.population` (and
+   * `config.population.accent`) by reference, so replacing either object would
+   * leave the panel editing something nothing runs.
    */
   applyExtras(raw: Record<string, unknown> | undefined): void {
     const o = (raw ?? {}) as Record<string, unknown>;
@@ -551,6 +577,44 @@ export class PlifeSim implements Sim, ModTarget {
     // draws uniformly between them and an inverted band would draw nonsense.
     readBand(gs['rMin'], g.rMin, defG.rMin);
     readBand(gs['rMax'], g.rMax, defG.rMax);
+
+    // The population lane. Ranges are the panel's own (ui/plife-panel.ts, the
+    // "population · stems → colonies" folder), so a loaded value can never sit
+    // outside the slider meant to show it. Note the two floors that are not 0:
+    // `curve` is an exponent the lane raises a 0..1 level to, and `riseTau` /
+    // `fallTau` are divisors in the shader — both have a degenerate value at
+    // zero that the sliders already refuse to produce.
+    const p = this.config.population;
+    const ps = plainObject(o['population']);
+    const defP = defaultPlifePopulation();
+    p.followStems = readBool(ps['followStems'], defP.followStems);
+    p.floor = clampNum(ps['floor'], defP.floor, 0, 1);
+    p.curve = clampNum(ps['curve'], defP.curve, 0.2, 4);
+    p.smoothingMs = clampNum(ps['smoothingMs'], defP.smoothingMs, 100, 5000);
+    p.riseTau = clampNum(ps['riseTau'], defP.riseTau, 0.05, 3);
+    p.fallTau = clampNum(ps['fallTau'], defP.fallTau, 0.1, 8);
+
+    const a = p.accent;
+    const as = plainObject(ps['accent']);
+    const defA = defP.accent;
+    a.enabled = readBool(as['enabled'], defA.enabled);
+    a.floor = clampNum(as['floor'], defA.floor, 0, 1);
+    a.boost = clampNum(as['boost'], defA.boost, 0, 3);
+    a.smoothingMs = clampNum(as['smoothingMs'], defA.smoothingMs, 100, 5000);
+
+    // Per-species on/off. Written IN PLACE into the existing species objects for
+    // the same reason the blocks above are — the panel's tweakpane bindings hold
+    // each `config.species[i]` by reference — and driven by the *live* K rather
+    // than by the array's length, so a file written at a different K is padded
+    // with `true` (a species the file never heard of is present, which is the
+    // safe direction) and any surplus entries are ignored. Anything that is not
+    // a real boolean falls back to `true` via `readBool`: a corrupt entry should
+    // cost you a switch, not a voice.
+    const flags = Array.isArray(o['speciesEnabled']) ? (o['speciesEnabled'] as unknown[]) : [];
+    for (let i = 0; i < this.config.speciesCount; i++) {
+      const sp = this.config.species[i];
+      if (sp) sp.enabled = readBool(flags[i], true);
+    }
   }
 
   // ── stats / status ─────────────────────────────────────────────────────────
@@ -1030,6 +1094,100 @@ export class PlifeSim implements Sim, ModTarget {
     this.snap = null;
   }
 
+  /**
+   * Take another plife sim's *world* — its matter, not its picture.
+   *
+   * This exists for one caller: leaving explorer mode. Picking a tile has always
+   * handed the live sim the tile's θ, so the parameters were right and the world
+   * was somebody else's — you chose a colony arrangement and got back a different
+   * one built from the same numbers. Copying the particle buffer is what makes
+   * "exit" mean "keep looking at the thing I picked, full screen".
+   *
+   * ## What moves
+   *
+   * The particle buffer, GPU→GPU, and nothing else on the GPU. `struct Particle`
+   * (common.wgsl) is `pos`, `vel`, `energy` and three pad words — 32 bytes — and
+   * that is the *whole* of a particle: species is derived from the index
+   * (`speciesOf`), never stored, so the segmentation is a pure function of
+   * `segSize` and K and is identical in both sims by construction. The grid
+   * buffers (`cellCount`, `cellStart`, `sortedIdx`) are cleared and rebuilt from
+   * scratch at the top of every substep and carry nothing across; there is
+   * nothing in them to copy.
+   *
+   * The population lane's CPU posture rides along, for the same reason
+   * `restoreSnapshot` carries it: `energy` in the buffer is the *current*
+   * presence of each particle and the lane's smoothed levels are the target it is
+   * easing toward. Arriving with the tile's matter and the live sim's stale
+   * targets would make the first second after exit a visible re-shaping of the
+   * colony sizes you just chose.
+   *
+   * ## What deliberately does not move
+   *
+   * - **The render domain** — the HDR feedback echo. Tile and canvas are
+   *   different resolutions, so there is nothing size-compatible to copy, and the
+   *   trail re-forms from the particles in about half a second anyway.
+   * - **Auto-exposure.** The controller re-adapts on its own time constant; it is
+   *   a property of the screen, not of the world. Not reset either — a reset
+   *   would open the full-screen view with a fade up from black.
+   * - **The seed.** It is only the phase of the wander noise and the key future
+   *   partial reseeds hash against, and adopting it would fire `onSeedChange` →
+   *   the modulator's seeded rewire → a redrawn interaction matrix, i.e. it would
+   *   destroy the very look this method exists to preserve.
+   *
+   * ## The size assertion
+   *
+   * Callers build tiles from a `structuredClone` of the live config, so
+   * `maxParticles` and K match and the buffers are the same length. That is a
+   * property of one call site, not of the type, so it is checked rather than
+   * assumed: a mismatch skips the promotion and says so, because a partial copy
+   * would leave the live world half one sim and half another.
+   *
+   * (One thing is genuinely approximate: world *width* is the aspect of the
+   * surface each sim was `init`ed against, so a tile's world is a couple of
+   * percent wider than the canvas's. Positions past the live `worldW` are wrapped
+   * by every shader that reads them, so the cost is one thin vertical strip
+   * folding to the left edge on the first step, on a torus where that is a
+   * translation rather than a tear. Correcting it exactly would need a compute
+   * pass instead of a copy, which is not worth it for 2%.)
+   *
+   * @returns false if the promotion was skipped; the live world is untouched.
+   */
+  adoptParticleState(from: PlifeSim): boolean {
+    if (!this.ready || !this.ctx || !from.ready) return false;
+    const src = from.particleBuf[from.parity];
+    const dst = this.particleBuf[this.parity];
+    if (
+      !src ||
+      !dst ||
+      src.size !== dst.size ||
+      from.segSize !== this.segSize ||
+      from.config.speciesCount !== this.config.speciesCount
+    ) {
+      console.warn(
+        `plife: cannot adopt particle state (${src?.size ?? 0}B/${from.segSize} vs ` +
+          `${dst?.size ?? 0}B/${this.segSize}); keeping the live world`,
+      );
+      return false;
+    }
+
+    // `parity` names the buffer the next grid/force/render pass reads, on both
+    // sides — so this reads the tile's *current* state and writes the one the
+    // live sim is about to pick up, with no flip needed.
+    const { device } = this.ctx;
+    const encoder = device.createCommandEncoder({ label: 'plife.adopt' });
+    encoder.copyBufferToBuffer(src, 0, dst, 0, dst.size);
+    device.queue.submit([encoder.finish()]);
+
+    this.stemLevel.set(from.stemLevel);
+    this.popMul.set(from.popMul);
+    this.accentMul.set(from.accentMul);
+    this.accentActivity = from.accentActivity;
+    // The adopted posture is already the music's; priming again would snap the
+    // EMAs on the next tick and undo exactly what was just copied.
+    this.popPrimed = true;
+    return true;
+  }
+
   // ── per-tick ───────────────────────────────────────────────────────────────
 
   tick(frame: FeaturesFrame, simTick: number): void {
@@ -1479,12 +1637,27 @@ export class PlifeSim implements Sim, ModTarget {
       //
       // The two macros join the same product, pre-clamp: `density` on every
       // species and `accents` on the secondaries only.
-      const frac =
-        Math.min(Math.max(s.aliveFraction, 0), 1) *
-        Math.max(this.popMul[k] ?? 1, 0) *
-        Math.max(this.accentMul[k] ?? 1, 0) *
-        Math.max(macros.density, 0) *
-        accentMacro;
+      //
+      // `enabled` gates the whole thing, and it is the OUTERMOST factor on
+      // purpose. Everything else in this product is a scaling — a lane, a macro,
+      // a θ base — and any of them can be argued back up by another; the switch
+      // is a decision about whether the voice exists, so it composes last and
+      // nothing composes over it. The corollary is worth stating because it is
+      // the one interaction that could surprise: this is a product of
+      // non-negative terms, so ANY zero wins. `accents` at 0 already silences
+      // every secondary, and re-enabling one secondary while the macro sits at 0
+      // brings back nothing — that is the macro's zero, not a broken switch.
+      //
+      // Nothing here is instant. This is the *target*; the GPU eases each
+      // particle's energy toward it over riseTau / fallTau, so switching a
+      // species off drains it over the fall-τ instead of popping it out.
+      const frac = s.enabled
+        ? Math.min(Math.max(s.aliveFraction, 0), 1) *
+          Math.max(this.popMul[k] ?? 1, 0) *
+          Math.max(this.accentMul[k] ?? 1, 0) *
+          Math.max(macros.density, 0) *
+          accentMacro
+        : 0;
       const alive = Math.floor(Math.min(Math.max(frac, 0), 1) * this.segSize);
       this.targetAlive[k] = alive;
       active += alive;
@@ -1557,6 +1730,11 @@ function plainObject(v: unknown): Record<string, unknown> {
 function clampNum(v: unknown, fallback: number, lo: number, hi: number): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
   return Math.min(Math.max(n, lo), hi);
+}
+
+/** Strict: only a real boolean counts, so `"false"` and `0` fall back rather than coerce. */
+function readBool(v: unknown, fallback: boolean): boolean {
+  return typeof v === 'boolean' ? v : fallback;
 }
 
 /** A radius band, clamped into the grid's legal range with `lo <= hi` restored. */

@@ -125,12 +125,14 @@ test('stretch is a look knob the music may not touch; the six motion slots are g
     brightness: null,
     intensity: null,
     stretch: null,
+    // size joined the look-knob exclusions 2026-08-08 — same argument as
+    // stretch, and its wide mod range read as giant orbs among dots.
+    size: null,
     aliveFraction: 'population',
     radiusScale: 'structure',
     forceScale: 'structure',
     friction: 'decay',
     wander: 'structure',
-    size: 'structure',
   };
   for (let s = 0; s < K; s++) {
     for (const [field, group] of Object.entries(expected)) {

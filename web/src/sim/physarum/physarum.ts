@@ -19,6 +19,7 @@ import {
   defaultConfig,
   defaultPaletteColor,
   defaultPhysarumMacros,
+  defaultSoil,
   MAX_BRIGHTNESS,
   MAX_DEPOSIT,
   MAX_EFFECTIVE_DEPOSIT,
@@ -337,26 +338,52 @@ export class PhysarumSim implements Sim, ModTarget {
 
   // ── ModTarget: the opaque per-sim extras block ─────────────────────────────
   //
-  // The macro rig is outside θ *and* outside everything the mapping layer knows
-  // how to carry. It does not belong in `ModulationConfig`'s schema — that file
-  // describes a mapping, not a substrate — so it travels in the opaque `extras`
-  // channel and this pair is the only code that understands its shape.
+  // Three parts of physarum's config are outside θ *and* outside everything the
+  // mapping layer knows how to carry: the macro rig, the soil block, and the
+  // direct stems→deposit path. None of them belongs in `ModulationConfig`'s
+  // schema — that file describes a mapping, not a substrate — so they travel in
+  // the opaque `extras` channel and this pair is the only code that understands
+  // their shape.
   //
   // Unlike plife there is no `matrixGen` block here: physarum's M is authored,
-  // not drawn from the seed, so `macros` is the whole of it.
+  // not drawn from the seed.
+  //
+  // The channel has two consumers, and the second is why `soil` and `stemDrive`
+  // are here at all. The first is persistence (autosave / `modulation.json`).
+  // The second is explorer mode: `ExplorerRig.syncStyle` fans the serialised
+  // block out to all nine tiles twice a second, so a panel edit to something
+  // outside both θ and extras is an edit the tiles never see — which is exactly
+  // how the soil sliders came to do nothing while the grid was open.
 
   /** A plain snapshot of everything physarum wants saved outside θ. */
   serializeExtras(): Record<string, unknown> {
-    return { macros: { ...this.config.macros } };
+    const s = this.config.soil;
+    return {
+      macros: { ...this.config.macros },
+      // `debugView` is deliberately absent: it is a transient "show me the
+      // field" toggle, and a saved one would come back on a later load as a
+      // world rendered in the wrong channel with no obvious cause.
+      soil: {
+        decay: s.decay,
+        accum: s.accum,
+        depositBias: s.depositBias,
+        senseBias: s.senseBias,
+      },
+      stemDrive: this.config.stemDrive,
+      stemGain: this.config.stemGain,
+    };
   }
 
   /**
    * The inverse, and deliberately paranoid: `extras` is opaque to every layer
-   * between the file and here, so nothing upstream has validated it. Every macro
+   * between the file and here, so nothing upstream has validated it. Every field
    * is clamped into the range its slider shows, anything missing or non-finite
    * falls back to the shipped default, and this never throws.
    *
-   * Runs on load (`Modulator.setConfig`).
+   * Runs on load (`Modulator.setConfig`) and, nine times over, on every explorer
+   * style sync. Both callers depend on it writing **in place**: the panel's
+   * tweakpane bindings hold `config.soil` by reference, so replacing the object
+   * would leave every soil slider bound to an orphan.
    */
   applyExtras(raw: Record<string, unknown> | undefined): void {
     const o = (raw ?? {}) as Record<string, unknown>;
@@ -367,6 +394,26 @@ export class PhysarumSim implements Sim, ModTarget {
       const r = PHYSARUM_MACRO_RANGE[key];
       m[key] = clampNum(src[key], def[key], r.min, r.max);
     }
+
+    // Ranges are the panel's own (ui/panel.ts, the "soil · track-scale memory"
+    // folder), so a loaded value can never sit outside the slider meant to show
+    // it. `decay` is floored at 0.99 rather than 0 because below that the field
+    // forgets inside a second and stops being track-scale memory at all.
+    const s = this.config.soil;
+    const ss = plainObject(o['soil']);
+    const defS = defaultSoil();
+    s.decay = clampNum(ss['decay'], defS.decay, 0.99, 0.99999);
+    s.accum = clampNum(ss['accum'], defS.accum, 0, 0.02);
+    s.depositBias = clampNum(ss['depositBias'], defS.depositBias, 0, 3);
+    s.senseBias = clampNum(ss['senseBias'], defS.senseBias, 0, 4);
+    // `debugView` is not read back — see `serializeExtras`. Whatever the panel
+    // currently has stays.
+
+    // Defaults stated as literals rather than pulled from `defaultConfig()`:
+    // this runs nine times a sync and `defaultConfig` allocates a whole K²
+    // matrix and a species array to answer two scalars.
+    this.config.stemDrive = readBool(o['stemDrive'], false);
+    this.config.stemGain = clampNum(o['stemGain'], 1.5, 0, 6);
   }
 
   /**
@@ -1310,4 +1357,9 @@ function plainObject(v: unknown): Record<string, unknown> {
 function clampNum(v: unknown, fallback: number, lo: number, hi: number): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
   return Math.min(Math.max(n, lo), hi);
+}
+
+/** Strict: only a real boolean counts, so `"false"` and `0` fall back rather than coerce. */
+function readBool(v: unknown, fallback: boolean): boolean {
+  return typeof v === 'boolean' ? v : fallback;
 }

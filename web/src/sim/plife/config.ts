@@ -84,6 +84,22 @@ export const MAX_RADIUS_SCALE = 3;
 export interface PlifeSpeciesConfig {
   name: string;
   role: 'primary' | 'secondary';
+  /**
+   * false = this voice is silent: its population target is 0 and it drains
+   * through the normal fall-τ. K stays 8 — the pool segment, the matrix row and
+   * the grid are all untouched — so re-enabling is instant and costs no rebuild.
+   *
+   * It lives here, on the config, rather than in θ, and that is the whole point:
+   * `PlifeSpeciesPreset` omits it, so the modulator, the personality jitter, the
+   * explorer's mutations and rebase all structurally cannot see it. "Four
+   * primaries and one accent" is an authored decision about *which voices exist*,
+   * and a decision the music can undo on the next chorus is not a decision.
+   *
+   * Deliberately not wired to brightness or intensity: zero population is
+   * already zero light, and dimming as well would make a re-enable fade in
+   * twice.
+   */
+  enabled: boolean;
   /** 0..2, the stem-follow *base* — same semantics as physarum's `brightness` */
   brightness: number;
   /** HDR weight multiplier, 0..4 */
@@ -111,7 +127,7 @@ export interface PlifeSpeciesConfig {
  *
  * The layering is the same one stem-follow already uses for brightness:
  *
- *   target_k = clamp(aliveFraction_k (θ) × popMul_k × accentMul_k, 0, 1) × segSize
+ *   target_k = enabled_k × clamp(aliveFraction_k (θ) × popMul_k × accentMul_k, 0, 1) × segSize
  *
  * θ owns the base — how big this colony is *as a matter of parameter* — and the
  * two multipliers own the deviation from it. Neither is allowed to redefine the
@@ -375,7 +391,7 @@ export function defaultPlifePalette(k: number): Palette {
 /** How many species are primaries. The rest are accents keyed to the same stems. */
 export const PRIMARY_COUNT = 4;
 
-interface Template extends Omit<PlifeSpeciesConfig, 'name' | 'brightness'> {
+interface Template extends Omit<PlifeSpeciesConfig, 'name' | 'brightness' | 'enabled'> {
   name: string;
 }
 
@@ -385,8 +401,10 @@ interface Template extends Omit<PlifeSpeciesConfig, 'name' | 'brightness'> {
  * workbench are what turn it into a look. What each knob buys:
  *
  * - **bass** reaches furthest (`radiusScale` 1.25) and slides longest
- *   (`friction` 1.8) with the largest sprite. Low end should read as mass in
- *   motion, not as detail.
+ *   (`friction` 1.8). Low end reads as mass through motion and reach, not
+ *   through sprite size any more — the size spread across species is capped
+ *   near ×1.4 (user call, 2026-08-08: large per-species size differences read
+ *   as ugly translucent orbs among dots, not as hierarchy).
  * - **drums** is the opposite in every axis: short reach (0.85), heavy damping
  *   (3.5) and a small sprite, so a hit resolves *now* and does not smear into
  *   the next one. This is the species the impulse lane hits hardest.
@@ -414,7 +432,7 @@ const TEMPLATES: readonly Template[] = [
     forceScale: 1,
     friction: 1.8,
     wander: 0.02,
-    size: 0.0028,
+    size: 0.0022,
     stretch: 4,
   },
   {
@@ -467,15 +485,20 @@ const ACCENT: Omit<Template, 'name'> = {
   stretch: 6.5,
 };
 
+/**
+ * `brightness` and `enabled` are supplied here rather than in the templates
+ * above because both are *state*, not character: every shipped species starts
+ * lit and present, and the templates describe what a voice is like once it is.
+ */
 export function defaultPlifeSpecies(index: number, k = 8): PlifeSpeciesConfig {
   const primaries = Math.min(PRIMARY_COUNT, k);
   if (index < primaries) {
     const t = TEMPLATES[index % TEMPLATES.length] as Template;
-    return { ...t, brightness: 1 };
+    return { ...t, brightness: 1, enabled: true };
   }
   const stem = (index - primaries) % TEMPLATES.length;
   const base = TEMPLATES[stem] as Template;
-  return { ...ACCENT, name: `${base.name}·acc`, brightness: 1 };
+  return { ...ACCENT, name: `${base.name}·acc`, brightness: 1, enabled: true };
 }
 
 /**

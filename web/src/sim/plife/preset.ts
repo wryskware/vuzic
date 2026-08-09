@@ -30,6 +30,10 @@
  *   half of that product puts the constant flashing straight back.
  * - **stretch** — it is a *look* knob (how much a sprite smears with velocity),
  *   and modulating it makes the image's material change identity every few bars.
+ * - **size** — the same call as stretch, made later (2026-08-08): a sprite's
+ *   radius is material identity, and light goes as size², so even the "small"
+ *   excursion compounded with jitter and explorer walks into an order-of-
+ *   magnitude area difference between species.
  * - **exposure / gamma** — there is an auto-exposure controller downstream of
  *   both. Modulating scene exposure makes the controller chase it.
  * - **every uncoupled attraction / maxR cell** — this is the important one. The
@@ -78,8 +82,22 @@ const mul = (group: ModGroup, lo: number, hi: number, half: number, jitter: numb
   mult: true,
 });
 
-/** θ for one species — `PlifeSpeciesConfig` minus its identity. */
-export type PlifeSpeciesPreset = Omit<PlifeSpeciesConfig, 'name' | 'role'>;
+/**
+ * θ for one species — `PlifeSpeciesConfig` minus its identity (`name`, `role`)
+ * and minus `enabled`.
+ *
+ * `enabled` is omitted for the same reason `name` is: it is not a *quantity*,
+ * so there is no vector slot it could occupy and nothing in the registry below
+ * that could interpolate, jitter, slew or mutate it. Stating the omission here
+ * is what makes that structural rather than merely conventional — the type is
+ * what the slot table, `presetToVector`, `applyVector`, the explorer's mutations
+ * and rebase all speak, so a species switched off by hand stays off no matter
+ * what the music, the seed or the grid does. The switch is authored state and it
+ * travels in the `extras` block instead (see `PlifeSim.serializeExtras`).
+ *
+ * Concretely: `PER_SPECIES` stays 9 and `vectorLength(8)` stays 268.
+ */
+export type PlifeSpeciesPreset = Omit<PlifeSpeciesConfig, 'name' | 'role' | 'enabled'>;
 
 export interface PlifePreset {
   species: PlifeSpeciesPreset[];
@@ -208,15 +226,19 @@ const SPECIES_SLOTS: readonly SpeciesSlot[] = [
       s.wander = v;
     },
   },
-  // Sprite size is FAST because it is pure appearance — nothing in the physics
-  // reads it — but its excursion is small (0.25 in ln space, ×0.78…×1.28) since
-  // total light on screen goes as size².
+  // Sprite size joined `stretch` in the excluded set (user call, 2026-08-08),
+  // and by stretch's own argument: it is a pure look knob — nothing in the
+  // physics reads it — and light on screen goes as size², so anything walking it
+  // inside a wide range changes the image's material identity. The old wiring
+  // (mod range 0.0008–0.006, a 7.5× radius spread, plus seeded jitter, plus the
+  // explorer treating it as searchable) did exactly that: a few picks could turn
+  // one species into giant translucent orbs among dots. Size is hand-set.
   {
     name: 'size',
     cls: CLASS_FAST,
     min: 0.0002,
     max: 0.02,
-    mod: mul('structure', 0.0008, 0.006, 0.25, 0.3),
+    mod: null,
     get: (s) => s.size,
     set: (s, v) => {
       s.size = v;
@@ -332,11 +354,15 @@ const MINR_BOUND: Bound = {
 export const ATTRACTION_MOD: ModSpec = ATTRACTION_BOUND.mod as ModSpec;
 
 /**
- * Globals. `forceGain` and `maxSpeed` are the two that change the *character* of
- * every species at once — how hard the field pushes and how fast anything is
- * allowed to travel — which makes them the right pair to have moving on the
- * music. Both are multiplicative and both are bounded well inside the range
- * where the explicit-Euler integrator is stable at dt = 1/60.
+ * Globals — none modulated (user call, 2026-08-08). `forceGain` and `maxSpeed`
+ * originally rode the structure group on the argument that they change the
+ * character of every species at once; that is exactly why they came OUT.
+ * A whole-sim scalar has no musical referent — there is nothing in the track
+ * that *means* "global physics" — so the music sweeping it reads as drift, not
+ * response, and it fights the one knob the user reaches for to set the sim's
+ * overall energy. The always-yours handles are the `force`/`agility` macros;
+ * these θ slots stay for files and the panel, absolute in every mode. Both
+ * remain bounded well inside explicit-Euler stability at dt = 1/60.
  */
 const GLOBAL_BOUNDS: readonly Bound[] = [
   {
@@ -344,14 +370,14 @@ const GLOBAL_BOUNDS: readonly Bound[] = [
     cls: CLASS_MEDIUM,
     min: 0,
     max: 8,
-    mod: mul('structure', 0.2, 4, 0.4, 0.3),
+    mod: null,
   },
   {
     name: 'maxSpeed',
     cls: CLASS_MEDIUM,
     min: 0.005,
     max: 2,
-    mod: mul('structure', 0.05, 1, 0.3, 0.2),
+    mod: null,
   },
   { name: 'exposure', cls: CLASS_MEDIUM, min: 0.05, max: 4, mod: null },
   { name: 'gamma', cls: CLASS_MEDIUM, min: 1, max: 3, mod: null },
