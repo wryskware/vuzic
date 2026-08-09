@@ -20,6 +20,15 @@
  *
  * and the only continuous knobs are how hard and how fast the music pushes.
  *
+ * **It is no longer one column.** The panel is tabbed, and the workbench's
+ * pieces belong to three different tasks: the mode switch and the two knobs you
+ * turn mid-track go on *play*, the driver bank and everything that explains what
+ * it is doing go on *map*, and the file/snapshot/log trio goes on *data*. It
+ * stayed one function taking four containers rather than becoming four exported
+ * builders because the pieces share one closure — `autosave()`, `record()`,
+ * `pullFromConfig()` and a single `refresh()` — and splitting it would have meant
+ * four copies of that state or a fifth object to thread it through.
+ *
  * UX decisions worth knowing:
  *
  * - **modulate vs manual.** Manual is absolute: the sliders rule and nothing
@@ -27,9 +36,9 @@
  *   the projection engine — the sliders then mirror the live values, and an edit
  *   lasts until the next tick. Slots outside the registry (the p3 exponents,
  *   exposure, gamma, stemGain) stay editable in *both* modes.
- * - **one seed UI, here.** Seed, pin and reroll live in this folder and nowhere
- *   else. The seed drives wiring, personality and the world at once, so splitting
- *   it across two panels was two half-truths.
+ * - **one seed UI.** Seed, pin and reroll live in one folder and nowhere else.
+ *   The seed drives wiring, personality and the world at once, so splitting it
+ *   across two panels was two half-truths.
  * - **freeze** holds the current ẑ. Parameters stop morphing and settle where
  *   they are, which is how you look at one configuration long enough to judge it.
  * - **snapshot/restore** copies agents + trails + deposit to spare GPU memory and
@@ -50,6 +59,7 @@
  *   for a frozen comparison.
  */
 import type { Pane } from 'tweakpane';
+import type { PanelContainer } from './panel';
 import type { ModTarget } from '../mapping/target';
 import { MAX_DRIVER_GAIN, type Modulator } from '../mapping/modulation';
 import { MOD_GROUPS, type ModGroup } from '../mapping/modspec';
@@ -162,7 +172,30 @@ function shortDriver(name: string): string {
   return DRIVER_ABBREV[bare] ?? bare;
 }
 
-export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandle {
+/**
+ * Where each piece of the workbench mounts.
+ *
+ * `seed` is the one container the workbench does *not* create: it has to sit
+ * above the macros folder on the play tab, tweakpane orders by mount order, and
+ * the macros folder belongs to the panel. So the panel creates the folder and
+ * the workbench fills it. Its lifetime is therefore the panel's — `dispose()`
+ * below leaves it alone, and the pane's own dispose takes it down.
+ */
+export interface WorkbenchMounts {
+  /** the pane itself: buttons that write UI state have to force the redraw themselves */
+  pane: Pane;
+  /** play tab — the world-seed folder, created by the panel, filled in here */
+  seed: PanelContainer;
+  /** play tab — the modulation headline: mode, status, global depth, response speed */
+  play: PanelContainer;
+  /** map tab — drivers, per-group depth, wiring, excursion, slew detail, boundaries, stem-follow */
+  map: PanelContainer;
+  /** data tab — modulation file, A/B snapshot, tuning log */
+  data: PanelContainer;
+}
+
+export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): WorkbenchHandle {
+  const { pane } = mounts;
   const { modulator, sim, log } = host;
   const cfg = modulator.config;
   const ui: UiState = {
@@ -248,8 +281,12 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     for (let d = 0; d < modulator.driverCount; d++) gainUi[`g${d}`] = modulator.driverGain(d);
   };
 
-  // ── modulation ─────────────────────────────────────────────────────────────
-  const root = pane.addFolder({ title: 'modulation · driver bank (revision 4)', expanded: true });
+  // ── play · modulation headline ─────────────────────────────────────────────
+  // Four widgets and no more: is the music driving this at all, what is it doing
+  // right now, how hard does it push, how fast does it move. Those are the ones
+  // you touch with the track running. Per-group depth, the slew constants and the
+  // driver bank itself are tuning, not performance, and live on the map tab.
+  const root = mounts.play.addFolder({ title: 'modulation', expanded: true });
 
   root.addBinding(ui, 'enabled', { label: 'modulate (off = manual)' }).on('change', (ev) => {
     const want = ev.value ? 'modulated' : 'manual';
@@ -270,9 +307,23 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
   });
   root.addBinding(ui, 'status', { readonly: true, label: '' });
   root.addBinding(ui, 'source', { readonly: true, label: 'input' });
+  // The two continuous knobs of the whole modulation layer: how hard the music
+  // pushes and how fast it moves. Their per-group trims are on the map tab.
+  root
+    .addBinding(ui, 'depth', { min: 0, max: 4, step: 0.01, label: 'depth × (global)' })
+    .on('change', (ev) => {
+      modulator.config.depth = ev.value;
+      autosave();
+    });
+  root
+    .addBinding(ui, 'responseSpeed', { min: 0.05, max: 8, step: 0.05, label: 'speed ×' })
+    .on('change', (ev) => {
+      modulator.config.responseSpeed = ev.value;
+      autosave();
+    });
 
-  // ── the world seed. The ONE place seeds are shown or changed. ───────────────
-  const world = root.addFolder({ title: 'world seed (wiring + personality + sim)', expanded: true });
+  // ── play · the world seed. The ONE place seeds are shown or changed. ────────
+  const world = mounts.seed;
   world.addBinding(ui, 'seed', { readonly: true, label: 'seed' });
   world.addBinding(ui, 'pin', { label: 'pin (survives reload)' }).on('change', (ev) => {
     // localStorage and ?seed= are pinned together: unticking has to clear both or
@@ -281,6 +332,14 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     syncUrlSeed(ev.value ? sim.currentSeed : null);
     record(ev.value ? 'pin' : 'unpin');
   });
+  world.addButton({ title: '↻ re-run this world (same seed)' }).on('click', () => {
+    sim.reseed(sim.currentSeed);
+    host.restart();
+    host.onConfigReplaced?.();
+    pane.refresh();
+  });
+  // Last in the folder on purpose: it is the one button here that throws the
+  // world you are looking at away, and there is no undo for it.
   world.addButton({ title: '🎲 reroll world (new seed)' }).on('click', () => {
     // sim.reseed fires onSeedChange, which is what re-keys the modulator's
     // projections and personality and the impulse hotspots. One act, one seed.
@@ -296,19 +355,17 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     host.onConfigReplaced?.();
     pane.refresh();
   });
-  world.addButton({ title: 're-run this world (same seed)' }).on('click', () => {
-    sim.reseed(sim.currentSeed);
-    host.restart();
-    host.onConfigReplaced?.();
-    pane.refresh();
-  });
 
-  // ── the driver bank (Revision 4) ───────────────────────────────────────────
+  // ── map · the driver bank (Revision 4) ─────────────────────────────────────
   // Two widgets per driver: a meter you read and a gain you turn. The meter is
   // the reason this round exists — it is what turns "something changed" into
   // "chorus-ness went up", which is the only way to decide what to mute.
-  const drivers = root.addFolder({
-    title: `drivers (${modulator.driverCount} named inputs · meter ±3σ)`,
+  //
+  // The one folder on the map tab that opens expanded: it is the instrument, and
+  // a tab whose instrument is behind a disclosure triangle is a tab you do not
+  // use. Everything under it is collapsed to keep it reachable.
+  const drivers = mounts.map.addFolder({
+    title: `drivers · gains + meters (${modulator.driverCount} inputs · ±3σ)`,
     expanded: true,
   });
   for (let d = 0; d < modulator.driverCount; d++) {
@@ -336,25 +393,11 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     drivers.addButton({ title: 'reset gains to 1' }).on('click', () => setAll(1));
   }
 
-  // ── wiring readout ─────────────────────────────────────────────────────────
-  // The other half of the drivers folder: the gains say how loud each input is,
-  // this says where it lands. Without it a reroll rewires everything invisibly
-  // and there is no way to answer "why did muting pc-3 do nothing to the matrix".
-  // Recomputed in refresh(), so it follows both a reroll and a gain edit.
-  const wiring = root.addFolder({ title: 'wiring · what this seed listens to', expanded: true });
-  for (const g of MOD_GROUPS) {
-    wiringUi[g] = '—';
-    wiring.addBinding(wiringUi, g, { readonly: true, label: GROUP_LABELS[g] });
-  }
-
-  // ── depth ──────────────────────────────────────────────────────────────────
-  const depth = root.addFolder({ title: 'depth', expanded: true });
-  depth
-    .addBinding(ui, 'depth', { min: 0, max: 4, step: 0.01, label: 'global ×' })
-    .on('change', (ev) => {
-      modulator.config.depth = ev.value;
-      autosave();
-    });
+  // ── map · depth, per group ─────────────────────────────────────────────────
+  // The global multiplier is on the play tab; these four are the trim behind it —
+  // "let the music move the colours but leave the geometry alone" is a sentence
+  // you say once per track, not once per chorus.
+  const depth = mounts.map.addFolder({ title: 'depth · per group', expanded: false });
   for (const g of MOD_GROUPS) {
     groupUi[g] = cfg.groupDepth[g];
     depth
@@ -365,14 +408,31 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
       });
   }
 
-  // ── response ───────────────────────────────────────────────────────────────
-  const response = root.addFolder({ title: 'response speed', expanded: false });
-  response
-    .addBinding(ui, 'responseSpeed', { min: 0.05, max: 8, step: 0.05, label: 'speed ×' })
-    .on('change', (ev) => {
-      modulator.config.responseSpeed = ev.value;
-      autosave();
-    });
+  // ── map · wiring readout ───────────────────────────────────────────────────
+  // The other half of the drivers folder: the gains say how loud each input is,
+  // this says where it lands. Without it a reroll rewires everything invisibly
+  // and there is no way to answer "why did muting pc-3 do nothing to the matrix".
+  // Recomputed in refresh(), so it follows both a reroll and a gain edit.
+  const wiring = mounts.map.addFolder({
+    title: 'wiring · what this seed listens to',
+    expanded: false,
+  });
+  for (const g of MOD_GROUPS) {
+    wiringUi[g] = '—';
+    wiring.addBinding(wiringUi, g, { readonly: true, label: GROUP_LABELS[g] });
+  }
+
+  // ── map · live readout ─────────────────────────────────────────────────────
+  const live = mounts.map.addFolder({ title: 'live excursion (mean |tanh|)', expanded: false });
+  for (const g of MOD_GROUPS) {
+    excursionUi[g] = '—';
+    live.addBinding(excursionUi, g, { readonly: true, label: GROUP_LABELS[g] });
+  }
+
+  // ── map · response detail ──────────────────────────────────────────────────
+  // `speed ×` scales all three of these at once and is on the play tab; what is
+  // left here is the shape of the response rather than its rate.
+  const response = mounts.map.addFolder({ title: 'response · slew detail', expanded: false });
   response.addBinding(ui, 'frozen', { label: 'freeze input (hold ẑ)' }).on('change', (ev) => {
     modulator.frozen = ev.value;
   });
@@ -392,15 +452,33 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
   bindSlew('slewMedium', 'medium', 'medium τ (geometry)', 10);
   bindSlew('slewSlow', 'slow', 'slow τ (decay/alive/M)', 60);
 
-  // ── live readout ───────────────────────────────────────────────────────────
-  const live = root.addFolder({ title: 'live excursion (mean |tanh|)', expanded: true });
-  for (const g of MOD_GROUPS) {
-    excursionUi[g] = '—';
-    live.addBinding(excursionUi, g, { readonly: true, label: GROUP_LABELS[g] });
-  }
+  // ── map · section boundaries (an event, not a scene) ───────────────────────
+  const boundary = mounts.map.addFolder({ title: 'section boundaries (optional)', expanded: false });
+  boundary.addBinding(ui, 'boundaryOn', { label: 'step + re-seed on boundary' }).on('change', (ev) => {
+    modulator.config.boundary.enabled = ev.value;
+    autosave();
+  });
+  boundary
+    .addBinding(ui, 'snapFraction', { min: 0, max: 1, step: 0.01, label: 'slow snap' })
+    .on('change', (ev) => {
+      modulator.config.boundary.snapFraction = ev.value;
+      autosave();
+    });
+  boundary
+    .addBinding(ui, 'respawnFraction', { min: 0, max: 1, step: 0.01, label: 'respawn frac' })
+    .on('change', (ev) => {
+      modulator.config.boundary.respawnFraction = ev.value;
+      autosave();
+    });
+  // Fire a boundary event by hand, to see what a section change does without
+  // waiting for one. The key walks so repeated presses are not identical.
+  let manualReseedKey = 1000;
+  boundary.addButton({ title: 'test: re-seed now' }).on('click', () => {
+    sim.partialReseed(manualReseedKey++, modulator.config.boundary.respawnFraction);
+  });
 
-  // ── brightness · stem-follow (Revision 4, NOT modulation) ──────────────────
-  const follow = pane.addFolder({ title: 'brightness · stem-follow', expanded: true });
+  // ── map · brightness · stem-follow (Revision 4, NOT modulation) ────────────
+  const follow = mounts.map.addFolder({ title: 'brightness · stem-follow', expanded: false });
   follow.addBinding(ui, 'followStatus', { readonly: true, label: '' });
   follow.addBinding(ui, 'followOn', { label: 'follow stems (off = absolute)' }).on('change', (ev) => {
     modulator.config.stemFollow.enabled = ev.value;
@@ -435,33 +513,11 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     });
   }
 
-  // ── section boundaries (an event, not a scene) ─────────────────────────────
-  const boundary = root.addFolder({ title: 'section boundaries (optional)', expanded: false });
-  boundary.addBinding(ui, 'boundaryOn', { label: 'step + re-seed on boundary' }).on('change', (ev) => {
-    modulator.config.boundary.enabled = ev.value;
-    autosave();
+  // ── data · modulation file ─────────────────────────────────────────────────
+  const file = mounts.data.addFolder({
+    title: 'modulation file (depths + palette + grade)',
+    expanded: true,
   });
-  boundary
-    .addBinding(ui, 'snapFraction', { min: 0, max: 1, step: 0.01, label: 'slow snap' })
-    .on('change', (ev) => {
-      modulator.config.boundary.snapFraction = ev.value;
-      autosave();
-    });
-  boundary
-    .addBinding(ui, 'respawnFraction', { min: 0, max: 1, step: 0.01, label: 'respawn frac' })
-    .on('change', (ev) => {
-      modulator.config.boundary.respawnFraction = ev.value;
-      autosave();
-    });
-  // Fire a boundary event by hand, to see what a section change does without
-  // waiting for one. The key walks so repeated presses are not identical.
-  let manualReseedKey = 1000;
-  boundary.addButton({ title: 'test: re-seed now' }).on('click', () => {
-    sim.partialReseed(manualReseedKey++, modulator.config.boundary.respawnFraction);
-  });
-
-  // ── modulation file ────────────────────────────────────────────────────────
-  const file = pane.addFolder({ title: 'modulation file (depths + palette + grade)', expanded: false });
   file.addBinding(ui, 'file', { readonly: true, label: '' });
   file.addBinding(ui, 'autosave', { label: 'autosave (localStorage)' });
   file.addButton({ title: 'download modulation.json' }).on('click', () => {
@@ -507,8 +563,8 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     pane.refresh();
   });
 
-  // ── A/B ────────────────────────────────────────────────────────────────────
-  const ab = pane.addFolder({ title: 'A/B  ·  sim state snapshot', expanded: false });
+  // ── data · A/B ─────────────────────────────────────────────────────────────
+  const ab = mounts.data.addFolder({ title: 'A/B  ·  sim state snapshot', expanded: false });
   ab.addBinding(ui, 'snapshotInfo', { readonly: true, label: '' });
   let snapshotTime = 0;
   ab.addButton({ title: 'snapshot state' }).on('click', () => {
@@ -536,8 +592,8 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
     pane.refresh();
   });
 
-  // ── tuning log ─────────────────────────────────────────────────────────────
-  const logFolder = pane.addFolder({ title: 'tuning log (seed preferences)', expanded: false });
+  // ── data · tuning log ──────────────────────────────────────────────────────
+  const logFolder = mounts.data.addFolder({ title: 'tuning log (seed preferences)', expanded: false });
   logFolder.addBinding(ui, 'logInfo', { readonly: true, label: '' });
   logFolder.addButton({ title: 'log: keep this world' }).on('click', () => {
     record('keep');
@@ -625,7 +681,16 @@ export function createWorkbench(pane: Pane, host: WorkbenchHost): WorkbenchHandl
       if (sim.hasSnapshot && ui.snapshotInfo === 'none') ui.snapshotInfo = 'held';
     },
     dispose(): void {
+      // Every folder this function created, across all three tabs. `mounts.seed`
+      // is deliberately absent: the panel created it and the pane's dispose owns
+      // it (see `WorkbenchMounts`).
       root.dispose();
+      drivers.dispose();
+      depth.dispose();
+      wiring.dispose();
+      live.dispose();
+      response.dispose();
+      boundary.dispose();
       follow.dispose();
       file.dispose();
       ab.dispose();

@@ -66,16 +66,46 @@ body {
   color: var(--dim);
 }
 
-/* tweakpane default wrapper; specificity has to beat tweakpane's own injected rule */
+/* tweakpane default wrapper; specificity has to beat tweakpane's own injected rule.
+   380px rather than 300: the tabbed panel puts six titles on one row, and the
+   readouts (driver meters, wiring shares, per-species stem lines) are fixed-width
+   monospace strings that clipped silently at the old width. */
 body > .tp-dfwv {
   position: fixed;
   top: 12px;
   right: 12px;
-  width: 300px;
+  width: 380px;
   max-height: calc(100vh - 330px);
   overflow-x: hidden;
   overflow-y: auto;
   z-index: 10;
+}
+
+/* Six tabs share one 380px row, which leaves ~62px each; tweakpane's default
+   8px horizontal padding on a tab button clips "explore" to "explo…". Dropping
+   it to 2px is the whole fix — the labels are already as short as they can be
+   and still name a task. */
+body > .tp-dfwv .tp-tbiv_b {
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+/* Modulation range on a slider track (src/ui/mod-fill.ts). Inside .tp-sldv_t,
+   which is position:relative and 20px tall with the 2px groove centred in it, so
+   left/width in percent are already slider coordinates.
+
+   10px: wide enough to read as a region rather than a second groove, narrower
+   than the 12px knob so the knob still wins where they overlap. The blue is
+   translucent because it sits over tweakpane's own groove and has to say
+   "reachable", not "selected". */
+.tp-sldv_t > .mod-band {
+  position: absolute;
+  top: 50%;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 2px;
+  background: rgba(60, 140, 255, 0.28);
+  pointer-events: none;
 }
 
 .fatal {

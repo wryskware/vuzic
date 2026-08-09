@@ -7,9 +7,10 @@
  * A test fire goes through exactly the same path as a timeline event (same
  * envelope, same hashed hotspots), so what you tune is what you get.
  */
-import type { Pane } from 'tweakpane';
+import type { FolderApi } from 'tweakpane';
 import type { ImpulseEngine, ResponseConfig } from '../sim/impulses';
 import { EVENT_KINDS, type EventKind } from '../timeline/types';
+import type { PanelContainer } from './panel';
 
 export interface ImpulsePanelHandle {
   refresh(): void;
@@ -25,7 +26,7 @@ const SPECIES_HINT: Record<EventKind, string> = {
 };
 
 export function createImpulsePanel(
-  pane: Pane,
+  container: PanelContainer,
   engine: ImpulseEngine,
   speciesName: (index: number) => string,
 ): ImpulsePanelHandle {
@@ -35,7 +36,10 @@ export function createImpulsePanel(
     levels: '—',
   };
 
-  const root = pane.addFolder({ title: 'events (impulse lane)', expanded: true });
+  // Collapsed by default now that it shares the map tab with the driver bank:
+  // six folders' worth of per-kind tuning under an expanded header pushed
+  // everything else off the bottom of the pane.
+  const root = container.addFolder({ title: 'events (impulse lane)', expanded: false });
   root.addBinding(ui, 'status', { readonly: true, label: '' });
   root.addBinding(cfg, 'enabled', { label: 'impulses on' });
   root.addBinding(cfg, 'gain', { min: 0, max: 3, step: 0.05, label: 'global gain' });
@@ -73,7 +77,7 @@ export function createImpulsePanel(
   };
 }
 
-function addDepths(parent: ReturnType<Pane['addFolder']>, r: ResponseConfig): void {
+function addDepths(parent: FolderApi, r: ResponseConfig): void {
   parent.addBinding(r, 'deposit', { min: 0, max: 6, step: 0.05, label: 'deposit burst ×' });
   parent.addBinding(r, 'flash', { min: 0, max: 4, step: 0.05, label: 'brightness flash ×' });
   parent.addBinding(r, 'sensor', { min: 0, max: 3, step: 0.05, label: 'sensor pop ×' });

@@ -9,8 +9,8 @@
  * underlay. Those four are the whole of `RenderFolderHost` — everything else in
  * here is the same instrument whoever is playing it.
  */
-import type { Pane } from 'tweakpane';
 import { MAX_BLOOM_LEVELS, TONEMAPS, type RenderConfig, type ToneMap } from '../sim/render/config';
+import type { PanelContainer } from './panel';
 
 export interface RenderFolderHost {
   render: RenderConfig;
@@ -38,12 +38,12 @@ export interface RenderFolderHost {
  * Ordered the way the pixels flow — scene exposure, adaptation, bloom, tone,
  * grade, feedback — so scrolling down the folder walks the pipeline.
  */
-export function addRenderFolder(pane: Pane, host: RenderFolderHost): () => void {
+export function addRenderFolder(container: PanelContainer, host: RenderFolderHost): () => void {
   const config = host.config;
   const r = host.render;
   const readout = { passes: '—', adapt: '—' };
 
-  const root = pane.addFolder({ title: 'render · HDR chain (phase 7)', expanded: true });
+  const root = container.addFolder({ title: 'render · HDR chain', expanded: true });
   root.addBinding(readout, 'passes', { readonly: true, label: 'render passes' });
   // The measured HDR mean is the number to aim `target mean` at; the gain is
   // where the controller has settled. Both are one or two frames stale.
@@ -64,14 +64,17 @@ export function addRenderFolder(pane: Pane, host: RenderFolderHost): () => void 
   auto.addBinding(r.grade, 'autoMinGain', { min: 0.01, max: 1, step: 0.01, label: 'min gain' });
   auto.addBinding(r.grade, 'autoMaxGain', { min: 1, max: 32, step: 0.5, label: 'max gain' });
 
-  const bloom = root.addFolder({ title: 'bloom', expanded: true });
+  // Bloom and grade start collapsed: with the whole chain expanded the look tab
+  // opened on thirty sliders, and the two readouts plus scene exposure are what
+  // you actually want in view when you arrive.
+  const bloom = root.addFolder({ title: 'bloom', expanded: false });
   bloom.addBinding(r.bloom, 'enabled');
   bloom.addBinding(r.bloom, 'threshold', { min: 0, max: 4, step: 0.01 });
   bloom.addBinding(r.bloom, 'knee', { min: 0.01, max: 2, step: 0.01, label: 'soft knee' });
   bloom.addBinding(r.bloom, 'intensity', { min: 0, max: 4, step: 0.01 });
   bloom.addBinding(r.bloom, 'levels', { min: 1, max: MAX_BLOOM_LEVELS, step: 1, label: 'mips' });
 
-  const tone = root.addFolder({ title: 'tone + grade', expanded: true });
+  const tone = root.addFolder({ title: 'tone + grade', expanded: false });
   tone.addBinding(r.grade, 'tonemap', {
     options: Object.fromEntries(TONEMAPS.map((t) => [t, t])) as Record<string, ToneMap>,
   });
