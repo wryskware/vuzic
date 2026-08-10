@@ -302,6 +302,31 @@ Free Fall (Remastered), 272.5 s, 130.4 BPM, 19 segments. Read alongside
   intervals sit in 0.45–0.50 s; the ~30 short ones (0.10–0.35 s) all fall in
   6.8–20.4 s, where the intro is sparse. Downbeats average 4.09 beats apart.
 
+### The second track: Pink Loop
+
+209.6 s, 125.0 BPM, 13 segments, 2095 frames, seed 1234 — the same command as
+above, 62.6 s wall on the same machine with warm caches. Read alongside
+`data/timelines/pink-loop/plots/`.
+
+- **The 115–143 s break is the headline.** Drums fall from 1.0 to 0 over ~2 s at
+  115 s and come back as a hard step at 143 s; the event lanes go with them (the
+  break holds 1 snare and a handful of bass onsets against 1.5 k events in the
+  rest of the track). That is "the drums dropped out" as a step, which is the
+  phase-1 standard.
+- **Vocals gate per phrase** — four blocks (22–37 s, 63–85 s, 126–145 s, and a
+  short 176 s tag) with clean zeros between, and 164 vocal events that sit only
+  inside them.
+- **Bass notches to ~0.15–0.5 at each chorus boundary** (17 s, 53 s, 97 s,
+  159 s, 189 s) and to 0 through 137–143 s, so the drop is legible in two
+  channels at once.
+- **1.11 kicks per beat** in drum-active regions (421 kicks / 379 beats) — inside
+  the 0.25–2.0 guard band, and the zoom panel of `events.png` shows them landing
+  on the beat lines. Slightly above free-fall's 0.94; the excess is not
+  investigated further, since the guard's job is to catch a detector that has
+  come loose, and 1.11 is not that.
+- **`other` is again the flat one** (mean 0.82, rarely below 0.5): same pads
+  residue, same conclusion — slow texture, not entrances.
+
 ## Determinism
 
 Same track + same `--seed` + same machine ⇒ **bit-identical `timeline.bin`**,

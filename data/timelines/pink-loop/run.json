@@ -1,0 +1,32 @@
+{
+  "trackId": "Pink Loop",
+  "input": "tracks/Pink Loop (2).wav",
+  "wav": "tracks/Pink Loop (2).wav",
+  "seed": 1234,
+  "hopSeconds": 0.1,
+  "frames": 2095,
+  "device": "auto",
+  "stagesRun": [
+    "audio",
+    "beats",
+    "structure",
+    "stems",
+    "events",
+    "character",
+    "recurrence"
+  ],
+  "stagesSkipped": [],
+  "muq": {
+    "model": "OpenMuQ/MuQ-large-msd-iter",
+    "layer": 6
+  },
+  "events": {
+    "total": 2693,
+    "kick": 421,
+    "snare": 630,
+    "hat": 721,
+    "bass": 757,
+    "vocal": 164
+  },
+  "notes": []
+}
