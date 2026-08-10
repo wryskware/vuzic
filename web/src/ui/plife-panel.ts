@@ -43,9 +43,12 @@ import {
   FAR_SCALE_RANGE,
   MACRO_LABELS,
   MACRO_RANGE,
+  MAX_MIN_R,
   MAX_NEAR_STENCIL,
-  MAX_REACH,
+  MAX_REACH_BRUTE,
+  PAIR_SEARCH_MODES,
   R_CAP,
+  type PairSearch,
   type PlifeSpeciesConfig,
 } from '../sim/plife/config';
 import type { PlifeSim } from '../sim/plife/plife';
@@ -375,8 +378,38 @@ export function createPlifePanel(
   // pair work of 1. The label says cells and world units; the frame counter says
   // the rest.
   const reach = tabs.sim.addFolder({ title: 'reach  (structural — never modulated)' });
+  // The pair-search mode, first in the folder because it decides what every knob
+  // under it means: in grid mode the stencil is the reach cap, in brute mode the
+  // stencil is ignored entirely and the cap is half the torus.
+  //
+  // The label states the cost rather than hiding it. Brute is O(N²): at ~33 k
+  // alive that is ~1.1 × 10⁹ pair tests per substep against grid mode's ~10⁷, so
+  // it is a deliberate trade of frame time for the only thing that buys radii
+  // past 0.06 — and radii past 0.06 are the only way this sim makes structures
+  // bigger than a filigree strand.
+  //
+  // Starting points for large radii, measured rather than guessed (see the
+  // stability sweep in the commit that added this): at r-max ≈ 0.15 the shipped
+  // force settings hold; at 0.25–0.3 the summed tent over a few thousand
+  // neighbours pins everything at maxSpeed, and the working settings are the
+  // `force` macro around 0.3 with `agility` at or below 1. Reach for the macros
+  // before the θ sliders — they survive rerolls and modulation.
+  // The brute label also carries the one caveat that is not visible from here:
+  // the explorer's nine tiles stay on the grid search whatever this says (see
+  // `PlifeSim.forceGridSearch`), so at large radii the 9-up under-represents
+  // what the full-size sim does with the candidate you pick.
+  const pairSearchLabel = (): string =>
+    config.field.pairSearch === 'brute'
+      ? `pair search  (N², cap ${sim.nearReach.toFixed(2)}, live ${sim.liveReach.toFixed(3)}; 9-up stays grid)`
+      : 'pair search  (brute = N², large radii)';
+  const modeBinding = reach.addBinding(config.field, 'pairSearch', {
+    options: Object.fromEntries(PAIR_SEARCH_MODES.map((m) => [m, m])) as Record<string, PairSearch>,
+    label: pairSearchLabel(),
+  });
   const stencilLabel = (): string =>
-    `near stencil  (reach = s × ${R_CAP} = ${sim.nearReach.toFixed(3)})`;
+    config.field.pairSearch === 'brute'
+      ? 'near stencil  (grid only — ignored in brute)'
+      : `near stencil  (reach = s × ${R_CAP} = ${sim.nearReach.toFixed(3)})`;
   const stencilBinding = reach.addBinding(config.field, 'nearStencil', {
     min: 1,
     max: MAX_NEAR_STENCIL,
@@ -400,6 +433,16 @@ export function createPlifePanel(
     max: FAR_SCALE_RANGE.max,
     step: 0.005,
     label: farScaleLabel(),
+  });
+  // Mode changes live: `runStep` picks the pipeline per substep, so there is no
+  // rebuild and no state to migrate — the particles keep their positions and
+  // velocities and only the force pass they are stepped by changes. All three
+  // labels are derived from the mode, so all three are rebuilt here.
+  modeBinding.on('change', () => {
+    modeBinding.label = pairSearchLabel();
+    stencilBinding.label = stencilLabel();
+    scaleBinding.label = farScaleLabel();
+    persistExtras();
   });
   stencilBinding.on('change', () => {
     // Both labels carry a derived number, and both only move when a slider does
@@ -465,15 +508,19 @@ export function createPlifePanel(
     step: 0.01,
     label: 'accent gain ×',
   }).on('change', persistExtras);
-  gen.addBinding(config.matrixGen.rMin, 'lo', { min: 0.002, max: 0.01, step: 0.0005, label: 'r-min lo' }).on('change', persistExtras);
-  gen.addBinding(config.matrixGen.rMin, 'hi', { min: 0.002, max: 0.01, step: 0.0005, label: 'r-min hi' }).on('change', persistExtras);
-  // The outer-radius band runs to MAX_REACH, not to the cell size: this is the
-  // hand-tuning path to structures larger than one filigree strand, and it is
-  // only usable because the near stencil decoupled reach from the grid. Drawing
-  // above the *current* stencil's reach is legal and simply saturates — the
-  // shader truncates it — so raise the stencil first and the band second.
-  gen.addBinding(config.matrixGen.rMax, 'lo', { min: 0.005, max: MAX_REACH, step: 0.0005, label: 'r-max lo' }).on('change', persistExtras);
-  gen.addBinding(config.matrixGen.rMax, 'hi', { min: 0.005, max: MAX_REACH, step: 0.0005, label: 'r-max hi' }).on('change', persistExtras);
+  // The hard-core band runs to MAX_MIN_R (0.05), not to the grid cell size. A
+  // core is a *fraction of a reach*, and with brute mode's reaches an 0.02 core
+  // inside an 0.3 tent is a pinhole — see MAX_MIN_R. Small values stay the norm;
+  // the top of this slider is for large-radius worlds only.
+  gen.addBinding(config.matrixGen.rMin, 'lo', { min: 0.002, max: MAX_MIN_R, step: 0.0005, label: 'r-min lo' }).on('change', persistExtras);
+  gen.addBinding(config.matrixGen.rMin, 'hi', { min: 0.002, max: MAX_MIN_R, step: 0.0005, label: 'r-min hi' }).on('change', persistExtras);
+  // The outer-radius band runs to the authored ceiling (half the torus), not to
+  // any one mode's reach cap: this is the hand-tuning path to structures larger
+  // than one filigree strand. Drawing above the *current* mode's cap is legal
+  // and simply saturates — the shader truncates it — so in grid mode anything
+  // over 0.06 does nothing and the mode dropdown above is what unlocks it.
+  gen.addBinding(config.matrixGen.rMax, 'lo', { min: 0.005, max: MAX_REACH_BRUTE, step: 0.0005, label: 'r-max lo' }).on('change', persistExtras);
+  gen.addBinding(config.matrixGen.rMax, 'hi', { min: 0.005, max: MAX_REACH_BRUTE, step: 0.0005, label: 'r-max hi' }).on('change', persistExtras);
   if (opts.workbench) {
     const modulator = opts.workbench.modulator;
     // A workbench *reroll* already draws a fresh matrix — a new seed is a new

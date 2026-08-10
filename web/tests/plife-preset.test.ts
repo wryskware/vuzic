@@ -42,8 +42,9 @@ import {
   type PlifeConfig,
   MAX_BRIGHTNESS,
   MAX_FRICTION,
+  MAX_MIN_R,
   MAX_RADIUS_SCALE,
-  MAX_REACH,
+  MAX_REACH_BRUTE,
   MAX_SIZE,
   MAX_STRETCH,
   MIN_R_FLOOR,
@@ -226,7 +227,9 @@ test('maxR follows the same partition, multiplicatively; minR is in the mask but
       assert.equal(nSpec.jitter, 0, `${NAMES[N_BASE + cell]} is personality-mobile`);
       assert.equal(nSpec.group, 'structure', `${NAMES[N_BASE + cell]} is in the wrong lane`);
       assert.equal(nSpec.lo, MIN_R_FLOOR, `${NAMES[N_BASE + cell]} floor`);
-      assert.equal(nSpec.hi, R_CAP, `${NAMES[N_BASE + cell]} ceiling`);
+      // MAX_MIN_R (0.05), not the grid cell size: the brute pair-search lane
+      // reaches to 0.5, and a hard core has to stay a fraction of a reach.
+      assert.equal(nSpec.hi, MAX_MIN_R, `${NAMES[N_BASE + cell]} ceiling`);
     }
   }
 });
@@ -323,12 +326,14 @@ test('clampVector confines every slot to its authored hard range', () => {
   assert.equal(max[speciesSlot(1, 'radiusScale')], MAX_RADIUS_SCALE);
   for (let o = 0; o < K * K; o++) {
     assert.equal(min[X_BASE + o], MIN_R_FLOOR, `${NAMES[X_BASE + o]} floor`);
-    // The outer radius runs to MAX_REACH (the widest near stencil's reach), not
-    // to the grid cell size — those became different numbers when the stencil
-    // decoupled them. The runtime cap is the shader's, against the live stencil.
-    assert.equal(max[X_BASE + o], MAX_REACH, `${NAMES[X_BASE + o]} may exceed the reach cap`);
+    // The outer radius runs to MAX_REACH_BRUTE (half the torus) — ONE authored
+    // ceiling for both pair-search modes. The runtime cap is the shader's, and
+    // it is the mode's: stencil × cell for the grid walk, half the world for
+    // brute. A file written in brute mode therefore stays legal in grid mode and
+    // comes back unchanged, rather than being truncated on the way through.
+    assert.equal(max[X_BASE + o], MAX_REACH_BRUTE, `${NAMES[X_BASE + o]} may exceed the reach cap`);
     assert.equal(min[N_BASE + o], MIN_R_FLOOR, `${NAMES[N_BASE + o]} floor`);
-    assert.ok((max[N_BASE + o] as number) <= R_CAP, `${NAMES[N_BASE + o]} ceiling`);
+    assert.ok((max[N_BASE + o] as number) <= MAX_MIN_R, `${NAMES[N_BASE + o]} ceiling`);
   }
 
   // Every modulation range sits inside its slot's hard range — "where the music

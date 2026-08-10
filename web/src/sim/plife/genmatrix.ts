@@ -44,7 +44,7 @@
  */
 import { hash3 } from '../impulses.ts';
 import { makeRng } from '../../mapping/modulation.ts';
-import { MAX_REACH, MIN_R_FLOOR, PRIMARY_COUNT, type PlifeConfig } from './config.ts';
+import { MAX_REACH_BRUTE, MIN_R_FLOOR, PRIMARY_COUNT, type PlifeConfig } from './config.ts';
 import { ATTRACTION_MOD, coupled, matrixBase, maxRBase, minRBase } from './preset.ts';
 
 /**
@@ -127,13 +127,14 @@ export function seedMatrixBase(seed: number, cfg: PlifeConfig, base: Float64Arra
 
       // Radii: every pair, coupled or not — the hard core is not optional.
       const minR = Math.max(uniform(rng, gen.rMin.lo, gen.rMin.hi), MIN_R_FLOOR);
-      // Capped at MAX_REACH, not at the cell size: since the near stencil landed
-      // those are different numbers, and the drawn outer radius is allowed
-      // anywhere a hand-authored one is. The runtime cap (stencil × cell) stays
-      // in the shader, where it can follow a stencil change without a redraw.
+      // Capped at the AUTHORED ceiling (`MAX_REACH_BRUTE`, half the torus), not
+      // at the cell size and not at the grid lane's reach: the drawn outer
+      // radius is allowed anywhere a hand-authored one is, and which runtime cap
+      // binds is the pair-search mode's business. That cap stays in the shader,
+      // where it can follow a mode or stencil change without a redraw.
       const maxR = Math.min(
         Math.max(uniform(rng, gen.rMax.lo, gen.rMax.hi), minR + MIN_BAND),
-        MAX_REACH,
+        MAX_REACH_BRUTE,
       );
       base[nBase + cell] = minR;
       base[xBase + cell] = maxR;

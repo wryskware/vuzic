@@ -375,6 +375,12 @@ async function main(): Promise<void> {
   const createExplorerTile = (): Sim & ModTarget => {
     if (sim instanceof PlifeSim) {
       const tile = new PlifeSim(sim.currentSeed, structuredClone(sim.config));
+      // Nine tiles never run the brute pair search, whatever the live sim is
+      // set to. Nine times an O(N²) force pass measured at ~212 ms/frame with
+      // 13 k alive — the mode works in the grid, it is just not a search tool at
+      // 4.7 fps. See `PlifeSim.forceGridSearch` for why this is a flag and not a
+      // value on the cloned config (`syncStyle` would overwrite the latter).
+      tile.forceGridSearch = true;
       tile.setStemChannel(sampler.getChannel('stems'));
       tile.setAccentChannels(sampler.getChannel('novelty16'), sampler.getChannel('actChorus'));
       return tile;

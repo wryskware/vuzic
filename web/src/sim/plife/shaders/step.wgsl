@@ -15,6 +15,12 @@
 // render.wgsl: one module, disjoint binding numbers, a layout per pipeline that
 // names only what that entry point statically touches.
 //
+// `stepParticles` is compiled TWICE, into two pipelines, through the
+// pipeline-overridable `BRUTE` constant below: one walks the neighbour grid and
+// one tests every live particle. Same bindings, same layout, same bind groups —
+// `runStep` just picks a pipeline — so the mode is switchable live with no
+// rebuild and no state migration.
+//
 //   step / init / respawn   0 globals, 1 species, 2 interaction, 3 src,
 //                           4 dst, 5 cellCount, 6 cellStart, 7 sortedIdx,
 //                           10 far sampler, 11/12 far DoG pair
@@ -92,6 +98,107 @@ const DONOR_MIN_ENERGY: f32 = 0.5;
 // knobs to reach for if splashes feel weak or feel like explosions.
 const PUSH_SCALE: f32 = 0.02;
 const PUSH_SWIRL_SCALE: f32 = 3.0;
+
+// ── pair search mode ──────────────────────────────────────────────────────────
+//
+// A pipeline-overridable constant, not a uniform, and that is the whole point:
+// plife.ts creates TWO pipelines from this one module (`plife.step` with 0,
+// `plife.step.brute` with 1), so each is specialised at pipeline-creation time
+// and neither carries the other's inner loop. A `g.*` flag would have put both
+// loops in one kernel and let brute mode's register pressure cost grid mode
+// occupancy — and grid mode is the regression baseline, so it may not pay for
+// anything.
+//
+//   0  grid   walk the (2s+1)² cells around the particle. Reach capped at
+//             `stencil × cell`; a pair outside the window is missed.
+//   1  brute  every live particle, linearly. O(N²), no reach cap but the
+//             torus's own half-world minimum-image bound.
+override BRUTE: u32 = 0u;
+
+/**
+ * One pair's contribution to the force on particle `i` from pool slot `j`.
+ *
+ * Extracted so the force LAW lives in exactly one place: the two search modes
+ * differ only in which `j`s they visit, and a tent that drifted between them
+ * would make "same settings, other mode" mean two different worlds. Everything
+ * it reads beyond its arguments (`src`, `interaction`, `g`) is module scope.
+ *
+ * `rcap` is the caller's business, because it is the one number the modes
+ * genuinely disagree about — `stencil × cell` for the grid walk, half the short
+ * world axis for brute.
+ */
+fn pairForce(
+  i: u32,
+  j: u32,
+  si: u32,
+  k: u32,
+  pos: vec2f,
+  radiusScale: f32,
+  rcap: f32,
+  world: vec2f,
+) -> vec2f {
+  let kk = k * k;
+  let q = src[j];
+  let sj = speciesOf(j, g.segSize, k);
+  let pair = si * k + sj;
+
+  // The receiver's radiusScale scales the whole row, so "this species reaches
+  // further" is one number rather than K edits. Capped at `rcap`: a radius past
+  // what the search can see is not a longer reach, it is a silently truncated
+  // one.
+  let rmax = min(interaction[kk + pair] * radiusScale, rcap);
+  let d0 = q.pos - pos;
+  let d = wrapDelta(d0, world);
+  let r2 = dot(d, d);
+  if (r2 > rmax * rmax) {
+    return vec2f(0.0);
+  }
+  // hi is written as max(..., MIN_R_FLOOR) so clamp() never sees lo > hi, which
+  // is undefined in WGSL. A pair whose rmax collapses below the floor therefore
+  // degenerates to pure repulsion rather than to garbage — which is also what a
+  // hard core authored wider than the current mode's reach cap does.
+  let rmin = clamp(
+    interaction[2u * kk + pair] * radiusScale,
+    MIN_R_FLOOR,
+    max(rmax - 1e-4, MIN_R_FLOOR),
+  );
+
+  var r = sqrt(r2);
+  var dir = vec2f(1.0, 0.0);
+  if (r < 1e-6) {
+    // Exactly coincident particles have no direction to separate along. A hashed
+    // one keeps the step deterministic in (i, j, tick) — which is the whole
+    // determinism claim — where normalising a zero vector would produce NaN and
+    // poison the buffer for the rest of the run.
+    let a = rand01(hash3(i, j, g.tick)) * TAU;
+    dir = vec2f(cos(a), sin(a));
+    r = 1e-6;
+  } else {
+    dir = d / r;
+  }
+
+  var f = 0.0;
+  if (r < rmin) {
+    // Divergent hard core: 0 at rmin (continuous with the tent), and
+    // -REPULSE·rmin/eps ≈ -20·REPULSE as r → 0. The first build used a *linear*
+    // core capped at -REPULSE, and dense clusters collapsed into point
+    // singularities: the summed tent attraction of a hundred neighbours just
+    // outside rmin dwarfed a bounded -3 from the few inside it. A core that
+    // steepens toward contact is how the original vuzic sim (R0_FORCE = 100,
+    // ~1/r) kept its clusters open, and the eps floor keeps it finite so the
+    // integrator stays stable at dt=1/60 (the maxSpeed clamp downstream bounds
+    // the worst case regardless).
+    f = REPULSE * (r - rmin) / (r + 0.05 * rmin);
+  } else {
+    // Tent: peaks at the band's midpoint, zero at both ends. Zero at rmax is
+    // what makes the force continuous as a pair enters and leaves the
+    // neighbourhood — a force with a step at the cutoff pumps energy in and the
+    // whole field slowly heats up.
+    let span = max(rmax - rmin, 1e-6);
+    f = interaction[pair] * (1.0 - abs(2.0 * r - (rmin + rmax)) / span);
+  }
+  return dir * (f * q.energy);
+}
 
 /**
  * ## Population, as of the dynamic-population lane
@@ -181,94 +288,72 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
   let radiusScale = max(me.motion.y, 1e-3);
 
   let here = wrapWorld(p.pos, world);
-  let gw = i32(g.gridW);
-  let gh = i32(g.gridH);
-  let cx = i32(clamp(floor(here.x / max(g.cellW, 1e-6)), 0.0, f32(g.gridW - 1u)));
-  let cy = i32(clamp(floor(here.y / max(g.cellH, 1e-6)), 0.0, f32(g.gridH - 1u)));
-
-  // Reach cap, hoisted: the search window is (2s+1)² cells wide, so the furthest
-  // a pair can be and still be found is s cell widths. Clamped against the LIVE
-  // cell size and the LIVE stencil from Globals rather than any mirrored
-  // constant — a mirrored R_CAP went stale here once, and now there are two
-  // numbers that could.
-  let stencil = i32(max(g.nearStencil, 1u));
-  let rcap = f32(stencil) * min(g.cellW, g.cellH);
 
   var force = vec2f(0.0);
-  for (var dy = -stencil; dy <= stencil; dy = dy + 1) {
-    for (var dx = -stencil; dx <= stencil; dx = dx + 1) {
-      // Toroidal cell wrap. The double modulo is the portable way to get a
-      // non-negative remainder out of a signed index.
-      let nx = ((cx + dx) % gw + gw) % gw;
-      let ny = ((cy + dy) % gh + gh) % gh;
-      let c = u32(ny * gw + nx);
-      let start = cellStart[c];
-      let n = cellCount[c];
+  if (BRUTE != 0u) {
+    // ── brute: every live particle ────────────────────────────────────────────
+    //
+    // The reach cap is the TORUS's, derived live rather than mirrored from a TS
+    // constant: `wrapDelta` takes the minimum image, so past half the short
+    // world axis the "nearer" copy of a neighbour is the one through the seam
+    // and a larger radius stops meaning anything. That is the same bound the
+    // author's prior sims cap their radius slider at.
+    let rcap = 0.5 * min(g.worldW, g.worldH);
 
-      for (var s = 0u; s < n; s = s + 1u) {
-        let j = sortedIdx[start + s];
-        if (j == i) {
-          continue;
-        }
-        let q = src[j];
-        let sj = speciesOf(j, g.segSize, k);
-        let pair = si * k + sj;
+    // The live set, compacted — `sortedIdx[0 .. total)` is exactly the particles
+    // with energy > 0, which the grid's count/scan/scatter chain already built
+    // this substep. Reusing it rather than scanning the whole pool is not a
+    // micro-optimisation: the pool is 8× the live population at shipped
+    // populations, so a naive `0..maxParticles` loop would spend 87% of an
+    // already-quadratic pass on absent particles. `total` comes out of the
+    // prefix sum's own tail (last start + last count) so it needs no extra pass
+    // and no extra buffer.
+    //
+    // The indirection costs nothing: every thread in the workgroup walks the
+    // same `s`, so each iteration is one broadcast load of `sortedIdx[s]` and
+    // one of `src[j]` — the ideal access pattern for an N-body inner loop, and
+    // the reason no shared-memory tiling is needed here.
+    let nc = g.gridW * g.gridH;
+    let total = cellStart[nc - 1u] + cellCount[nc - 1u];
+    for (var s = 0u; s < total; s = s + 1u) {
+      let j = sortedIdx[s];
+      if (j == i) {
+        continue;
+      }
+      force = force + pairForce(i, j, si, k, p.pos, radiusScale, rcap, world);
+    }
+  } else {
+    // ── grid: the (2s+1)² cell walk ───────────────────────────────────────────
+    let gw = i32(g.gridW);
+    let gh = i32(g.gridH);
+    let cx = i32(clamp(floor(here.x / max(g.cellW, 1e-6)), 0.0, f32(g.gridW - 1u)));
+    let cy = i32(clamp(floor(here.y / max(g.cellH, 1e-6)), 0.0, f32(g.gridH - 1u)));
 
-        // The receiver's radiusScale scales the whole row, so "this species
-        // reaches further" is one number rather than K edits. Capped at the
-        // stencil's reach (see `rcap` above): a radius past the search window is
-        // not a longer reach, it is a silently truncated one.
-        let rmax = min(interaction[kk + pair] * radiusScale, rcap);
-        let d0 = q.pos - p.pos;
-        let d = wrapDelta(d0, world);
-        let r2 = dot(d, d);
-        if (r2 > rmax * rmax) {
-          continue;
-        }
-        // hi is written as max(..., MIN_R_FLOOR) so clamp() never sees lo > hi,
-        // which is undefined in WGSL. A pair whose rmax collapses below the
-        // floor therefore degenerates to pure repulsion rather than to garbage.
-        let rmin = clamp(
-          interaction[2u * kk + pair] * radiusScale,
-          MIN_R_FLOOR,
-          max(rmax - 1e-4, MIN_R_FLOOR),
-        );
+    // Reach cap, hoisted: the search window is (2s+1)² cells wide, so the
+    // furthest a pair can be and still be found is s cell widths. Clamped
+    // against the LIVE cell size and the LIVE stencil from Globals rather than
+    // any mirrored constant — a mirrored R_CAP went stale here once, and now
+    // there are two numbers that could.
+    let stencil = i32(max(g.nearStencil, 1u));
+    let rcap = f32(stencil) * min(g.cellW, g.cellH);
 
-        var r = sqrt(r2);
-        var dir = vec2f(1.0, 0.0);
-        if (r < 1e-6) {
-          // Exactly coincident particles have no direction to separate along.
-          // A hashed one keeps the step deterministic in (i, j, tick) — which is
-          // the whole determinism claim — where normalising a zero vector would
-          // produce NaN and poison the buffer for the rest of the run.
-          let a = rand01(hash3(i, j, g.tick)) * TAU;
-          dir = vec2f(cos(a), sin(a));
-          r = 1e-6;
-        } else {
-          dir = d / r;
-        }
+    for (var dy = -stencil; dy <= stencil; dy = dy + 1) {
+      for (var dx = -stencil; dx <= stencil; dx = dx + 1) {
+        // Toroidal cell wrap. The double modulo is the portable way to get a
+        // non-negative remainder out of a signed index.
+        let nx = ((cx + dx) % gw + gw) % gw;
+        let ny = ((cy + dy) % gh + gh) % gh;
+        let c = u32(ny * gw + nx);
+        let start = cellStart[c];
+        let n = cellCount[c];
 
-        var f = 0.0;
-        if (r < rmin) {
-          // Divergent hard core: 0 at rmin (continuous with the tent), and
-          // -REPULSE·rmin/eps ≈ -20·REPULSE as r → 0. The first build used a
-          // *linear* core capped at -REPULSE, and dense clusters collapsed into
-          // point singularities: the summed tent attraction of a hundred
-          // neighbours just outside rmin dwarfed a bounded -3 from the few
-          // inside it. A core that steepens toward contact is how the original
-          // vuzic sim (R0_FORCE = 100, ~1/r) kept its clusters open, and the
-          // eps floor keeps it finite so the integrator stays stable at dt=1/60
-          // (the maxSpeed clamp downstream bounds the worst case regardless).
-          f = REPULSE * (r - rmin) / (r + 0.05 * rmin);
-        } else {
-          // Tent: peaks at the band's midpoint, zero at both ends. Zero at rmax
-          // is what makes the force continuous as a pair enters and leaves the
-          // neighbourhood — a force with a step at the cutoff pumps energy in
-          // and the whole field slowly heats up.
-          let span = max(rmax - rmin, 1e-6);
-          f = interaction[pair] * (1.0 - abs(2.0 * r - (rmin + rmax)) / span);
+        for (var s = 0u; s < n; s = s + 1u) {
+          let j = sortedIdx[start + s];
+          if (j == i) {
+            continue;
+          }
+          force = force + pairForce(i, j, si, k, p.pos, radiusScale, rcap, world);
         }
-        force = force + dir * (f * q.energy);
       }
     }
   }

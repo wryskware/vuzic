@@ -168,8 +168,12 @@ fn wrapWorld(p: vec2f, world: vec2f) -> vec2f {
 }
 
 /**
- * Shortest toroidal offset. Every effective radius is <= MAX_REACH (0.06), which
- * is far under half the world on both axes, so a single shift per axis is exact.
+ * Shortest toroidal offset — the minimum image. A single shift per axis is
+ * exact for any separation, and it is exactly why the brute lane's reach caps at
+ * half the short world axis: at that distance the two images of a neighbour are
+ * equidistant, and past it the "nearer" one is the copy through the seam, so a
+ * larger radius stops meaning "further away is still felt". The grid lane's own
+ * cap (stencil x cell, <= 0.06) is far under that bound.
  *
  * This is the fix for the classic seam bug where *positions* wrap but *forces*
  * do not: without it, two particles either side of the wrap read as a world

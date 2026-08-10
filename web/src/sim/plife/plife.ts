@@ -43,6 +43,23 @@
  * the right *shape*, and the number that matters can only be found by running
  * it. This comment exists so the first person to see 8 fps knows exactly which
  * three numbers to touch.
+ *
+ * ## The other lane: `field.pairSearch = 'brute'`
+ *
+ * All of the above describes the GRID lane, whose whole reason to exist is to
+ * make the neighbour set smaller than "everyone". The brute lane gives that up
+ * on purpose: every live particle is tested against every other, cost
+ * `alive²`, and in exchange the reach cap goes from `stencil × cell` (≤ 0.06)
+ * to half the torus (0.5). That is not a tuning difference. Below 0.06 a
+ * cluster is an emergent agreement between many filigree strands; at 0.25 it is
+ * something the force law itself knows about, and continent-scale flows become
+ * available at all.
+ *
+ * The cost is honest and quadratic: at ~33 k alive it is ~1.1 × 10⁹ pair tests
+ * per substep, which is the same order as the *grid* lane's worst case at 325 k
+ * and roughly 100× its cost at 33 k. `maxParticles` is the lever, and it is now
+ * a much sharper one — halving the pool quarters the work rather than halving
+ * it.
  */
 import type { GpuContext } from '../../gpu/context';
 import type { ModTarget, ThetaRegistry } from '../../mapping/target';
@@ -65,15 +82,18 @@ import {
   MACRO_RANGE,
   MAX_BRIGHTNESS,
   MAX_FRICTION,
+  MAX_MIN_R,
   MAX_NEAR_STENCIL,
   MAX_RADIUS_SCALE,
-  MAX_REACH,
+  MAX_REACH_BRUTE,
   MAX_SIZE,
   MAX_STRETCH,
   MAX_SUBSTEPS,
   MIN_R_FLOOR,
+  PAIR_SEARCH_MODES,
   PRIMARY_COUNT,
   R_CAP,
+  type PairSearch,
   type PlifeConfig,
   type PlifeMacros,
 } from './config';
@@ -256,6 +276,34 @@ export class PlifeSim implements Sim, ModTarget {
   /** Notified on every seed change — a reseed, and equally a snapshot restore. */
   onSeedChange: ((seed: number) => void) | null = null;
 
+  /**
+   * Force the grid pair search on this instance whatever the config says.
+   * **Explorer tiles only** — `main.ts` sets it in `createExplorerTile`.
+   *
+   * Measured (2026-08-09, 13 k alive): nine brute tiles run correctly and look
+   * right, at ~212 ms/frame — 4.7 fps, which is not a search tool, it is a
+   * slideshow. Nine times an O(N²) pass is nine times a cost that is already the
+   * whole frame, and the explorer's job is to answer "which of these nine" in
+   * seconds.
+   *
+   * Why a flag rather than a value on the tile's cloned config: `syncStyle` fans
+   * the live sim's serialised extras into all nine tiles twice a second, so
+   * anything set on the clone at construction is overwritten within 500 ms. This
+   * sits *outside* the extras channel, which is the only place it cannot be
+   * undone by a sync.
+   *
+   * The honest cost of the choice: a tile in grid mode shows the same θ through
+   * a 0.06 reach cap, so at large radii the nine tiles under-represent what the
+   * full-size sim will do with the candidate you pick. Stated in the explorer
+   * folder's own label rather than left as a surprise.
+   */
+  forceGridSearch = false;
+
+  /** The pair search actually in force — `forceGridSearch` outranks the config. */
+  private pairSearch(): PairSearch {
+    return this.forceGridSearch ? 'grid' : this.config.field.pairSearch;
+  }
+
   /** The phase-7 render chain. Owns the HDR surfaces, bloom, grading, auto-exposure. */
   readonly post: PostFx;
 
@@ -291,13 +339,73 @@ export class PlifeSim implements Sim, ModTarget {
   }
 
   /**
-   * The reach cap the shader will apply: `stencil × cell`. Public so the panel
-   * can state it honestly in a label — it is derived from two numbers (a config
-   * knob and a grid the panel does not own) and re-deriving it there would be
-   * the third place this arithmetic lives.
+   * The reach cap the shader will apply, in the mode currently selected:
+   * `stencil × cell` for the grid walk, half the short world axis for brute.
+   * Public so the panel can state it honestly in a label — it is derived from
+   * config knobs and a grid the panel does not own, and re-deriving it there
+   * would be the third place this arithmetic lives.
    */
   get nearReach(): number {
+    if (this.pairSearch() === 'brute') {
+      return Math.min(MAX_REACH_BRUTE, 0.5 * Math.min(this.worldW, this.worldH));
+    }
     return this.stencil() * Math.min(this.cellW, this.cellH);
+  }
+
+  /**
+   * The largest effective outer radius any pair actually holds right now,
+   * `max_ij(maxR[i][j] · radiusScale_i · reach)`, clamped to the mode's cap.
+   *
+   * Distinct from `nearReach`, which is the *permission*: with default radii of
+   * ~0.01 the brute lane's cap is 0.5 and this is 0.03, and reporting 0.5 as
+   * "the reach" would be a lie in the one place the workbench needs the truth —
+   * the far lane's seam (below) and the panel's label.
+   */
+  get liveReach(): number {
+    const cap = this.nearReach;
+    const k = this.config.speciesCount;
+    const reachMacro = Math.max(this.config.macros.reach, 0);
+    let widest = 0;
+    for (let i = 0; i < k; i++) {
+      const scale = Math.min(
+        Math.max(this.config.species[i]?.radiusScale ?? 1, 0.05) * reachMacro,
+        MAX_RADIUS_SCALE,
+      );
+      for (let j = 0; j < k; j++) {
+        widest = Math.max(widest, (this.config.maxR[i * k + j] ?? 0) * scale);
+      }
+    }
+    return Math.min(widest, cap);
+  }
+
+  /**
+   * σ1, the far lane's inner scale: where the near lane stops and the far lane
+   * is allowed to start.
+   *
+   * In **grid** mode this is exactly what it always was — `stencil × cell`, the
+   * lane's cap — and deliberately not re-derived from the live radii, because
+   * grid mode is the regression baseline and its far lane may not shift under a
+   * change that is about brute mode.
+   *
+   * In **brute** mode the cap is a permission (0.5, half the torus) rather than
+   * a description, so the seam follows the *live* widest radius instead: put at
+   * the cap it would sit far outside anything the near lane is actually doing
+   * and the far lane would be describing a world that is not there.
+   *
+   * The ceiling is the part worth stating. σ2 is floored at
+   * `FAR_SCALE_MIN_RATIO × σ1`, so an unbounded σ1 would push σ2 outside the
+   * range its own slider covers, and at σ1 near half the world both Gaussians
+   * are flat and the DoG is a difference of two nothings. Capping σ1 at
+   * `FAR_SCALE_RANGE.max / FAR_SCALE_MIN_RATIO` keeps the band inside the
+   * slider's own interval at every reach. Past that point the honest statement
+   * is that the near lane *is* the far lane, and the DoG narrowing toward zero
+   * as reach grows is that statement made arithmetically.
+   */
+  private get farSigma1(): number {
+    if (this.pairSearch() !== 'brute') {
+      return this.stencil() * Math.min(this.cellW, this.cellH);
+    }
+    return Math.min(this.liveReach, FAR_SCALE_RANGE.max / FAR_SCALE_MIN_RATIO);
   }
 
   /**
@@ -310,7 +418,7 @@ export class PlifeSim implements Sim, ModTarget {
    * effective value when the two knobs disagree.
    */
   get farSigma(): number {
-    return Math.max(this.config.field.farScale, FAR_SCALE_MIN_RATIO * this.nearReach);
+    return Math.max(this.config.field.farScale, FAR_SCALE_MIN_RATIO * this.farSigma1);
   }
 
   /** Is the far lane doing anything? Gates the whole chain and the shader's sampling. */
@@ -409,6 +517,8 @@ export class PlifeSim implements Sim, ModTarget {
   private scanPipeline!: GPUComputePipeline;
   private scatterPipeline!: GPUComputePipeline;
   private stepPipeline!: GPUComputePipeline;
+  /** The same module and the same layout, specialised with `BRUTE = 1`. */
+  private stepBrutePipeline!: GPUComputePipeline;
   private initPipeline!: GPUComputePipeline;
   private respawnPipeline!: GPUComputePipeline;
   private splashPipeline!: GPUComputePipeline;
@@ -731,12 +841,11 @@ export class PlifeSim implements Sim, ModTarget {
     g.accentGain = clampNum(gs['accentGain'], defG.accentGain, 0, 2);
     // `lo <= hi` is enforced rather than assumed, because the generator draws
     // uniformly between them and an inverted band would draw nonsense. The two
-    // ceilings differ since the reach split: an outer radius may be drawn up to
-    // `MAX_REACH` (the widest stencil's reach), while the hard core stays under
-    // the cell size — it is a contact distance, not a reach, and a hard core
-    // wider than a grid cell would be a different kind of sim.
-    readBand(gs['rMin'], g.rMin, defG.rMin, R_CAP);
-    readBand(gs['rMax'], g.rMax, defG.rMax, MAX_REACH);
+    // ceilings differ: an outer radius may be drawn up to `MAX_REACH_BRUTE`
+    // (half the torus, the widest any mode can realise), while the hard core
+    // stays under `MAX_MIN_R` — it is a contact distance, not a reach.
+    readBand(gs['rMin'], g.rMin, defG.rMin, MAX_MIN_R);
+    readBand(gs['rMax'], g.rMax, defG.rMax, MAX_REACH_BRUTE);
 
     // The reach block. `nearStencil` is rounded because it is a *cell count* —
     // the shader indexes with it — and a slider that snapped visually to 2 while
@@ -744,6 +853,14 @@ export class PlifeSim implements Sim, ModTarget {
     const fl = this.config.field;
     const fs = plainObject(o['field']);
     const defF = defaultPlifeField();
+    // An unknown / absent / mistyped mode falls back to the default rather than
+    // throwing: this block is opaque to everything between the file and here, and
+    // the one thing a bad value must not do is put an O(N²) pass on screen by
+    // accident. Grid is the safe answer in both directions.
+    const mode = fs['pairSearch'];
+    fl.pairSearch = PAIR_SEARCH_MODES.includes(mode as PairSearch)
+      ? (mode as PairSearch)
+      : defF.pairSearch;
     fl.nearStencil = Math.round(
       clampNum(fs['nearStencil'], defF.nearStencil, 1, MAX_NEAR_STENCIL),
     );
@@ -1035,7 +1152,18 @@ export class PlifeSim implements Sim, ModTarget {
     this.stepPipeline = device.createComputePipeline({
       label: 'plife.step',
       layout: stepPipelineLayout,
-      compute: { module: stepModule, entryPoint: 'stepParticles' },
+      compute: { module: stepModule, entryPoint: 'stepParticles', constants: { BRUTE: 0 } },
+    });
+    // The brute lane. One more pipeline off the same module and the same layout,
+    // specialised through step.wgsl's `override BRUTE` — so the two force kernels
+    // share every line except the loop that chooses which `j`s to visit, and
+    // neither pays for the other's register pressure. `runStep` picks between
+    // them per substep, which is what makes the panel's mode dropdown live: no
+    // rebuild, no reallocation, no state to migrate.
+    this.stepBrutePipeline = device.createComputePipeline({
+      label: 'plife.step.brute',
+      layout: stepPipelineLayout,
+      compute: { module: stepModule, entryPoint: 'stepParticles', constants: { BRUTE: 1 } },
     });
     this.initPipeline = device.createComputePipeline({
       label: 'plife.init',
@@ -1627,7 +1755,7 @@ export class PlifeSim implements Sim, ModTarget {
    * change: it is 128 bytes total, and "on change" would mean tracking two
    * knobs, the stencil and the grid, any of which moving invalidates all four.
    *
-   * σ1 is the near lane's cutoff, σ2 the knob (floored — see `farSigma`), and
+   * σ1 is the near lane's cutoff (see `farSigma1`), σ2 the knob (floored), and
    * the second pair of passes blurs by the *residual* σr with
    * σr² = σ2² − σ1², because Gaussians compose in quadrature: blurring the
    * σ1 field by σr yields the σ2 field for free instead of a second full-width
@@ -1635,7 +1763,7 @@ export class PlifeSim implements Sim, ModTarget {
    */
   private writeBlurParams(): void {
     const { device } = this.ctx as GpuContext;
-    const s1 = this.nearReach;
+    const s1 = this.farSigma1;
     const s2 = this.farSigma;
     const sr = Math.sqrt(Math.max(s2 * s2 - s1 * s1, 1e-12));
     const passes: { sigma: number; axis: 0 | 1; dog: 0 | 1 }[] = [
@@ -1890,6 +2018,15 @@ export class PlifeSim implements Sim, ModTarget {
 
     // Four passes rather than one with four dispatches: each stage reads what the
     // previous stage wrote, and pass boundaries make that ordering unambiguous.
+    //
+    // All three grid passes run in BOTH modes, and that is a deliberate
+    // departure from "brute needs no grid". Brute does not need the *binning* —
+    // it needs the **compaction**, and count/scan/scatter is exactly a
+    // compaction that happens to be sorted by cell. The alternative is a naive
+    // `0..maxParticles` inner loop, which at shipped populations wastes ~87% of
+    // an already-quadratic pass on absent pool slots; against that, three
+    // one-thread-per-particle memory passes are free. See the brute branch in
+    // step.wgsl for how it reads the live count back out of the prefix sum.
     const count = encoder.beginComputePass({ label: 'plife.count' });
     count.setPipeline(this.countPipeline);
     count.setBindGroup(0, gridBind);
@@ -1908,8 +2045,9 @@ export class PlifeSim implements Sim, ModTarget {
     scatter.dispatchWorkgroups(gridGroups);
     scatter.end();
 
+    const brute = this.pairSearch() === 'brute';
     const force = encoder.beginComputePass({ label: 'plife.force' });
-    force.setPipeline(this.stepPipeline);
+    force.setPipeline(brute ? this.stepBrutePipeline : this.stepPipeline);
     force.setBindGroup(0, this.stepBinds[this.parity] as GPUBindGroup);
     force.dispatchWorkgroups(Math.ceil(this.totalParticles / PARTICLE_WORKGROUP));
     force.end();
@@ -2036,12 +2174,13 @@ export class PlifeSim implements Sim, ModTarget {
    * that has not been written yet, can put a radius outside the range the grid
    * search is correct for.
    *
-   * Note which cap this is. maxR is clamped to `MAX_REACH` — the widest stencil's
-   * reach, i.e. what a *file* may legally contain — and NOT to the reach of the
-   * stencil currently in force. The runtime cap belongs to the shader, which
-   * clamps against the live cell size and the live stencil; doing it here as well
-   * would bake the current stencil into the uploaded numbers and mean that
-   * dialling the stencil down and back up had quietly truncated the matrix.
+   * Note which cap this is. maxR is clamped to `MAX_REACH_BRUTE` — the AUTHORED
+   * ceiling, i.e. what a *file* may legally contain — and NOT to the reach of
+   * the pair-search mode currently in force. The runtime cap belongs to the
+   * shader, which derives it from the live cell size and stencil (grid) or the
+   * live world size (brute); doing it here as well would bake the current mode
+   * into the uploaded numbers and mean that switching to grid and back had
+   * quietly truncated the matrix.
    */
   uploadInteractions(): void {
     if (!this.ready || !this.ctx) return;
@@ -2050,8 +2189,8 @@ export class PlifeSim implements Sim, ModTarget {
     const d = this.interactionData;
     for (let i = 0; i < kk; i++) {
       d[i] = this.config.attraction[i] ?? 0;
-      d[kk + i] = Math.min(Math.max(this.config.maxR[i] ?? 0, MIN_R_FLOOR), MAX_REACH);
-      d[2 * kk + i] = Math.min(Math.max(this.config.minR[i] ?? 0, MIN_R_FLOOR), R_CAP);
+      d[kk + i] = Math.min(Math.max(this.config.maxR[i] ?? 0, MIN_R_FLOOR), MAX_REACH_BRUTE);
+      d[2 * kk + i] = Math.min(Math.max(this.config.minR[i] ?? 0, MIN_R_FLOOR), MAX_MIN_R);
     }
     this.ctx.device.queue.writeBuffer(this.interactionBuf, 0, d);
   }

@@ -52,10 +52,10 @@
  */
 import { CLASS_FAST, CLASS_MEDIUM, CLASS_SLOW, type ModGroup, type ModSpec } from '../../mapping/modspec.ts';
 import {
-  MAX_REACH,
+  MAX_MIN_R,
+  MAX_REACH_BRUTE,
   MIN_R_FLOOR,
   PRIMARY_COUNT,
-  R_CAP,
   type PlifeConfig,
   type PlifeSpeciesConfig,
 } from './config.ts';
@@ -317,11 +317,14 @@ const ATTRACTION_BOUND: Bound = {
  *
  * Two different ceilings, and the gap between them is deliberate:
  *
- * - **hard `max` = `MAX_REACH`** (0.06, the stencil-3 reach). This is what a
- *   file may contain and what hand tuning may reach for. It grew with the near
- *   stencil: with the cell size and the reach cap decoupled, a 0.04 radius is a
- *   legal, useful, *authored* choice rather than a grid violation.
- * - **`mod` hi = `MAX_REACH` too** (user call, 2026-08-09) — and this one is not
+ * - **hard `max` = `MAX_REACH_BRUTE`** (0.5, half the torus). This is what a
+ *   file may contain and what hand tuning may reach for. It grew twice: first
+ *   with the near stencil (0.02 → 0.06, cell size decoupled from reach), then
+ *   with the brute pair-search lane (0.06 → 0.5, no cells at all). **One
+ *   ceiling for both modes** — in grid mode the shader's `stencil × cell` clamp
+ *   simply saturates anything above 0.06, so a file written in brute mode stays
+ *   legal in grid mode and comes back unchanged when you switch back.
+ * - **`mod` hi = the same 0.5** (user call, 2026-08-09) — and this one is not
  *   about how far the *music* moves the slot. `computeTarget` clamps its output
  *   into `[lo, hi]`, and rebase-on-edit puts the base wherever the slider was
  *   dragged, so a stale `hi` of 0.02 would drag every hand-tuned large radius
@@ -332,7 +335,7 @@ const ATTRACTION_BOUND: Bound = {
  * `lo` stays at 0.008 and the shape stays multiplicative: a fixed *additive*
  * move would be a rounding error at 0.06 and a total rewrite at 0.008.
  *
- * ## Why `half` is 0.25 and not ln 2
+ * ## Why `half` is 0.25 and not ln 2 — and why it did NOT grow with the ceiling
  *
  * The author's prior sims never modulated radii at all, so a music-driven radius
  * is untested territory here — 0.25 in ln space is a full-tanh swing of
@@ -351,20 +354,26 @@ const ATTRACTION_BOUND: Bound = {
  * divorcing music-excursion scale from explorer-mutation scale is the obvious
  * next ask, and it is one field on `ModSpec`, not a redesign.
  *
+ * The ceiling moving to 0.5 does **not** move `half`: the excursion envelope is
+ * about how far the music may swing a radius from wherever it was left, and that
+ * question is unchanged by the existence of a lane that can hold larger radii.
+ * The v1 caution stands (user call, 2026-08-09).
+ *
  * One honesty note for the workbench: the shader clamps the effective radius to
- * `nearStencil × cell` at runtime, so at stencil 1 or 2 the top of this range is
+ * `nearStencil × cell` in **grid** mode, so there the top of this range is
  * unreachable and the blue mod-range band drawn on those sliders shows more
  * travel than the current stencil can realise. The saturation is harmless (a
  * radius past the search window is just truncated), and the alternative — a
  * modulation range that changes shape with a structural knob — would make a
- * saved mapping mean different things in two sessions.
+ * saved mapping mean different things in two sessions. In **brute** mode the
+ * whole range is real.
  */
 const MAXR_BOUND: Bound = {
   name: 'Rmax',
   cls: CLASS_SLOW,
   min: MIN_R_FLOOR,
-  max: MAX_REACH,
-  mod: mul('structure', 0.008, MAX_REACH, 0.25, 0.25),
+  max: MAX_REACH_BRUTE,
+  mod: mul('structure', 0.008, MAX_REACH_BRUTE, 0.25, 0.25),
 };
 
 /**
@@ -386,13 +395,18 @@ const MAXR_BOUND: Bound = {
  * The physics reason is unchanged from before: the hard-core radius is a
  * stability parameter, not a look. Moving the singular point of the repulsion
  * term while the integrator is running is how you get a field that explodes.
+ *
+ * The *ceiling* moved (0.02 → `MAX_MIN_R` = 0.05) when the brute lane landed,
+ * and that is a scale change rather than a policy change: a core is a fraction
+ * of a reach, and the reaches this sim can now hold are ten times what they
+ * were. See `MAX_MIN_R` for the judgement.
  */
 const MINR_BOUND: Bound = {
   name: 'Rmin',
   cls: CLASS_SLOW,
   min: MIN_R_FLOOR,
-  max: R_CAP,
-  mod: { group: 'structure', lo: MIN_R_FLOOR, hi: R_CAP, half: 0, jitter: 0, mult: true },
+  max: MAX_MIN_R,
+  mod: { group: 'structure', lo: MIN_R_FLOOR, hi: MAX_MIN_R, half: 0, jitter: 0, mult: true },
 };
 
 /**

@@ -90,8 +90,45 @@ export const MAX_NEAR_STENCIL = 3;
  */
 export const MAX_REACH = R_CAP * MAX_NEAR_STENCIL;
 
+/**
+ * The **brute** lane's reach cap, and — since the two modes share one authored
+ * ceiling — the widest outer radius a file, a slider or a seeded draw may hold.
+ *
+ * 0.5 is half the unit torus, and it is a *geometric* bound rather than a taste
+ * one: `wrapDelta` takes the minimum image, so at separations past half the
+ * world the "nearer" copy of a particle is the one through the seam and a radius
+ * beyond 0.5 stops meaning "further" — it means every pair is inside every
+ * radius. The author's prior sims cap their radius slider at the same place for
+ * the same reason.
+ *
+ * In **grid** mode the shader still clamps to `nearStencil × cell` (≤ 0.06), so
+ * an authored radius above that simply saturates. That is deliberate and is the
+ * same relationship the modulation band on `Rmax` already documents: one
+ * authored ceiling, two runtime caps, and the mode you are in decides which one
+ * binds. See `PlifeFieldConfig.pairSearch`.
+ */
+export const MAX_REACH_BRUTE = 0.5;
+
 /** Floor on the hard-core radius. Below this the repulsion slope explodes. */
 export const MIN_R_FLOOR = 0.002;
+
+/**
+ * Ceiling on the hard-core radius, `minR[i][j] · radiusScale[i]`.
+ *
+ * It used to be `R_CAP` (0.02), on the argument that a contact distance wider
+ * than a grid cell is a different kind of sim. That argument was about the
+ * *grid*, and the brute lane has no cells — what it has is regimes where the
+ * outer radius is 0.3, and a 0.02 core inside a 0.3 tent is a pinhole: the tent
+ * is then 93% ramp and every cluster collapses to a point before the core is
+ * felt. 0.05 lets a large-radius world have a proportionate core.
+ *
+ * Judgement, and stated as one: 0.05 is 2.5× the old ceiling and a tenth of the
+ * outer cap, which keeps a "core is a quarter of the reach" shape available at
+ * reach 0.2 without letting the core become the whole force law. In grid mode a
+ * core above the reach cap simply degenerates to pure repulsion — the shader
+ * clamps `rmin` under `rmax`, so it stays safe rather than becoming garbage.
+ */
+export const MAX_MIN_R = 0.05;
 
 /**
  * Ceiling on `brightness × stem-follow`, matching physarum's `MAX_BRIGHTNESS`
@@ -297,13 +334,45 @@ export const MACRO_LABELS: readonly { key: keyof PlifeMacros; label: string }[] 
  *
  * seam: a θ/modulation lane for the far knobs is deliberately future work. If it
  * ever lands, `farGain` and `farScale` move into `preset.ts`'s slot table and out
- * of here; `nearStencil` does not, because it changes the *search window* and a
- * modulated search window is a modulated correctness bound.
+ * of here; `nearStencil` and `pairSearch` do not, because they change the
+ * *search window* and a modulated search window is a modulated correctness
+ * bound.
  */
+export type PairSearch = 'grid' | 'brute';
+
+/** The legal `pairSearch` values, in panel order. One list, so the dropdown and
+ * the loader's validation cannot drift apart. */
+export const PAIR_SEARCH_MODES: readonly PairSearch[] = ['grid', 'brute'];
 export interface PlifeFieldConfig {
+  /**
+   * How the near lane finds its pairs. This is the one structural knob that
+   * changes the *shape* of the cost, not its size.
+   *
+   *   `'grid'`   the uniform grid: each particle searches the (2s+1)² cells
+   *              around it. Cost is `alive × neighbours-in-window`, i.e. linear
+   *              in the population at fixed density — but the reach is capped at
+   *              `nearStencil × R_CAP` ≤ 0.06, because a pair outside the search
+   *              window is silently missed.
+   *   `'brute'`  every particle against every live particle. Cost is O(N²) and
+   *              there is no reach cap but the torus's own: radii up to
+   *              `MAX_REACH_BRUTE` (0.5) are exact.
+   *
+   * Grid is the default and stays the regression baseline. Brute exists because
+   * the 0.06 ceiling is not a tuning limit, it is a *kind* limit: at 6% of screen
+   * height a cluster is made of many strands agreeing, and the large-scale flows
+   * and continent-sized clusters a particle-life sim is worth watching for
+   * simply cannot form. The author's prior sims were brute-force and ran 32 k
+   * particles with radii to 0.5; this is that lane, restored.
+   *
+   * Not modulated and not in θ, exactly like `nearStencil`: it changes what the
+   * force pass *searches*, and a modulated search is a modulated correctness
+   * bound.
+   */
+  pairSearch: PairSearch;
   /**
    * Cells searched in each direction by the force pass, 1..`MAX_NEAR_STENCIL`.
    * Effective near reach cap is `nearStencil × R_CAP` — 0.02 / 0.04 / 0.06.
+   * **Grid mode only**: brute mode has no cells and ignores this entirely.
    */
   nearStencil: number;
   /**
@@ -351,13 +420,14 @@ export const FAR_SCALE_REF = 0.2;
 
 export function defaultPlifeField(): PlifeFieldConfig {
   return {
-    // 2, not 1. A 0.02 reach is 2% of screen height, which is about one filigree
-    // strand: at that scale the sim can only make *texture*, and every structure
-    // larger than a strand had to emerge from many strands agreeing. 0.04 is the
-    // smallest reach at which a cluster is a thing the force law knows about
-    // rather than an accident, and it costs 2.8× the pair work of 1 (25 cells vs
-    // 9), which measured fine at this particle count.
-    nearStencil: 2,
+    pairSearch: 'grid',
+    // Back to 1 (user call, 2026-08-09). The 2 that shipped here bought reach
+    // 0.04 instead of 0.02 at 2.8× the pair work, and the trade did not survive
+    // contact: past ~32 k alive it was a felt frame-time regression, and the
+    // reach it bought is a rounding error next to what brute mode makes
+    // available. Grid mode is back to its old cost envelope and the stencil is
+    // what you raise when you want 0.04 / 0.06 *within* that lane.
+    nearStencil: 1,
     farGain: 1,
     farScale: FAR_SCALE_REF,
   };
