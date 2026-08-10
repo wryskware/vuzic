@@ -62,9 +62,14 @@ export class AudioClock {
     this.secondsPerTick = opts.secondsPerTick ?? DEFAULT_TICK;
     this.maxTicksPerFrame = opts.maxTicksPerFrame ?? 8;
     this.audioUrl = opts.audioUrl ?? null;
-    // Bound, because it is stored on `this` and called as `this.fetcher(...)`:
-    // native `fetch` throws "Illegal invocation" if its receiver is not `window`.
-    this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
+    // Bound unconditionally — including a caller-supplied fetcher — because it
+    // is stored on `this` and called as `this.fetcher(...)`: native `fetch`
+    // with a non-Window receiver fails its brand check, and as a REJECTED
+    // PROMISE rather than a throw, so an unbound copy slips straight through
+    // `preload()`'s catch into the silent click-track fallback. That exact bug
+    // shipped once (an unbound `fetch` out of `fetcherFor`); binding here makes
+    // the seam immune to the next caller who forgets.
+    this.fetcher = (opts.fetcher ?? globalThis.fetch).bind(globalThis);
   }
 
   get isPlaying(): boolean {

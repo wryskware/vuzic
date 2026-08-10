@@ -41,9 +41,21 @@ export interface TrackEntry {
   source: TrackSource;
 }
 
-/** Bundled and server tracks fetch differently; the difference stops here. */
+/**
+ * Bundled and server tracks fetch differently; the difference stops here.
+ *
+ * Bound, never bare `fetch`: consumers store this on an object and call it as a
+ * method (`this.fetcher(...)` in AudioClock), and native fetch with a wrong
+ * receiver fails its WebIDL brand check. Crucially that failure is a *rejected
+ * promise*, not a throw — so an unbound copy here didn't crash anything, it
+ * silently rode `preload()`'s catch into the click-track fallback and every
+ * bundled track lost its audio. `loadTimeline` masked it by calling the fetcher
+ * as a free function, where an undefined receiver defaults to the global.
+ */
 export function fetcherFor(entry: TrackEntry): typeof fetch {
-  return entry.source === 'bundled' ? fetch : (cachingFetch as typeof fetch);
+  return entry.source === 'bundled'
+    ? globalThis.fetch.bind(globalThis)
+    : (cachingFetch as typeof fetch);
 }
 
 interface ServerTrackRow {

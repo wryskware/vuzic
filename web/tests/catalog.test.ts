@@ -86,11 +86,18 @@ test('the list is sorted by title, not by source', () => {
   );
 });
 
-test('only bundled tracks bypass the cache', () => {
-  // Identity, not behaviour: the read-through needs a browser. What matters here
-  // is that a bundled track is never routed through it (it is already local) and
-  // that server and cached tracks are — that is the whole offline story.
-  assert.equal(fetcherFor(bundled('x')), fetch);
+test('only bundled tracks bypass the cache, via a BOUND fetch', () => {
+  // The read-through needs a browser, so this is shape, not behaviour: a bundled
+  // track is never routed through the cache (it is already local), server and
+  // cached tracks are. The bound-copy assertions are a shipped-bug regression
+  // guard: fetcherFor once returned bare `fetch`, whose brand check fails as a
+  // *rejected promise* when AudioClock calls it as `this.fetcher(...)` — every
+  // bundled track silently lost its audio to the click fallback. Node's fetch
+  // is not receiver-branded, so the bug itself is unobservable here; the
+  // not-reference-equal check pins the fix at the only level node can see.
+  const f = fetcherFor(bundled('x'));
+  assert.notEqual(f, fetch, 'bundled fetcher must be a bound copy, never bare fetch');
+  assert.equal(f.name, 'bound fetch');
   assert.notEqual(fetcherFor(serverEntry({ id: 'x' })), fetch);
   assert.equal(fetcherFor(cached('x', 'v1')), fetcherFor(serverEntry({ id: 'x' })));
 });
