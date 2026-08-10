@@ -111,7 +111,17 @@ export interface ModTarget {
    */
   applyExtras?(raw: Record<string, unknown> | undefined): void;
   partialReseed(key: number, fraction: number): void;
-  reseed(seed: number): void;
+  /**
+   * Adopt a new seed. `keepWorld` applies the new seed's *rules* — the redrawn
+   * matrix, the personality, the rewired modulator and impulse hotspots, all of
+   * which ride `onSeedChange` — without resetting the particle / agent state that
+   * is already on screen. "New physics, same matter."
+   *
+   * Optional on purpose: a substrate that has no separable world state (or a stub
+   * in a test) satisfies this with a one-argument `reseed` and simply always
+   * starts fresh, which is the safe direction.
+   */
+  reseed(seed: number, opts?: { keepWorld?: boolean }): void;
   snapshot(): boolean;
   restoreSnapshot(): boolean;
   clearSnapshot(): void;

@@ -1667,11 +1667,53 @@ export class PlifeSim implements Sim, ModTarget {
 
   // ── world lifecycle ────────────────────────────────────────────────────────
 
-  /** Fresh seed, particles re-scattered into seeded per-species clusters. */
-  reseed(seed: number): void {
+  /**
+   * Fresh seed, particles re-scattered into seeded per-species clusters — unless
+   * `keepWorld`, in which case only the *rules* change.
+   *
+   * ## keepWorld: new physics, same matter
+   *
+   * `setSeed` fires `onSeedChange`, and that callback is the actual content of a
+   * reroll: it re-keys the impulse hotspots and re-runs the modulator's seeded
+   * rewire, which redraws the whole attraction matrix and the radius blocks
+   * (`genmatrix.ts`) and restamps the seeded personality. All of that still
+   * happens here. What `keepWorld` skips is the one thing that is *not* the
+   * seed's doing — throwing the particle buffer away and scattering a new one.
+   *
+   * The result is the gesture that made this option exist: the arrangement you
+   * are looking at stays exactly where it is and a different force law takes hold
+   * of it, so you watch the world you already have reorganise itself rather than
+   * watching it be replaced. Auto-exposure is not reset either — there is no
+   * fade up from black, because nothing went black — and `stepAccumulator` /
+   * `lastPcgTick` carry on, because they are the world's clock and the world did
+   * not restart.
+   *
+   * ## Determinism
+   *
+   * A pinned seed still reproduces a run *from load*: a fresh load scatters, so
+   * (track, seed, device) determines the world it starts in. Rerolling in place
+   * does not have that property and is not meant to — it is a live-performance
+   * act taken against whatever the world happened to be at that instant, the same
+   * doctrine as idle free-running (see the transport note in main.ts). If you
+   * want the reroll reproducible, pin the new seed and reload.
+   */
+  reseed(seed: number, opts?: { keepWorld?: boolean }): void {
     if (!this.ready || !this.ctx) return;
     const { device } = this.ctx;
     this.setSeed(seed);
+    if (opts?.keepWorld === true) {
+      // The seeded rewire has already landed (via `onSeedChange`, above) but it
+      // wrote the *config*; these two are what push the parts of it the GPU
+      // caches. `uploadInteractions` is the redrawn matrix — without it the new
+      // physics would not reach the force pass until something else happened to
+      // push it — and `uploadSpecies` republishes the personality's new species
+      // block. `writeGlobals` keeps the current pcg tick rather than rewinding
+      // to 0: the noise stream is part of the world that is being kept.
+      this.uploadInteractions();
+      this.uploadSpecies();
+      this.writeGlobals(this.lastPcgTick);
+      return;
+    }
     this.stepAccumulator = 0;
     this.lastPcgTick = 0;
     this.uploadSpecies();

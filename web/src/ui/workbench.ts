@@ -332,19 +332,37 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
     syncUrlSeed(ev.value ? sim.currentSeed : null);
     record(ev.value ? 'pin' : 'unpin');
   });
-  world.addButton({ title: '↻ re-run this world (same seed)' }).on('click', () => {
+  // Full scatter, and that is its whole meaning: "re-run" is "start this world
+  // again from the beginning", so it clears and re-scatters exactly as a fresh
+  // load would. It is the only button in the app that reproduces a load.
+  world.addButton({ title: '↻ re-run this world (same seed · rescatters)' }).on('click', () => {
     sim.reseed(sim.currentSeed);
     host.restart();
     host.onConfigReplaced?.();
     pane.refresh();
   });
-  // Last in the folder on purpose: it is the one button here that throws the
-  // world you are looking at away, and there is no undo for it.
-  world.addButton({ title: '🎲 reroll world (new seed)' }).on('click', () => {
+  // Last in the folder on purpose: it is the one button here that replaces every
+  // rule the world runs by, and there is no undo for it.
+  world.addButton({ title: '🎲 reroll world (new seed · keeps the matter)' }).on('click', () => {
     // sim.reseed fires onSeedChange, which is what re-keys the modulator's
     // projections and personality and the impulse hotspots. One act, one seed.
+    //
+    // `keepWorld`, and this is the difference from the button above it. A reroll
+    // used to rescatter, so the two buttons differed only in which seed they
+    // restarted from and every reroll cost you the world you had accumulated —
+    // which on physarum is minutes of trail network and on plife is whatever
+    // arrangement you were auditioning against. Now the new seed's rules land on
+    // the matter that is already there: the matrix is redrawn, the personality
+    // and the wiring are restamped, and you watch the world you have reorganise
+    // itself under them. "New physics, same matter" — the one below is the one
+    // that means "start over".
+    //
+    // Not reproducible mid-run, deliberately, and the sims' own reseed comments
+    // say so: a pinned seed reproduces a run *from load*, where the scatter does
+    // happen. Rerolling in place is a performance gesture against whatever the
+    // world is at that instant.
     const seed = randomSeed();
-    sim.reseed(seed);
+    sim.reseed(seed, { keepWorld: true });
     host.restart();
     ui.seed = String(seed);
     // An existing ?seed= must follow the reroll, or the address bar names a world

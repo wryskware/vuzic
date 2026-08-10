@@ -722,11 +722,50 @@ export class PhysarumSim implements Sim, ModTarget {
     this.reseed(this.seed);
   }
 
-  /** Fresh seed, empty trails, empty soil, agents re-scattered. */
-  reseed(seed: number): void {
+  /**
+   * Fresh seed, empty trails, empty soil, agents re-scattered — unless
+   * `keepWorld`, in which case only the *rules* change.
+   *
+   * ## keepWorld: new physics, same matter
+   *
+   * `setSeed` fires `onSeedChange`, which is the actual content of a reroll: the
+   * impulse hotspots re-key and the modulator's seeded rewire restamps the
+   * personality and the projection wiring. All of that still happens. What
+   * `keepWorld` skips is everything that would destroy the accumulated world —
+   * the agent scatter, the trail clear and the soil clear.
+   *
+   * The trail field is the point here, more so than in plife. Physarum's look
+   * *is* its accumulated network, minutes of deposit in a field that a full
+   * reseed wipes; keeping it means a reroll is a new personality moving into an
+   * existing city rather than a new city. Soil (track-scale memory) stays for the
+   * same reason the section-boundary `partialReseed` leaves it alone.
+   *
+   * Auto-exposure is not reset either: nothing went black, so there is nothing to
+   * fade up from.
+   *
+   * ## Determinism
+   *
+   * A pinned seed still reproduces a run *from load* — a fresh load clears and
+   * scatters, so (track, seed, device) determines the world it starts in.
+   * Rerolling in place does not, and is not meant to: it is a live-performance
+   * act taken against whatever the world happened to be at that instant, the
+   * same doctrine as idle free-running (see the transport note in main.ts).
+   */
+  reseed(seed: number, opts?: { keepWorld?: boolean }): void {
     if (!this.ready || !this.ctx) return;
     const { device } = this.ctx;
     this.setSeed(seed);
+    if (opts?.keepWorld === true) {
+      // The seeded rewire has already landed (via `onSeedChange`) but it wrote
+      // the *config*; these two push the parts of it the GPU caches — the
+      // sensor/deposit matrix and the species block — without touching a single
+      // agent, texel of trail or texel of soil. The pcg tick is kept rather than
+      // rewound to 0: the noise stream belongs to the world being kept.
+      this.uploadMatrix();
+      this.uploadSpecies();
+      this.writeGlobals(this.lastPcgTick);
+      return;
+    }
     this.stepAccumulator = 0;
     this.writeGlobals(0);
     this.uploadSpecies();
