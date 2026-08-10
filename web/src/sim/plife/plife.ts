@@ -69,7 +69,10 @@ import { paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { Sim } from '../types';
 import {
+  BUDGET_FPS_RANGE,
+  BUDGET_MIN,
   defaultMatrixGen,
+  defaultPlifeBudget,
   defaultPlifeConfig,
   defaultPlifeField,
   defaultPlifeMacros,
@@ -225,6 +228,65 @@ const SUBSTEP_DT = 1 / 60;
  */
 const TICK_DT = 1 / 60;
 
+// ── the adaptive particle governor ───────────────────────────────────────────
+//
+// A closed loop with one actuator (the summed population target) and one sensor
+// (the measured frame rate), deliberately slow and deliberately asymmetric. The
+// constants below are the whole control law; `noteFrameRate` is the whole
+// implementation.
+
+/**
+ * Minimum wall time between two adjustments.
+ *
+ * Not per frame, and the reason is the plant, not the cost: moving a population
+ * target does not move the frame time for another `riseTau`/`fallTau` seconds,
+ * because the lane fades particles in and out rather than switching them. A
+ * controller that re-decided every frame would be reacting sixty times to a
+ * change it had not yet observed the effect of — classic integrator windup, and
+ * on the way down it would floor the budget within half a second of one hitch.
+ * One second is comfortably longer than the shipped fall-τ (1.5 s is the target,
+ * not the transit) and short enough that a genuine collapse is arrested in
+ * about two seconds.
+ */
+const GOVERNOR_INTERVAL_MS = 1000;
+
+/**
+ * Multiplier per adjustment below `floorFps`. Fast, because being under the
+ * floor is the failure the whole mechanism exists to end: ×0.85 halves the
+ * budget in about four steps, i.e. four seconds.
+ */
+const GOVERNOR_SHRINK = 0.85;
+
+/**
+ * Multiplier per adjustment at or above the ideal. Deliberately ~5× gentler than
+ * the shrink: growth is speculative (the frame rate is fine *because* the budget
+ * is where it is) and an aggressive one would oscillate — grow, drop under the
+ * floor, shed, grow. ×1.03 climbs from a floored 2 000 to a 262 144 cap in about
+ * three minutes, which is slow enough to be invisible and fast enough that a
+ * `pairSearch` switched back to grid is at full population before the next
+ * section.
+ */
+const GOVERNOR_GROW = 1.03;
+
+/**
+ * How close to `idealFps` counts as meeting it.
+ *
+ * This is the vsync guard and it is the one constant that would be a bug if it
+ * were the "obvious" value. A display presents at its refresh rate and no
+ * faster, so a 120 Hz panel measures ~119.x fps at its very best — under a rule
+ * of "grow when fps > ideal × 1.05" a machine with an ideal of 120 could
+ * *never* grow, which is exactly backwards for the machine the ideal was chosen
+ * to describe. So the test is "meeting the ideal within 3%" rather than
+ * "exceeding it": ×0.97 of 120 is 116.4, which one frame of jitter in an EMA
+ * over ~25 frames does not fall below, while a genuinely struggling 100 fps
+ * still reads as "hold".
+ *
+ * The deadband is therefore [floorFps, idealFps × 0.97) — shed below it, grow at
+ * or above the top of it, and hold in between, which is what keeps the budget
+ * still on a machine that is comfortably fine but not spectacular.
+ */
+const GOVERNOR_GROW_TOLERANCE = 0.97;
+
 /**
  * The sim's whole persistent state on a spare buffer. Just the particles: the
  * grid is rebuilt from scratch every substep and carries nothing across, and the
@@ -262,6 +324,8 @@ export interface PlifeStats {
   stepsThisFrame: number;
   /** render passes in the post chain last frame; fade + particles are the +2 */
   renderPasses: number;
+  /** the ceiling Σtargets was clamped to this frame — governor state, not a setting */
+  effectiveBudget: number;
 }
 
 export class PlifeSim implements Sim, ModTarget {
@@ -298,6 +362,33 @@ export class PlifeSim implements Sim, ModTarget {
    * folder's own label rather than left as a surprise.
    */
   forceGridSearch = false;
+
+  /**
+   * Never run the adaptive governor on this instance, whatever the config says.
+   * **Explorer tiles only** — `main.ts` sets it in `createExplorerTile`.
+   *
+   * Nine tiles share one canvas, one device and therefore one frame time. Nine
+   * independent controllers all reading that one number would each conclude "the
+   * frame rate is bad, I must be too big" and each shed 15%, so the grid would
+   * lose 65% of its population in four seconds and then, having recovered,
+   * all grow back together — a slow collective oscillation with no equilibrium,
+   * driven by nine copies of the same measurement being counted nine times.
+   *
+   * The fix is not a shared governor (a tile is a candidate being judged; its
+   * population must not depend on what the other eight are doing) but no
+   * governor: a tile uses `budget.cap` directly, which is the same ceiling the
+   * live sim is working under and the one the human actually set. The honest
+   * cost, stated like `forceGridSearch`'s: nine tiles at the live cap is nine
+   * times the live sim's particle work, so the mode is as expensive as it always
+   * was and the cap is the knob that makes it cheaper — turning the cap down for
+   * the grid turns it down for the live sim too.
+   *
+   * Outside the extras channel for the same reason `forceGridSearch` is:
+   * `syncStyle` fans the live sim's serialised extras into all nine tiles twice a
+   * second, so `budget.adaptive = false` set on a clone would be overwritten
+   * within 500 ms.
+   */
+  forceNoGovernor = false;
 
   /** The pair search actually in force — `forceGridSearch` outranks the config. */
   private pairSearch(): PairSearch {
@@ -473,6 +564,34 @@ export class PlifeSim implements Sim, ModTarget {
   private popPrimed = false;
   /** length K, the integer population target `uploadSpecies` last wrote */
   private readonly targetAlive: Uint32Array;
+  /**
+   * length K, the pre-budget target — what every existing multiplier asked for
+   * before the clamp. Scratch, reused each call, never read outside
+   * `uploadSpecies`; it exists so the rescale is one pass over a computed array
+   * instead of a second evaluation of the whole composition chain.
+   */
+  private readonly rawAlive: Float64Array;
+
+  // ── the budget governor (CPU-owned; see `noteFrameRate`) ───────────────────
+
+  /**
+   * The governor's own state, in particles.
+   *
+   * `Infinity` means "the governor has not intervened", which is not the same as
+   * "the budget is the cap" and is why it is not simply initialised to the cap:
+   * the cap is a live config value that a slider can move at any moment, and a
+   * governor that had eagerly copied it would keep an untouched world pinned at
+   * whatever the cap was at construction. `effectiveBudget` composes the two.
+   *
+   * Session-only, deliberately: it is never serialised, never restored, and
+   * `applyExtras` cannot reach it. What a machine could sustain in another tab,
+   * at another window size, an hour ago is not a fact about this run.
+   */
+  private governorBudget = Number.POSITIVE_INFINITY;
+  /** `performance.now()` of the last adjustment; the cadence gate reads it */
+  private governorAt = 0;
+  /** last frame rate handed in, purely for the panel's readout */
+  private measuredFps = 0;
 
   // ── far field (the density pyramid) ────────────────────────────────────────
   //
@@ -591,6 +710,7 @@ export class PlifeSim implements Sim, ModTarget {
     this.popMul = new Float32Array(k).fill(1);
     this.accentMul = new Float32Array(k).fill(1);
     this.targetAlive = new Uint32Array(k);
+    this.rawAlive = new Float64Array(k);
     this.post = new PostFx(config.render);
   }
 
@@ -706,6 +826,102 @@ export class PlifeSim implements Sim, ModTarget {
     this.pendingSingleStep = true;
   }
 
+  // ── the particle budget ────────────────────────────────────────────────────
+
+  /** `budget.cap`, sanitised: a whole number of particles, never under the floor. */
+  private get budgetCap(): number {
+    return Math.max(Math.round(this.config.budget.cap), 1);
+  }
+
+  /** Is the governor allowed to move anything? The tile flag outranks the config. */
+  private governorOn(): boolean {
+    return this.config.budget.adaptive && !this.forceNoGovernor;
+  }
+
+  /**
+   * The ceiling `uploadSpecies` clamps Σtargets to, this frame.
+   *
+   * Two numbers meet here and the `min` is the point: `cap` is the human's hard
+   * answer and `governorBudget` is the machine's, and neither is allowed to
+   * argue the other upward. Lowering the cap slider therefore binds *now* even
+   * if the governor is sitting somewhere higher, and the governor can never
+   * grow past the cap however good the frame rate is.
+   *
+   * With the governor off the cap is the whole answer. With it on, the result is
+   * additionally floored at `BUDGET_MIN` — but at `min(BUDGET_MIN, cap)`, so
+   * that a human who deliberately asks for 2 000 particles gets 2 000 rather
+   * than having the floor quietly override their own ceiling.
+   */
+  get effectiveBudget(): number {
+    const cap = this.budgetCap;
+    if (!this.governorOn()) return cap;
+    // Rounded, because this is a count of particles wherever it is read — the
+    // clamp compares it against a sum of integers and the panel prints it — while
+    // `governorBudget` stays continuous so that repeated ×1.03 steps accumulate
+    // instead of being rounded back to where they started at small budgets.
+    return Math.round(Math.max(Math.min(this.governorBudget, cap), Math.min(BUDGET_MIN, cap)));
+  }
+
+  /** The frame rate the governor last acted on. Panel readout only. */
+  get governorFps(): number {
+    return this.measuredFps;
+  }
+
+  /**
+   * Hand the governor a frame-rate measurement, once per rendered frame.
+   *
+   * The EMA lives in `main.ts` rather than here, and that split is deliberate:
+   * the frame rate is a property of the *application's* loop (which sometimes
+   * renders nine other sims and none of this one), the status bar needs the same
+   * number for both substrates, and a sim that measured its own frame time would
+   * be measuring how often someone chose to call it. So main owns the sensor and
+   * this owns the control law.
+   *
+   * `now` is injectable for exactly one reason: the browser-automation tab stalls
+   * rAF, so the only way to exercise the law is to drive it by hand —
+   * `terrarium.sim.noteFrameRate(45, t)` with a synthetic clock, which is the
+   * documented dev handle for it (main exposes `terrarium` under `import.meta.env.DEV`).
+   *
+   * The law, in full:
+   *
+   *   fps <  floorFps                    → ×GOVERNOR_SHRINK, floored
+   *   fps >= idealFps × TOLERANCE        → ×GOVERNOR_GROW, capped
+   *   otherwise                          → hold
+   *
+   * at most once per `GOVERNOR_INTERVAL_MS`. `idealFps` is read as
+   * `max(idealFps, floorFps)` so that a file (or a slider) with the two crossed
+   * degenerates into "shed below the floor, grow at the floor" rather than into
+   * a band that both branches claim.
+   */
+  noteFrameRate(fps: number, now: number = performance.now()): void {
+    if (!Number.isFinite(fps) || fps <= 0) return;
+    this.measuredFps = fps;
+    if (!this.governorOn()) {
+      // Turning the governor off is also how you reset it: the next time it is
+      // switched on it starts from the cap rather than resuming a shrink that
+      // belonged to a pair-search mode you have since left.
+      this.governorBudget = Number.POSITIVE_INFINITY;
+      return;
+    }
+    if (now - this.governorAt < GOVERNOR_INTERVAL_MS) return;
+    this.governorAt = now;
+
+    const b = this.config.budget;
+    const floorFps = b.floorFps;
+    const idealFps = Math.max(b.idealFps, floorFps);
+    const cap = this.budgetCap;
+    // The base is the *effective* budget, not the raw state: growing from
+    // Infinity is not a number, and shrinking from above the cap would waste
+    // several adjustments getting back to a ceiling that already bound.
+    const cur = this.effectiveBudget;
+
+    if (fps < floorFps) {
+      this.governorBudget = Math.max(cur * GOVERNOR_SHRINK, Math.min(BUDGET_MIN, cap));
+    } else if (fps >= idealFps * GOVERNOR_GROW_TOLERANCE) {
+      this.governorBudget = Math.min(cur * GOVERNOR_GROW, cap);
+    }
+  }
+
   // ── ModTarget: θ, as the mapping layer sees it ─────────────────────────────
 
   /**
@@ -791,6 +1007,11 @@ export class PlifeSim implements Sim, ModTarget {
       matrixGen: { ...g, rMin: { ...g.rMin }, rMax: { ...g.rMax } },
       population: { ...p, accent: { ...p.accent } },
       field: { ...this.config.field },
+      // The four SETTINGS only. `effectiveBudget` is not in here and must never
+      // be: it is a live measurement of this machine in this session, and a saved
+      // one would open every future run of this mapping at whatever the frame
+      // rate happened to be when it was written.
+      budget: { ...this.config.budget },
       // Length K, index-aligned with `config.species`. A flat boolean array
       // rather than a list of names, because the species *are* their indices
       // everywhere else in this sim (the matrix, the palette, the stem map), and
@@ -872,6 +1093,19 @@ export class PlifeSim implements Sim, ModTarget {
       FAR_SCALE_RANGE.max,
     );
 
+    // The budget block. Written in place like everything else here (the panel's
+    // bindings hold `config.budget` by reference), and the cap is clamped to the
+    // live `maxParticles` rather than to whatever the file thought the pool was:
+    // a cap above the pool is not a bigger world, it is a clamp that never binds,
+    // and stating it as `maxParticles` keeps the slider honest.
+    const bu = this.config.budget;
+    const bs = plainObject(o['budget']);
+    const defB = defaultPlifeBudget(this.config.maxParticles);
+    bu.cap = Math.round(clampNum(bs['cap'], defB.cap, BUDGET_MIN, this.config.maxParticles));
+    bu.adaptive = readBool(bs['adaptive'], defB.adaptive);
+    bu.floorFps = clampNum(bs['floorFps'], defB.floorFps, BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max);
+    bu.idealFps = clampNum(bs['idealFps'], defB.idealFps, BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max);
+
     // The population lane. Ranges are the panel's own (ui/plife-panel.ts, the
     // "population · stems → colonies" folder), so a loaded value can never sit
     // outside the slider meant to show it. Note the two floors that are not 0:
@@ -921,6 +1155,7 @@ export class PlifeSim implements Sim, ModTarget {
       aliveParticles: this.aliveCount(),
       stepsThisFrame: this.stepsThisFrame,
       renderPasses: this.post.passCount + 2,
+      effectiveBudget: this.effectiveBudget,
     };
   }
 
@@ -2270,7 +2505,7 @@ export class PlifeSim implements Sim, ModTarget {
     // with no friction at all never settles, it just accumulates speed until the
     // maxSpeed clamp is the only thing shaping the motion.
     const frictionDiv = Math.max(macros.agility, 1e-3);
-    let active = 0;
+    let rawTotal = 0;
 
     for (let k = 0; k < this.config.speciesCount; k++) {
       const s = list[k];
@@ -2278,6 +2513,7 @@ export class PlifeSim implements Sim, ModTarget {
       if (!s) {
         d.fill(0, o, o + FLOATS_PER_SPECIES);
         this.targetAlive[k] = 0;
+        this.rawAlive[k] = 0;
         continue;
       }
       // The impulse lane, applied here and nowhere else: multiplicative on top of
@@ -2335,9 +2571,11 @@ export class PlifeSim implements Sim, ModTarget {
           Math.max(macros.density, 0) *
           accentMacro
         : 0;
-      const alive = Math.floor(Math.min(Math.max(frac, 0), 1) * this.segSize);
-      this.targetAlive[k] = alive;
-      active += alive;
+      // Pre-budget. The clamp is applied to the SUM after this loop, so it needs
+      // every species' ask before it can decide anything — see below.
+      const raw = Math.floor(Math.min(Math.max(frac, 0), 1) * this.segSize);
+      this.rawAlive[k] = raw;
+      rawTotal += raw;
 
       // Colour arrives at the GPU premultiplied. The particle shader has no
       // per-species work to do beyond the splat, which matters when it runs
@@ -2345,7 +2583,7 @@ export class PlifeSim implements Sim, ModTarget {
       d[o + 0] = (this.paletteRgb[k * 3 + 0] as number) * weight;
       d[o + 1] = (this.paletteRgb[k * 3 + 1] as number) * weight;
       d[o + 2] = (this.paletteRgb[k * 3 + 2] as number) * weight;
-      d[o + 3] = alive;
+      // d[o + 3] is the population target and is written in the budget pass below.
       d[o + 4] = Math.min(Math.max(s.size, 1e-6), MAX_SIZE);
       d[o + 5] = Math.min(Math.max(s.stretch, 0), MAX_STRETCH);
       // The impulse engine's `deposit` lane maps to *force* here: physarum's
@@ -2374,6 +2612,45 @@ export class PlifeSim implements Sim, ModTarget {
       d[o + 13] = 0;
       d[o + 14] = 0;
       d[o + 15] = 0;
+    }
+
+    // ── the budget clamp ─────────────────────────────────────────────────────
+    //
+    // The last thing that touches a population target, and the only thing above
+    // it. Everything in the loop above is a *scaling* — θ's base fraction, the
+    // stem lane, the accent lane, two macros, the enabled switch — and they
+    // compose into an ask. This turns the ask into an allocation.
+    //
+    // Proportional, and that is the design rather than an implementation
+    // convenience: the ratios between the eight species are what the art
+    // direction *is* (four primaries at 0.35 and four accents at 0.1 is the
+    // partition made numerical), so a budget that clipped the largest species,
+    // or took a flat count off each, would be a budget that quietly restyled the
+    // world every time it bound. Scaling every target by one factor changes how
+    // much matter there is and nothing else.
+    //
+    // Only ever downward. `scale` is `min(1, budget/rawTotal)` written as a
+    // branch rather than a `min`, because `rawTotal` is legitimately 0 when every
+    // species is switched off and 0/0 is NaN — one NaN here would become NaN
+    // targets, a NaN `activeTotal` and a uniform buffer full of them. So a budget
+    // at or above the ask is exactly a no-op, and the clamp can never invent
+    // particles the multipliers did not want: "fewer is fine, never more than the
+    // budget."
+    //
+    // `floor` rather than `round` on the way out, for the same reason the raw
+    // targets floor: these become an integer count the shader compares an index
+    // against, and the sum after flooring is ≤ the budget by construction.
+    const budget = this.effectiveBudget;
+    const scale = rawTotal > budget ? budget / rawTotal : 1;
+    let active = 0;
+    for (let k = 0; k < this.config.speciesCount; k++) {
+      const alive =
+        scale === 1
+          ? (this.rawAlive[k] as number)
+          : Math.floor((this.rawAlive[k] as number) * scale);
+      this.targetAlive[k] = alive;
+      active += alive;
+      d[k * FLOATS_PER_SPECIES + 3] = alive;
     }
 
     this.activeTotal = active;

@@ -83,6 +83,33 @@ const MIN_TILE_AGENTS = 4096;
  */
 const EXPLORER_EDIT_SETTLE_MS = 500;
 
+/**
+ * Time constant of the frame-rate EMA, in ms.
+ *
+ * One number, two consumers — the status bar's readout and plife's budget
+ * governor — and it is main's rather than either consumer's because the frame
+ * rate is a property of *this loop*: it covers the frames where nine explorer
+ * tiles were drawn and none of the live sim, and both substrates need the same
+ * segment in the same status line. A sim that measured its own frame time would
+ * be measuring how often something chose to call it.
+ *
+ * 400 ms is about 25 frames at 60 Hz. Long enough that one compositor hitch or
+ * one shader compile does not move the number a human can read, short enough
+ * that dragging the pair-search dropdown to brute shows the consequence inside a
+ * second — which is exactly the loop the governor is also closing.
+ */
+const FPS_EMA_TAU_MS = 400;
+
+/**
+ * How often the *displayed* fps is re-read from the EMA. ~2 Hz.
+ *
+ * The EMA is already smooth; this is about the text. A number that changes sixty
+ * times a second is unreadable however stable the underlying value is, and the
+ * status line is rebuilt every frame — so the integer is latched here and the
+ * string is assembled from the latch.
+ */
+const FPS_DISPLAY_MS = 500;
+
 const stage = document.getElementById('stage') as HTMLCanvasElement;
 const overlayCanvas = document.getElementById('overlay') as HTMLCanvasElement;
 const playButton = document.getElementById('play') as HTMLButtonElement;
@@ -381,6 +408,17 @@ async function main(): Promise<void> {
       // 4.7 fps. See `PlifeSim.forceGridSearch` for why this is a flag and not a
       // value on the cloned config (`syncStyle` would overwrite the latter).
       tile.forceGridSearch = true;
+      // Nine tiles, one canvas, one frame time. Nine governors reading that one
+      // number would each blame themselves for it and each shed 15%, so the grid
+      // would lose two thirds of its population in four seconds and then all
+      // grow back together — one measurement counted nine times, oscillating.
+      // A tile therefore runs at `budget.cap` flat, which is the same ceiling the
+      // live sim is working under and the one the human actually set; the cap
+      // slider is what makes the mode cheaper. Same flag mechanism, and the same
+      // reason for it, as `forceGridSearch` — `syncStyle` fans the extras block
+      // into all nine twice a second, so `budget.adaptive = false` on the clone
+      // would not survive.
+      tile.forceNoGovernor = true;
       tile.setStemChannel(sampler.getChannel('stems'));
       tile.setAccentChannels(sampler.getChannel('novelty16'), sampler.getChannel('actChorus'));
       return tile;
@@ -822,6 +860,23 @@ async function main(): Promise<void> {
   let frameCount = 0;
 
   /**
+   * The frame-rate EMA, held as a frame *time* in ms because that is the quantity
+   * that is actually being averaged: averaging the reciprocal would weight a
+   * single 200 ms hitch as one sample of "5 fps" instead of as the 12 frames'
+   * worth of time it really cost, and the governor would under-react to exactly
+   * the stalls it exists to catch.
+   *
+   * Seeded at 60 Hz so the first half-second reads as a plausible number rather
+   * than as a spike, and the coefficient is derived from the measured dt on every
+   * frame (`1 - exp(-dt/τ)`) so the smoothing means the same wall-clock duration
+   * on a 60 Hz panel and a 240 Hz one.
+   */
+  let frameMs = 1000 / 60;
+  /** the latched integer the status line prints, and when it was latched */
+  let fpsShown = 0;
+  let fpsShownAt = 0;
+
+  /**
    * One fixed step. `stepIndex` has already been incremented by the caller — it
    * is the PCG key and counts sim steps, not transport position.
    *
@@ -854,6 +909,23 @@ async function main(): Promise<void> {
     const now = performance.now();
     const wallDelta = Math.min((now - lastNow) / 1000, 0.25);
     lastNow = now;
+
+    // The frame-rate lane. Same clamped `wallDelta` the free-run pump uses, so a
+    // backgrounded tab's two-second gap is one 0.25 s sample rather than a
+    // measurement that would read as 0.5 fps and floor the governor on the first
+    // frame back.
+    const dtMs = wallDelta * 1000;
+    frameMs += (dtMs - frameMs) * (1 - Math.exp(-dtMs / FPS_EMA_TAU_MS));
+    const fps = 1000 / Math.max(frameMs, 1e-3);
+    if (now - fpsShownAt >= FPS_DISPLAY_MS) {
+      fpsShown = Math.round(fps);
+      fpsShownAt = now;
+    }
+    // Not while exploring: the number on screen then describes nine tiles, and
+    // the live sim's governor must not size a world nobody is stepping against a
+    // frame time nobody is spending on it. The tiles have no governor at all
+    // (`forceNoGovernor`), so the whole mode is governor-free by construction.
+    if (sim instanceof PlifeSim && !explorerActive) sim.noteFrameRate(fps, now);
 
     clock.pump((tick) => {
       stepIndex++;
@@ -933,16 +1005,21 @@ async function main(): Promise<void> {
     // The modulation mode is named in both branches, unlike everything else here:
     // entering the mode forces it to manual and leaving does not put it back, so
     // it is a state change the human did not ask for and has to be able to see.
+    // The fps segment goes last, in both variants and therefore in both sims: it
+    // is the one number here that is about the machine rather than about the
+    // world, so it sits at the end where the eye can find it without reading the
+    // rest — and it is the segment you watch while dragging the pair-search mode
+    // or the particle cap.
     statusEl.textContent = explorerActive
       ? `${track} · ${clock.sourceKind} audio · sim "${sim.name}" · ` +
         `explorer gen ${explorerSet?.generation ?? 0} · ${explorerSubspace} · ` +
         `step ${explorerStep.toFixed(2)} · ${explorerLog?.size ?? 0} logged · ` +
-        `${modulator.mode} · ${gpuState}`
+        `${modulator.mode} · ${gpuState} · ${fpsShown} fps`
       : `${track} · ${clock.sourceKind} audio · sim "${sim.name}" ` +
         `${sim.status()} · ` +
         `${modulator.mode}${
           modulator.mode === 'modulated' ? ` ${modulator.sourceLabel}` : ''
-        } · ${gpuState}`;
+        } · ${gpuState} · ${fpsShown} fps`;
 
     requestAnimationFrame(frame);
   };

@@ -434,6 +434,101 @@ export function defaultPlifeField(): PlifeFieldConfig {
 }
 
 /**
+ * The particle budget and its adaptive governor.
+ *
+ * Structural, outside θ, and outside the macro rig too — it is not art direction
+ * at all. Every other population lever in this sim answers "how big should this
+ * colony be"; this one answers "how much of this machine is there", which is a
+ * property of the hardware the world is being watched on and not of the world.
+ *
+ * ## Where it composes
+ *
+ * `uploadSpecies` builds each species' target from θ's `aliveFraction` through
+ * the population lane, the accent lane, the `density` and `accents` macros and
+ * the `enabled` switch. The budget clamp runs *after* all of that, on the sum: if
+ * Σtargets exceeds `effectiveBudget` every target is scaled by the same factor,
+ * so the species **ratios** — which are the art direction — survive untouched and
+ * only the absolute count moves. Fewer is fine; more than the budget never
+ * happens.
+ *
+ * That ordering is the whole design. `density` stays a scaler you can push (it
+ * simply stops buying particles once the budget binds), and the budget stays a
+ * ceiling rather than a competing opinion about the mix.
+ *
+ * ## The governor
+ *
+ * `effectiveBudget` is the governor's state, not a setting: it lives between a
+ * hard floor (`BUDGET_MIN`) and `cap`, and it moves in response to the measured
+ * frame rate — down fast when the frame rate falls under `floorFps`, up slowly
+ * when it is meeting `idealFps`, and nowhere at all in between. It is deliberately
+ * **session-only**: what your machine could sustain last night, in another tab
+ * configuration, at another window size, is not a fact about this run. Only the
+ * four settings below are persisted.
+ *
+ * Nothing here despawns anything directly. The governor moves *targets*, and the
+ * population lane's rise/fall τ is what turns a moved target into a fade — which
+ * is why a budget cut reads as the world thinning out rather than as a third of
+ * it blinking off.
+ */
+export interface PlifeBudgetConfig {
+  /**
+   * Hard ceiling on Σ(per-species targets). Defaults to `maxParticles`, i.e. no
+   * clamp at all out of the box: the pool is already the bound, and a budget that
+   * shipped below it would silently change what the defaults look like.
+   */
+  cap: number;
+  /** false = `effectiveBudget` is pinned at `cap` and the frame rate is ignored */
+  adaptive: boolean;
+  /** below this measured fps the governor sheds particles */
+  floorFps: number;
+  /** at (or within tolerance of) this measured fps the governor grows back */
+  idealFps: number;
+}
+
+/**
+ * The lowest the governor may take `effectiveBudget`, and the bottom of the cap
+ * slider. Below about this the sim stops being a particle-life sim and becomes a
+ * few hundred dots per species — if 2 048 particles will not hold the floor fps,
+ * the answer is a different `pairSearch` or a smaller window, not fewer
+ * particles, and pretending otherwise would let a bad frame time chase the world
+ * down to nothing.
+ *
+ * 2^11 rather than a round 2 000, and that is not decoration: it is the bottom of
+ * the cap slider, whose step is `BUDGET_STEP` and whose top is `maxParticles`
+ * (2^18 by default). Tweakpane quantises a stepped slider onto a grid anchored at
+ * one of its ends, and with a min, max and step that are not commensurate the
+ * widget snaps to a grid neither end sits on — which was observed writing 15 144
+ * back into a cap that had been set to 15 000. Making all three powers of two
+ * puts both ends on the grid whichever end it is anchored to.
+ */
+export const BUDGET_MIN = 2_048;
+
+/**
+ * Cap-slider granularity. 2^10, so `BUDGET_MIN`, the step and the default pool
+ * (2^18) are all commensurate — see the note above. Fine enough to land within
+ * 0.4% of any budget worth asking for, coarse enough that a drag produces a
+ * number you can read back out.
+ */
+export const BUDGET_STEP = 1_024;
+
+/** Panel range and loader clamp for the two frame-rate knobs. */
+export const BUDGET_FPS_RANGE = { min: 15, max: 240 } as const;
+
+export function defaultPlifeBudget(cap: number): PlifeBudgetConfig {
+  return {
+    cap: Math.max(Math.round(cap), BUDGET_MIN),
+    adaptive: true,
+    // 60 / 120 rather than, say, 30 / 60: this sim's whole legibility argument is
+    // that a hit resolves *now*, and a 30 fps particle world reads as a slideshow
+    // of clusters rather than as motion. 120 as the ideal means a 120 Hz display
+    // (which is what the author runs) can grow back to its cap at all — see the
+    // grow tolerance in plife.ts for why "ideal" must be reachable, not exceeded.
+    floorFps: 60,
+    idealFps: 120,
+  };
+}
+
+/**
  * How a seed *draws* the interaction matrix and the radii.
  *
  * These are **generation** settings, not parameters: they act once, at reroll
@@ -507,6 +602,8 @@ export interface PlifeConfig {
   matrixGen: MatrixGenConfig;
   /** how far the near (grid) lane reaches. Structural; outside θ. */
   field: PlifeFieldConfig;
+  /** particle ceiling + the adaptive governor. Structural; outside θ. */
+  budget: PlifeBudgetConfig;
   /** K. 8 by design — see the partition note at the top of this file. */
   speciesCount: number;
   /** pool size; the per-species segment is floor(maxParticles / K) */
@@ -762,6 +859,20 @@ export function defaultRadii(k = 8): { minR: number[]; maxR: number[] } {
   return { minR, maxR };
 }
 
+/**
+ * 2^18. See the perf note in plife.ts: this is the single biggest lever on frame
+ * time, because the force pass cost is (alive particles) × (candidates per
+ * neighbourhood) and both terms scale with it. The first build shipped 2^20; the
+ * user's call was to cap around 256k — the fully-swelled worst case (every
+ * population multiplier at its ceiling) is bounded by this rather than merely
+ * unlikely to be hit.
+ *
+ * Named rather than inline because the budget's default cap *is* this number:
+ * the shipped budget must be a no-op, and two literals that had to agree would
+ * eventually not.
+ */
+export const DEFAULT_MAX_PARTICLES = 262_144;
+
 export function defaultPlifeConfig(speciesCount = 8): PlifeConfig {
   const k = Math.max(1, Math.floor(speciesCount));
   const { minR, maxR } = defaultRadii(k);
@@ -790,14 +901,9 @@ export function defaultPlifeConfig(speciesCount = 8): PlifeConfig {
     population: defaultPlifePopulation(),
     matrixGen: defaultMatrixGen(),
     field: defaultPlifeField(),
+    budget: defaultPlifeBudget(DEFAULT_MAX_PARTICLES),
     speciesCount: k,
-    // 2^18. See the perf note in plife.ts: this is the single biggest lever on
-    // frame time, because the force pass cost is (alive particles) × (candidates
-    // per 3×3 neighbourhood) and both terms scale with it. The first build
-    // shipped 2^20; the user's call was to cap around 256k — the fully-swelled
-    // worst case (every population multiplier at its ceiling) is now bounded by
-    // this rather than merely unlikely to be hit.
-    maxParticles: 262_144,
+    maxParticles: DEFAULT_MAX_PARTICLES,
     forceGain: 1,
     maxSpeed: 0.3,
     // The particle shader multiplies colour by exposure · 2^exposureEv and

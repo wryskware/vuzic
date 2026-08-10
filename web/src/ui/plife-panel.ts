@@ -38,6 +38,9 @@ import { Pane, type FolderApi } from 'tweakpane';
 import { saveModulationLocal } from '../mapping/persist';
 import type { ImpulseEngine } from '../sim/impulses';
 import {
+  BUDGET_FPS_RANGE,
+  BUDGET_MIN,
+  BUDGET_STEP,
   defaultPlifeMacros,
   FAR_GAIN_RANGE,
   FAR_SCALE_RANGE,
@@ -81,6 +84,12 @@ interface RunState {
   grid: string;
 }
 
+/** The budget folder's two readouts. Both derived; neither is ever written back. */
+interface BudgetState {
+  effective: string;
+  alive: string;
+}
+
 export function createPlifePanel(
   sim: PlifeSim,
   opts: {
@@ -121,6 +130,7 @@ export function createPlifePanel(
     particles: '—',
     grid: '—',
   };
+  const budgetState: BudgetState = { effective: '—', alive: '—' };
 
   // ── explore ────────────────────────────────────────────────────────────────
   // Its own tab, the same placement physarum's panel uses and for the same
@@ -461,6 +471,62 @@ export function createPlifePanel(
     persistExtras();
   });
 
+  // ── budget · the particle ceiling and its governor ─────────────────────────
+  //
+  // Directly under `reach`, because the two are the same subject from opposite
+  // ends: `reach` decides how expensive one particle is (a stencil, or an O(N²)
+  // pass) and this decides how many of them there may be. Outside θ, never
+  // modulated, persisted through `persistExtras` like every other extras knob —
+  // except the governor's own state, which is session-only by design (see
+  // `PlifeBudgetConfig`) and appears here only as a readout.
+  //
+  // The brute lane is what makes this folder worth having: cost there is ∝ N², so
+  // halving the budget quarters the frame time and the governor's ×0.85 step is a
+  // ~28% cut in work per adjustment rather than 15%.
+  const budget = tabs.sim.addFolder({ title: 'budget  (structural — never modulated)' });
+  // Ceiling on Σ(all species targets), not a per-species number: the clamp scales
+  // every species by one factor, so the mix you authored is what you keep.
+  budget
+    .addBinding(config.budget, 'cap', {
+      min: BUDGET_MIN,
+      max: config.maxParticles,
+      // All three commensurate on purpose — see BUDGET_MIN's note. A stepped
+      // tweakpane slider snaps to a grid anchored at one end, so a step that does
+      // not divide the span writes back a value neither end sits on.
+      step: BUDGET_STEP,
+      label: `particle cap  (Σ targets; pool ${config.maxParticles.toLocaleString()})`,
+    })
+    .on('change', persistExtras);
+  budget
+    .addBinding(config.budget, 'adaptive', { label: 'adaptive  (governor on)' })
+    .on('change', persistExtras);
+  // Below floor the governor sheds fast; at or near ideal it grows slowly; in
+  // between it holds. Both are sliders rather than readouts because the right
+  // pair is a per-machine, per-display judgement — 60/120 is the author's panel,
+  // not a universal truth.
+  budget
+    .addBinding(config.budget, 'floorFps', {
+      min: BUDGET_FPS_RANGE.min,
+      max: BUDGET_FPS_RANGE.max,
+      step: 1,
+      label: 'floor fps  (under this → shed)',
+    })
+    .on('change', persistExtras);
+  budget
+    .addBinding(config.budget, 'idealFps', {
+      min: BUDGET_FPS_RANGE.min,
+      max: BUDGET_FPS_RANGE.max,
+      step: 1,
+      label: 'ideal fps  (met → grow back)',
+    })
+    .on('change', persistExtras);
+  // Live state, never persisted. `effective` is what the clamp actually used this
+  // frame and `alive` is what came out of it, so the pair reads as "the ceiling,
+  // and whether it is binding" — when they are equal the budget is what is
+  // shaping the population, and when alive is well below it something else is.
+  budget.addBinding(budgetState, 'effective', { readonly: true, label: 'effective budget' });
+  budget.addBinding(budgetState, 'alive', { readonly: true, label: '↳ alive (target)' });
+
   const speciesRoot = tabs.sim.addFolder({
     title: opts.workbench ? 'species  (blue band = where the music can take it)' : 'species',
   });
@@ -635,6 +701,17 @@ export function createPlifePanel(
       state.particles = `${st.aliveParticles.toLocaleString()} / ${st.totalParticles.toLocaleString()}`;
       state.grid = `${st.gridW}×${st.gridH} cells`;
       state.seed = String(sim.currentSeed);
+
+      // "governed" vs "cap" is the one thing the two numbers cannot say by
+      // themselves: an effective budget equal to the cap means the governor has
+      // not intervened, and one below it means the frame rate pulled it there.
+      const governed = config.budget.adaptive && st.effectiveBudget < config.budget.cap;
+      budgetState.effective =
+        `${st.effectiveBudget.toLocaleString()}` +
+        (governed ? ` (governed · ${sim.governorFps.toFixed(0)} fps)` : ' (cap)');
+      budgetState.alive =
+        `${st.aliveParticles.toLocaleString()}` +
+        (st.aliveParticles >= st.effectiveBudget ? ' — budget binding' : '');
 
       // The three arrays are the sim's own live state, held by reference and
       // rewritten in place every tick — reading them here is the whole of the
