@@ -20,7 +20,8 @@
  * ## Performance, stated up front
  *
  * The force pass is the whole cost and it scales as
- * `alive × (particles per 3×3 neighbourhood)`. With the shipped defaults —
+ * `alive × (particles per (2s+1)² neighbourhood)`, where `s` is
+ * `field.nearStencil`. With the shipped defaults —
  * 2²⁰ pool, primaries at aliveFraction 0.5, accents at 0.12 — that is roughly
  * 325 k live particles in a grid of ~700 cells, so ~460 per cell and ~4 200
  * candidates tested per particle per substep: about 1.4 × 10⁹ candidate tests
@@ -33,8 +34,10 @@
  *      that the population lane multiplies *below* 1 most of the time (a stem at
  *      its floor keeps 0.35 of its colony), so the figure above is the worst
  *      case, reached only when every instrument is at full.
- *   3. `R_CAP` — halving it quarters the neighbourhood area, but it is also the
- *      grid cell size, so it caps how far a modulated radius may reach.
+ *   3. `field.nearStencil` — the search window is (2s+1)² cells, so 3 costs 5.4×
+ *      what 1 does and 2 costs 2.8×. This is the lever that used to be `R_CAP`,
+ *      and it is now a slider rather than a grid rebuild, because the cell size
+ *      (occupancy) and the reach (stencil × cell) are separate numbers.
  *
  * None of them are changed here: the brief specifies these defaults, they are
  * the right *shape*, and the number that matters can only be found by running
@@ -51,13 +54,16 @@ import type { Sim } from '../types';
 import {
   defaultMatrixGen,
   defaultPlifeConfig,
+  defaultPlifeField,
   defaultPlifeMacros,
   defaultPlifePaletteColor,
   defaultPlifePopulation,
   MACRO_RANGE,
   MAX_BRIGHTNESS,
   MAX_FRICTION,
+  MAX_NEAR_STENCIL,
   MAX_RADIUS_SCALE,
+  MAX_REACH,
   MAX_SIZE,
   MAX_STRETCH,
   MAX_SUBSTEPS,
@@ -189,6 +195,32 @@ export class PlifeSim implements Sim, ModTarget {
   private segSize = 0;
   private totalParticles = 0;
   private activeTotal = 0;
+
+  /**
+   * `config.field.nearStencil`, clamped to what this grid can actually search.
+   *
+   * The second clamp is the one that is not obvious: the force pass wraps its
+   * cell indices toroidally, so a stencil wide enough to reach past the grid
+   * would visit the same cell twice in one sweep and count every pair in it
+   * twice. `(min(gridW, gridH) - 1) / 2` is the widest window that cannot. It
+   * never binds at any sane aspect (a 16:9 world is ~88×50 cells) but it is a
+   * correctness bound, so it is enforced rather than assumed.
+   */
+  private stencil(): number {
+    const want = Math.round(this.config.field.nearStencil);
+    const room = Math.floor((Math.min(this.gridW, this.gridH) - 1) / 2);
+    return Math.max(1, Math.min(want, MAX_NEAR_STENCIL, Math.max(room, 1)));
+  }
+
+  /**
+   * The reach cap the shader will apply: `stencil × cell`. Public so the panel
+   * can state it honestly in a label — it is derived from two numbers (a config
+   * knob and a grid the panel does not own) and re-deriving it there would be
+   * the third place this arithmetic lives.
+   */
+  get nearReach(): number {
+    return this.stencil() * Math.min(this.cellW, this.cellH);
+  }
 
   /**
    * Live impulse lane, owned by the ImpulseEngine and mutated in place. Read,
@@ -524,6 +556,7 @@ export class PlifeSim implements Sim, ModTarget {
       macros: { ...m },
       matrixGen: { ...g, rMin: { ...g.rMin }, rMax: { ...g.rMax } },
       population: { ...p, accent: { ...p.accent } },
+      field: { ...this.config.field },
       // Length K, index-aligned with `config.species`. A flat boolean array
       // rather than a list of names, because the species *are* their indices
       // everywhere else in this sim (the matrix, the palette, the stem map), and
@@ -572,11 +605,24 @@ export class PlifeSim implements Sim, ModTarget {
     g.selfBias = clampNum(gs['selfBias'], defG.selfBias, -1, 1);
     g.selfBiasAccent = clampNum(gs['selfBiasAccent'], defG.selfBiasAccent, -1, 1);
     g.accentGain = clampNum(gs['accentGain'], defG.accentGain, 0, 2);
-    // Both bands live in [MIN_R_FLOOR, R_CAP] — the grid's correctness bound —
-    // and `lo <= hi` is enforced rather than assumed, because the generator
-    // draws uniformly between them and an inverted band would draw nonsense.
-    readBand(gs['rMin'], g.rMin, defG.rMin);
-    readBand(gs['rMax'], g.rMax, defG.rMax);
+    // `lo <= hi` is enforced rather than assumed, because the generator draws
+    // uniformly between them and an inverted band would draw nonsense. The two
+    // ceilings differ since the reach split: an outer radius may be drawn up to
+    // `MAX_REACH` (the widest stencil's reach), while the hard core stays under
+    // the cell size — it is a contact distance, not a reach, and a hard core
+    // wider than a grid cell would be a different kind of sim.
+    readBand(gs['rMin'], g.rMin, defG.rMin, R_CAP);
+    readBand(gs['rMax'], g.rMax, defG.rMax, MAX_REACH);
+
+    // The reach block. `nearStencil` is rounded because it is a *cell count* —
+    // the shader indexes with it — and a slider that snapped visually to 2 while
+    // holding 2.4 would be a search window that disagreed with its own label.
+    const fl = this.config.field;
+    const fs = plainObject(o['field']);
+    const defF = defaultPlifeField();
+    fl.nearStencil = Math.round(
+      clampNum(fs['nearStencil'], defF.nearStencil, 1, MAX_NEAR_STENCIL),
+    );
 
     // The population lane. Ranges are the panel's own (ui/plife-panel.ts, the
     // "population · stems → colonies" folder), so a loaded value can never sit
@@ -942,8 +988,9 @@ export class PlifeSim implements Sim, ModTarget {
   }
 
   /**
-   * Grid dims and cell sizes. The invariant: `cellW >= R_CAP && cellH >= R_CAP`,
-   * because the force pass searches only the 3×3 cell neighbourhood.
+   * Grid dims and cell sizes. The invariant: `cellW >= R_CAP && cellH >= R_CAP`.
+   * R_CAP is now purely an occupancy choice — how many particles a cell list
+   * holds — because reach is capped at `stencil × cell` rather than at one cell.
    *
    * `floor`, not `ceil`: with `ceil` the grid would cover slightly *more* than
    * the world, the last cell along each axis would be partly outside it, and the
@@ -1506,8 +1553,14 @@ export class PlifeSim implements Sim, ModTarget {
    * The clamps here are the *last* line of defence and they are not redundant
    * with the registry's bounds: a hand-edited mapping file, or a panel slider
    * that has not been written yet, can put a radius outside the range the grid
-   * search is correct for. Clamping maxR to R_CAP on the CPU as well as in the
-   * shader means neither side alone has to be right.
+   * search is correct for.
+   *
+   * Note which cap this is. maxR is clamped to `MAX_REACH` — the widest stencil's
+   * reach, i.e. what a *file* may legally contain — and NOT to the reach of the
+   * stencil currently in force. The runtime cap belongs to the shader, which
+   * clamps against the live cell size and the live stencil; doing it here as well
+   * would bake the current stencil into the uploaded numbers and mean that
+   * dialling the stencil down and back up had quietly truncated the matrix.
    */
   uploadInteractions(): void {
     if (!this.ready || !this.ctx) return;
@@ -1516,8 +1569,8 @@ export class PlifeSim implements Sim, ModTarget {
     const d = this.interactionData;
     for (let i = 0; i < kk; i++) {
       d[i] = this.config.attraction[i] ?? 0;
-      d[kk + i] = Math.min(Math.max(this.config.maxR[i] ?? 0, MIN_R_FLOOR), R_CAP);
-      d[2 * kk + i] = Math.min(Math.max(this.config.minR[i] ?? 0, MIN_R_FLOOR), 0.02);
+      d[kk + i] = Math.min(Math.max(this.config.maxR[i] ?? 0, MIN_R_FLOOR), MAX_REACH);
+      d[2 * kk + i] = Math.min(Math.max(this.config.minR[i] ?? 0, MIN_R_FLOOR), R_CAP);
     }
     this.ctx.device.queue.writeBuffer(this.interactionBuf, 0, d);
   }
@@ -1578,7 +1631,7 @@ export class PlifeSim implements Sim, ModTarget {
     f[20] = Math.max(cfg.population.riseTau, 1e-3);
     f[21] = Math.max(cfg.population.fallTau, 1e-3);
     u[22] = this.splashCount >>> 0;
-    u[23] = 0;
+    u[23] = this.stencil() >>> 0;
     ctx.device.queue.writeBuffer(this.globalsBuf, 0, this.globalsBytes);
   }
 
@@ -1737,15 +1790,16 @@ function readBool(v: unknown, fallback: boolean): boolean {
   return typeof v === 'boolean' ? v : fallback;
 }
 
-/** A radius band, clamped into the grid's legal range with `lo <= hi` restored. */
+/** A radius band, clamped into `[MIN_R_FLOOR, cap]` with `lo <= hi` restored. */
 function readBand(
   raw: unknown,
   dst: { lo: number; hi: number },
   def: { lo: number; hi: number },
+  cap: number,
 ): void {
   const o = plainObject(raw);
-  const lo = clampNum(o['lo'], def.lo, MIN_R_FLOOR, R_CAP);
-  const hi = clampNum(o['hi'], def.hi, MIN_R_FLOOR, R_CAP);
+  const lo = clampNum(o['lo'], def.lo, MIN_R_FLOOR, cap);
+  const hi = clampNum(o['hi'], def.hi, MIN_R_FLOOR, cap);
   dst.lo = Math.min(lo, hi);
   dst.hi = Math.max(lo, hi);
 }

@@ -174,9 +174,17 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
   let cx = i32(clamp(floor(here.x / max(g.cellW, 1e-6)), 0.0, f32(g.gridW - 1u)));
   let cy = i32(clamp(floor(here.y / max(g.cellH, 1e-6)), 0.0, f32(g.gridH - 1u)));
 
+  // Reach cap, hoisted: the search window is (2s+1)² cells wide, so the furthest
+  // a pair can be and still be found is s cell widths. Clamped against the LIVE
+  // cell size and the LIVE stencil from Globals rather than any mirrored
+  // constant — a mirrored R_CAP went stale here once, and now there are two
+  // numbers that could.
+  let stencil = i32(max(g.nearStencil, 1u));
+  let rcap = f32(stencil) * min(g.cellW, g.cellH);
+
   var force = vec2f(0.0);
-  for (var dy = -1; dy <= 1; dy = dy + 1) {
-    for (var dx = -1; dx <= 1; dx = dx + 1) {
+  for (var dy = -stencil; dy <= stencil; dy = dy + 1) {
+    for (var dx = -stencil; dx <= stencil; dx = dx + 1) {
       // Toroidal cell wrap. The double modulo is the portable way to get a
       // non-negative remainder out of a signed index.
       let nx = ((cx + dx) % gw + gw) % gw;
@@ -195,14 +203,9 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
         let pair = si * k + sj;
 
         // The receiver's radiusScale scales the whole row, so "this species
-        // reaches further" is one number rather than K edits. Capped at R_CAP
-        // because the grid search cannot see past one cell.
-        // Reach is clamped to the live grid cell size, not to a mirrored
-        // constant: the 3×3 search only sees one cell width in each direction,
-        // so any reach beyond min(cellW, cellH) would silently truncate at the
-        // search window. (A mirrored R_CAP constant went stale here once when
-        // the config value moved — the cell size in Globals cannot.)
-        let rcap = min(g.cellW, g.cellH);
+        // reaches further" is one number rather than K edits. Capped at the
+        // stencil's reach (see `rcap` above): a radius past the search window is
+        // not a longer reach, it is a silently truncated one.
         let rmax = min(interaction[kk + pair] * radiusScale, rcap);
         let d0 = q.pos - p.pos;
         let d = wrapDelta(d0, world);

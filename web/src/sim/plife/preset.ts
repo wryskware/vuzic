@@ -52,6 +52,7 @@
  */
 import { CLASS_FAST, CLASS_MEDIUM, CLASS_SLOW, type ModGroup, type ModSpec } from '../../mapping/modspec.ts';
 import {
+  MAX_REACH,
   MIN_R_FLOOR,
   PRIMARY_COUNT,
   R_CAP,
@@ -180,6 +181,14 @@ const SPECIES_SLOTS: readonly SpeciesSlot[] = [
   },
   // Reach, force and friction are all rates, so they move multiplicatively:
   // ±0.5 in ln space is ×0.6…×1.65 and reads the same at either end of the range.
+  //
+  // radiusScale's ×0.5…×2 lo/hi is the envelope `MAXR_BOUND`'s widening is
+  // calibrated against, and it is itself unchanged by that widening: `hi` 2 still
+  // sits well under the hard `MAX_RADIUS_SCALE` of 3, and the effective radius it
+  // produces (`maxR · radiusScale`) is clamped by the shader either way. `half`
+  // stays 0.35 for the same v1 caution documented on `MAXR_BOUND`, plus one
+  // reason of its own: this multiplies the whole maxR *row*, so the two
+  // excursions compound on the product.
   {
     name: 'radiusScale',
     cls: CLASS_MEDIUM,
@@ -304,17 +313,58 @@ const ATTRACTION_BOUND: Bound = {
 };
 
 /**
- * The outer radius of a pair's tent. Multiplicative and narrow: the interesting
- * range is under one octave (8 mm to 50 mm of world), and the effective value is
- * capped at R_CAP in the shader anyway because the neighbour grid's cell size is
- * derived from it.
+ * The outer radius of a pair's tent.
+ *
+ * Two different ceilings, and the gap between them is deliberate:
+ *
+ * - **hard `max` = `MAX_REACH`** (0.06, the stencil-3 reach). This is what a
+ *   file may contain and what hand tuning may reach for. It grew with the near
+ *   stencil: with the cell size and the reach cap decoupled, a 0.04 radius is a
+ *   legal, useful, *authored* choice rather than a grid violation.
+ * - **`mod` hi = `MAX_REACH` too** (user call, 2026-08-09) — and this one is not
+ *   about how far the *music* moves the slot. `computeTarget` clamps its output
+ *   into `[lo, hi]`, and rebase-on-edit puts the base wherever the slider was
+ *   dragged, so a stale `hi` of 0.02 would drag every hand-tuned large radius
+ *   back under the old cap on the first modulated tick. The range is the
+ *   permission envelope for the **base**, not only for the excursion, and it has
+ *   to follow the hard bound or hand tuning silently stops sticking.
+ *
+ * `lo` stays at 0.008 and the shape stays multiplicative: a fixed *additive*
+ * move would be a rounding error at 0.06 and a total rewrite at 0.008.
+ *
+ * ## Why `half` is 0.25 and not ln 2
+ *
+ * The author's prior sims never modulated radii at all, so a music-driven radius
+ * is untested territory here — 0.25 in ln space is a full-tanh swing of
+ * ×0.78…×1.28 and a typical one (|tanh| ≈ 0.55) of ×0.87…×1.15. Radii *breathing*
+ * with the music, not sweeping with it.
+ *
+ * That is a deliberate v1 caution with a stated target, not timidity: the known
+ * calibration for radius-bearing parameters is a ×0.5…×2 envelope (`half` ≈ 0.7,
+ * which is what `radiusScale`'s own lo/hi already describe). Grow into it once
+ * modulated reach has been watched for a while and looks good.
+ *
+ * **Coupling worth knowing before touching this number:** `ModSpec.half` is also
+ * the explorer's per-slot mutation scale (`search.ts` perturbs by `σ · half`), so
+ * a conservative half means the 9-up explores radii gently too. Acceptable for
+ * v1 — big radius moves come from the hand sliders, which rebase the base — but
+ * divorcing music-excursion scale from explorer-mutation scale is the obvious
+ * next ask, and it is one field on `ModSpec`, not a redesign.
+ *
+ * One honesty note for the workbench: the shader clamps the effective radius to
+ * `nearStencil × cell` at runtime, so at stencil 1 or 2 the top of this range is
+ * unreachable and the blue mod-range band drawn on those sliders shows more
+ * travel than the current stencil can realise. The saturation is harmless (a
+ * radius past the search window is just truncated), and the alternative — a
+ * modulation range that changes shape with a structural knob — would make a
+ * saved mapping mean different things in two sessions.
  */
 const MAXR_BOUND: Bound = {
   name: 'Rmax',
   cls: CLASS_SLOW,
   min: MIN_R_FLOOR,
-  max: R_CAP,
-  mod: mul('structure', 0.008, R_CAP, 0.2, 0.25),
+  max: MAX_REACH,
+  mod: mul('structure', 0.008, MAX_REACH, 0.25, 0.25),
 };
 
 /**

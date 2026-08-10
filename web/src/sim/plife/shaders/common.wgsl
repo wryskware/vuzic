@@ -26,13 +26,14 @@ const TAU: f32 = 6.28318530718;
 //   3 gridH          8 maxParticles   13 exposure         18 feedbackAmount
 //   4 cellW          9 seed           14 respawnFraction  19 feedbackZoom
 //
-//  20 riseTau       21 fallTau        22 splashCount      23 pad0
+//  20 riseTau       21 fallTau        22 splashCount      23 nearStencil
 struct Globals {
   // World space is toroidal, h = 1 and w = aspect, fixed for the sim's life.
   worldW: f32,
   worldH: f32,
   // Neighbour grid. cellW/cellH are world/grid on each axis and are guaranteed
-  // >= R_CAP, which is what makes the 3x3 search in step.wgsl complete.
+  // >= R_CAP; the (2s+1)^2 search in step.wgsl then finds every pair within
+  // s * min(cellW, cellH), which is exactly where reach is clamped.
   gridW: u32,
   gridH: u32,
 
@@ -75,7 +76,12 @@ struct Globals {
   fallTau: f32,
   // live entries in the splash buffer; 0 skips the splash pass entirely
   splashCount: u32,
-  pad0: u32,
+  // Cells searched in each direction by the force pass: the loop runs
+  // dx,dy in [-s, +s], so the reach cap is s * min(cellW, cellH). Written by the
+  // CPU already clamped to 1..MAX_NEAR_STENCIL *and* to (grid - 1) / 2, so the
+  // wrapped search window can never visit the same cell twice and double-count a
+  // pair on a small grid.
+  nearStencil: u32,
 }
 
 // One impulse hotspot disc, in WORLD units (physarum's equivalent struct is in
@@ -152,8 +158,8 @@ fn wrapWorld(p: vec2f, world: vec2f) -> vec2f {
 }
 
 /**
- * Shortest toroidal offset. Every effective radius is <= R_CAP, which is far
- * under half the world on both axes, so a single shift per axis is exact.
+ * Shortest toroidal offset. Every effective radius is <= MAX_REACH (0.06), which
+ * is far under half the world on both axes, so a single shift per axis is exact.
  *
  * This is the fix for the classic seam bug where *positions* wrap but *forces*
  * do not: without it, two particles either side of the wrap read as a world

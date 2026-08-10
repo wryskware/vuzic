@@ -43,6 +43,7 @@ import {
   MAX_BRIGHTNESS,
   MAX_FRICTION,
   MAX_RADIUS_SCALE,
+  MAX_REACH,
   MAX_SIZE,
   MAX_STRETCH,
   MIN_R_FLOOR,
@@ -322,7 +323,10 @@ test('clampVector confines every slot to its authored hard range', () => {
   assert.equal(max[speciesSlot(1, 'radiusScale')], MAX_RADIUS_SCALE);
   for (let o = 0; o < K * K; o++) {
     assert.equal(min[X_BASE + o], MIN_R_FLOOR, `${NAMES[X_BASE + o]} floor`);
-    assert.equal(max[X_BASE + o], R_CAP, `${NAMES[X_BASE + o]} may exceed the grid cell size`);
+    // The outer radius runs to MAX_REACH (the widest near stencil's reach), not
+    // to the grid cell size — those became different numbers when the stencil
+    // decoupled them. The runtime cap is the shader's, against the live stencil.
+    assert.equal(max[X_BASE + o], MAX_REACH, `${NAMES[X_BASE + o]} may exceed the reach cap`);
     assert.equal(min[N_BASE + o], MIN_R_FLOOR, `${NAMES[N_BASE + o]} floor`);
     assert.ok((max[N_BASE + o] as number) <= R_CAP, `${NAMES[N_BASE + o]} ceiling`);
   }

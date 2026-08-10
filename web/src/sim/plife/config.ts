@@ -34,10 +34,9 @@
  * World space is `h = 1`, `w = aspect`, toroidal. Every radius, size and speed
  * below is in those units, so a "0.02" radius is 2% of the screen height and
  * means the same thing on any canvas. The grid the neighbour search uses has
- * cells of at least `R_CAP`, which is why `R_CAP` is simultaneously the hard cap
- * on any effective interaction radius and the grid's cell size: a pair further
- * apart than one cell would be missed by the 3×3 search, so the cap is not a
- * taste knob, it is a correctness invariant.
+ * cells of at least `R_CAP`; how far the search reaches is `nearStencil` cells,
+ * so the two numbers are no longer the same thing — see `R_CAP` and
+ * `PlifeFieldConfig` below.
  */
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
 import type { Palette } from '../palette.ts';
@@ -46,23 +45,50 @@ import type { Palette } from '../palette.ts';
 export const MAX_SUBSTEPS = 4;
 
 /**
- * Hard cap on any effective interaction radius — `maxR[i][j] · radiusScale[i]`
- * is clamped to this in the shader — **and** the neighbour grid's cell size.
+ * The neighbour grid's **cell size** — and only that, since the near stencil
+ * landed. It used to be the interaction cap as well; the two have been split.
  *
- * The two are the same number on purpose. The force pass searches the 3×3 cell
- * neighbourhood, which finds every pair within one cell width; if a modulated
- * radius could exceed the cell size the search would silently start missing
- * pairs and the field would develop invisible seams. Raising this is therefore
- * a change to the grid, not to a slider.
+ * What each number is now:
  *
- * It is also the frame-time lever. The force pass tests every candidate in the
- * 3×3 neighbourhood, so the per-particle cost goes as R_CAP² · density; the
- * first build shipped 0.05 and spent ~4,400 candidate tests per particle per
- * substep at the default density, which did not hold frame rate. 0.02 is ~6×
- * fewer candidates for a reach that is still a fifth of the screen height at
- * radiusScale's ceiling.
+ *   `R_CAP`         the grid's cell size. An *occupancy* choice: it sets how
+ *                   many particles land in one cell list, which is what the
+ *                   force pass's inner loop iterates. Smaller cells mean shorter
+ *                   lists and more of them.
+ *   `nearStencil`   how many cells in each direction the force pass searches
+ *                   (`PlifeFieldConfig`). The reach cap is `stencil · cell`.
+ *
+ * The correctness invariant is unchanged in substance: a pair further apart than
+ * the search window is silently missed, so *some* cap must equal the window. It
+ * is now `stencil × cell` rather than `1 × cell`, clamped in the shader against
+ * the live cell size from Globals so it can never go stale.
+ *
+ * Why keep the cell at 0.02 rather than growing it with reach: cost. The force
+ * pass tests every candidate in the (2s+1)² neighbourhood, so per-particle work
+ * goes as (reach)² · density either way — but a *larger cell* wastes a fixed
+ * fraction of that work on candidates well outside the reach (the corners of the
+ * search window), while a *smaller cell with a wider stencil* keeps the searched
+ * area a tighter fit around the actual radius. 0.02 was measured as the right
+ * occupancy for this particle count; the stencil is what buys reach on top of it.
  */
 export const R_CAP = 0.02;
+
+/**
+ * Widest near stencil the panel and the loader allow. 3 cells ≈ 0.06 world, i.e.
+ * 6% of the screen height, at ~5.4× the pair work of a 1-cell search (49 cells
+ * vs 9). Higher is not forbidden by anything structural — it is a frame-time
+ * judgement, and it is also the point past which the far-field lane (phase 2) is
+ * simply a better way to buy scale than more brute-force pairs.
+ */
+export const MAX_NEAR_STENCIL = 3;
+
+/**
+ * Hard ceiling on any effective interaction radius, `maxR[i][j] · radiusScale[i]`
+ * — the widest stencil's reach. This is the bound a *file* may contain and the
+ * bound the panel sliders expose; the shader still clamps to the reach of the
+ * stencil actually in force, so dialling the stencil down never silently starts
+ * missing pairs.
+ */
+export const MAX_REACH = R_CAP * MAX_NEAR_STENCIL;
 
 /** Floor on the hard-core radius. Below this the repulsion slope explodes. */
 export const MIN_R_FLOOR = 0.002;
@@ -261,6 +287,40 @@ export const MACRO_LABELS: readonly { key: keyof PlifeMacros; label: string }[] 
 ];
 
 /**
+ * How far the two force lanes reach. Structural — outside θ, like the macro rig
+ * and the population lane, and for the same reason: this is a decision about
+ * what *kind* of world this is (how much of it one particle can feel), not a
+ * quantity the music should be sweeping bar by bar.
+ *
+ * Not to be confused with the interaction *matrix*, which is θ and is drawn from
+ * the seed. This block is the geometry the matrix acts through.
+ *
+ * seam: a θ/modulation lane for the far knobs is deliberately future work. If it
+ * ever lands, `farGain` and `farScale` move into `preset.ts`'s slot table and out
+ * of here; `nearStencil` does not, because it changes the *search window* and a
+ * modulated search window is a modulated correctness bound.
+ */
+export interface PlifeFieldConfig {
+  /**
+   * Cells searched in each direction by the force pass, 1..`MAX_NEAR_STENCIL`.
+   * Effective near reach cap is `nearStencil × R_CAP` — 0.02 / 0.04 / 0.06.
+   */
+  nearStencil: number;
+}
+
+export function defaultPlifeField(): PlifeFieldConfig {
+  return {
+    // 2, not 1. A 0.02 reach is 2% of screen height, which is about one filigree
+    // strand: at that scale the sim can only make *texture*, and every structure
+    // larger than a strand had to emerge from many strands agreeing. 0.04 is the
+    // smallest reach at which a cluster is a thing the force law knows about
+    // rather than an accident, and it costs 2.8× the pair work of 1 (25 cells vs
+    // 9), which measured fine at this particle count.
+    nearStencil: 2,
+  };
+}
+
+/**
  * How a seed *draws* the interaction matrix and the radii.
  *
  * These are **generation** settings, not parameters: they act once, at reroll
@@ -332,6 +392,8 @@ export interface PlifeConfig {
   population: PlifePopulationConfig;
   /** how a seed draws the matrix and radii. Generation-time only; outside θ. */
   matrixGen: MatrixGenConfig;
+  /** how far the near (grid) lane reaches. Structural; outside θ. */
+  field: PlifeFieldConfig;
   /** K. 8 by design — see the partition note at the top of this file. */
   speciesCount: number;
   /** pool size; the per-species segment is floor(maxParticles / K) */
@@ -614,6 +676,7 @@ export function defaultPlifeConfig(speciesCount = 8): PlifeConfig {
     macros: defaultPlifeMacros(),
     population: defaultPlifePopulation(),
     matrixGen: defaultMatrixGen(),
+    field: defaultPlifeField(),
     speciesCount: k,
     // 2^18. See the perf note in plife.ts: this is the single biggest lever on
     // frame time, because the force pass cost is (alive particles) × (candidates

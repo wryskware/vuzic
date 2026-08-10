@@ -4,8 +4,9 @@
 // Why a grid at all: the force pass is O(alive x neighbours) and the only thing
 // that keeps "neighbours" from meaning "every other particle" is a spatial
 // index. The grid's cell size is >= R_CAP on both axes (see plife.ts's
-// chooseGrid), which is exactly the condition that makes the 3x3 cell search in
-// step.wgsl find every pair within any legal interaction radius.
+// chooseGrid) and the force pass searches `nearStencil` cells in each direction,
+// which together are exactly the condition that makes the search find every pair
+// within any legal interaction radius (reach is clamped to stencil x cell).
 //
 // The buffers are cleared with encoder.clearBuffer rather than a clear pipeline —
 // two zero-fills of a few kilobytes each, with no shader, no bind group and no

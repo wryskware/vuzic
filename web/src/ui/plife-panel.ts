@@ -41,6 +41,9 @@ import {
   defaultPlifeMacros,
   MACRO_LABELS,
   MACRO_RANGE,
+  MAX_NEAR_STENCIL,
+  MAX_REACH,
+  R_CAP,
   type PlifeSpeciesConfig,
 } from '../sim/plife/config';
 import type { PlifeSim } from '../sim/plife/plife';
@@ -352,6 +355,32 @@ export function createPlifePanel(
     maxSpeed.max,
   );
 
+  // How far the near lane reaches, in grid cells. Structural, outside θ, and the
+  // one control on this tab that changes what the force pass *searches* rather
+  // than what it finds — which is why it states its own reach in the label
+  // instead of leaving "2" to be decoded. Persisted through `persistExtras` like
+  // every other extras-block knob.
+  //
+  // Costed rather than free: the search window is (2s+1)² cells, so 3 is 5.4× the
+  // pair work of 1. The label says cells and world units; the frame counter says
+  // the rest.
+  const reach = tabs.sim.addFolder({ title: 'reach  (structural — never modulated)' });
+  const stencilLabel = (): string =>
+    `near stencil  (reach = s × ${R_CAP} = ${sim.nearReach.toFixed(3)})`;
+  const stencilBinding = reach.addBinding(config.field, 'nearStencil', {
+    min: 1,
+    max: MAX_NEAR_STENCIL,
+    step: 1,
+    label: stencilLabel(),
+  });
+  stencilBinding.on('change', () => {
+    // The label carries the derived reach, and `sim.nearReach` only moves when
+    // this slider does — so it is re-read here rather than in `refresh()`, where
+    // it would rebuild a string sixty times a second to say the same thing.
+    stencilBinding.label = stencilLabel();
+    persistExtras();
+  });
+
   const speciesRoot = tabs.sim.addFolder({
     title: opts.workbench ? 'species  (blue band = where the music can take it)' : 'species',
   });
@@ -401,8 +430,13 @@ export function createPlifePanel(
   }).on('change', persistExtras);
   gen.addBinding(config.matrixGen.rMin, 'lo', { min: 0.002, max: 0.01, step: 0.0005, label: 'r-min lo' }).on('change', persistExtras);
   gen.addBinding(config.matrixGen.rMin, 'hi', { min: 0.002, max: 0.01, step: 0.0005, label: 'r-min hi' }).on('change', persistExtras);
-  gen.addBinding(config.matrixGen.rMax, 'lo', { min: 0.005, max: 0.02, step: 0.0005, label: 'r-max lo' }).on('change', persistExtras);
-  gen.addBinding(config.matrixGen.rMax, 'hi', { min: 0.005, max: 0.02, step: 0.0005, label: 'r-max hi' }).on('change', persistExtras);
+  // The outer-radius band runs to MAX_REACH, not to the cell size: this is the
+  // hand-tuning path to structures larger than one filigree strand, and it is
+  // only usable because the near stencil decoupled reach from the grid. Drawing
+  // above the *current* stencil's reach is legal and simply saturates — the
+  // shader truncates it — so raise the stencil first and the band second.
+  gen.addBinding(config.matrixGen.rMax, 'lo', { min: 0.005, max: MAX_REACH, step: 0.0005, label: 'r-max lo' }).on('change', persistExtras);
+  gen.addBinding(config.matrixGen.rMax, 'hi', { min: 0.005, max: MAX_REACH, step: 0.0005, label: 'r-max hi' }).on('change', persistExtras);
   if (opts.workbench) {
     const modulator = opts.workbench.modulator;
     // A workbench *reroll* already draws a fresh matrix — a new seed is a new
