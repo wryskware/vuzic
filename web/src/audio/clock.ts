@@ -15,6 +15,12 @@ export interface AudioClockOptions {
    * instead, so a timeline without a rendered audio file still plays.
    */
   audioUrl?: string;
+  /**
+   * How to fetch that audio. Defaults to `fetch`; a server track passes the
+   * Cache-API read-through so its 40 MB of WAV is stored on first play and
+   * answered locally afterwards, including with the server gone.
+   */
+  fetcher?: typeof fetch;
 }
 
 /** Which buffer the transport ended up playing. */
@@ -32,6 +38,7 @@ export class AudioClock {
   private readonly maxTicksPerFrame: number;
   private readonly source: ClickTrackSource;
   private readonly audioUrl: string | null;
+  private readonly fetcher: typeof fetch;
 
   private ctx: AudioContext | null = null;
   private gain: GainNode | null = null;
@@ -55,6 +62,9 @@ export class AudioClock {
     this.secondsPerTick = opts.secondsPerTick ?? DEFAULT_TICK;
     this.maxTicksPerFrame = opts.maxTicksPerFrame ?? 8;
     this.audioUrl = opts.audioUrl ?? null;
+    // Bound, because it is stored on `this` and called as `this.fetcher(...)`:
+    // native `fetch` throws "Illegal invocation" if its receiver is not `window`.
+    this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
   }
 
   get isPlaying(): boolean {
@@ -110,7 +120,7 @@ export class AudioClock {
    */
   preload(): void {
     if (this.encoded || this.audioUrl === null) return;
-    this.encoded = fetch(this.audioUrl)
+    this.encoded = this.fetcher(this.audioUrl)
       .then((res) => {
         // The dev server answers a missing file with index.html at 200, so "not
         // an HTML page" is the real test for "the track has audio".

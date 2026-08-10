@@ -24,6 +24,7 @@ import {
   type SliderParams,
 } from './mod-fill';
 import { addRenderFolder } from './render-folder';
+import { createTrackFolder, type TrackPanelHost } from './track-panel';
 import { createWorkbench, type WorkbenchHandle, type WorkbenchHost } from './workbench';
 
 type Folder = FolderApi;
@@ -137,6 +138,8 @@ export function createPanel(
     impulses?: ImpulseEngine;
     /** omit to hide the explorer folder entirely */
     explorer?: ExplorerPanelHost;
+    /** omit to hide the track picker entirely */
+    tracks?: TrackPanelHost;
   },
 ): PanelHandle {
   const config = sim.config;
@@ -173,6 +176,11 @@ export function createPanel(
     opts.explorer && tabs.explore ? createExplorePanel(tabs.explore, opts.explorer) : null;
 
   // ── play ───────────────────────────────────────────────────────────────────
+  // The track picker is the first thing on the tab: it is the one control here
+  // that belongs to neither the sim nor the mapping, and picking a song comes
+  // before shaping what it drives.
+  if (opts.tracks) createTrackFolder(tabs.play, opts.tracks);
+
   // The world seed is created here, above the macros, rather than by the
   // workbench — the workbench fills it in. Ordering is mount order in tweakpane,
   // and this is the one folder that has to sit above a folder the panel owns.

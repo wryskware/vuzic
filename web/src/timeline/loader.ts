@@ -54,12 +54,22 @@ function validate(m: TimelineManifest): number {
   return cursor;
 }
 
-export async function loadTimeline(baseUrl: string): Promise<Timeline> {
+/**
+ * `fetcher` exists so a track can come from somewhere other than the bundle
+ * without this function knowing where. Bundled timelines pass plain `fetch`;
+ * server ones pass the Cache-API read-through in `cache.ts`, which is the whole
+ * mechanism behind "a track you have loaded before still loads with the server
+ * down". Nothing else about the load differs.
+ */
+export async function loadTimeline(
+  baseUrl: string,
+  fetcher: typeof fetch = fetch,
+): Promise<Timeline> {
   const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
 
   const [manifestRes, binRes] = await Promise.all([
-    fetch(`${base}timeline.json`),
-    fetch(`${base}timeline.bin`),
+    fetcher(`${base}timeline.json`),
+    fetcher(`${base}timeline.bin`),
   ]);
   if (!manifestRes.ok) throw new Error(`timeline.json: HTTP ${manifestRes.status}`);
   if (!binRes.ok) throw new Error(`timeline.bin: HTTP ${binRes.status}`);

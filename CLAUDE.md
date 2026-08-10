@@ -37,12 +37,21 @@ more than reactivity.
 
 ## Deliberately out of scope for v1
 
-Multiple songs, in-browser analysis, user-uploaded music, audience-facing
-interactive controls, video export, sharing links. All are plausible later;
-none are v1. Keep the seams clean enough that they remain possible, but do not
-build for them. (The author-facing workbench is *not* in this list — it is in
-scope and load-bearing. Multiple simulations left this list in plan.md
-Revision 5: physarum and particle life both ship, selected by `?sim=`.)
+In-browser analysis, audience-facing interactive controls, video export, sharing
+links. All are plausible later; none are v1. Keep the seams clean enough that
+they remain possible, but do not build for them. (The author-facing workbench is
+*not* in this list — it is in scope and load-bearing. Multiple simulations left
+this list in plan.md Revision 5: physarum and particle life both ship, selected
+by `?sim=`.)
+
+**Multiple songs and user-uploaded music left this list on 2026-08-09**, at the
+user's direction. There is a track catalog and a picker in the play tab, a
+second real track (`pink-loop`), and `terrarium-server` — the offline pipeline
+behind a local HTTP API, so a wav dropped into the panel comes back as a track.
+The distinction the original line was protecting still holds: analysis is still
+offline and still runs the same pipeline, it just no longer requires a terminal.
+The server is optional, the browser probes for it once, and everything works
+without it.
 
 ## Boundaries
 

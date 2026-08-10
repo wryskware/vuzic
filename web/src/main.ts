@@ -21,6 +21,8 @@ import { defaultPlifeConfig } from './sim/plife/config';
 import { PlifeSim } from './sim/plife/plife';
 import { resolveSeed } from './sim/seed';
 import type { Sim } from './sim/types';
+import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
+import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
 import { loadTimeline } from './timeline/loader';
 import { TimelineSampler, type FeaturesFrame } from './timeline/sampler';
 import type { ExplorerPanelHost } from './ui/explore-panel';
@@ -94,6 +96,23 @@ function requestedTrack(): string {
 }
 
 /**
+ * Change track by changing the URL and reloading.
+ *
+ * The timeline is threaded into the sampler, the clock, the driver bank, the
+ * modulator, the impulse engine and the sim itself, each built from it exactly
+ * once at startup. Swapping it live would mean a second construction path for
+ * every one of those, kept in step with the first forever, to save a reload that
+ * costs under a second on localhost and comes back with the autosaved mapping
+ * restored anyway. Every other parameter is preserved, so `?seed=` and `?sim=`
+ * survive the switch — "same world, different song" is one click.
+ */
+function switchTrack(id: string): void {
+  const url = new URL(location.href);
+  url.searchParams.set('track', id);
+  location.href = url.toString();
+}
+
+/**
  * `?sim=` picks the simulation, the same way `?track=` picks the timeline. It is
  * also the persistence key (`ModTarget.simId`), so an unknown value has to be
  * refused rather than passed through — otherwise `?sim=typo` would quietly start
@@ -125,18 +144,45 @@ function sameTheta(a: Float64Array, b: Float64Array): boolean {
 async function main(): Promise<void> {
   const { seed, pinned } = resolveSeed();
 
-  const timelineUrl = (id: string): string => `${import.meta.env.BASE_URL}timelines/${id}`;
-  let track = requestedTrack();
+  // Bundled tracks, whatever a local analysis server offers, and whatever is
+  // still in the offline cache from a previous session — one list, resolved
+  // before anything is built, because the timeline is a construction argument to
+  // half the app. The probe is short and its failure is normal.
+  const catalog = await buildCatalog();
+  const fallbackEntry: TrackEntry = {
+    id: FALLBACK_TRACK,
+    title: FALLBACK_TRACK,
+    duration: 0,
+    version: '',
+    base: `${import.meta.env.BASE_URL}timelines/${FALLBACK_TRACK}`,
+    hasAudio: false,
+    source: 'bundled',
+  };
+  const pick = (id: string): TrackEntry =>
+    catalog.tracks.find((t) => t.id === id) ?? {
+      ...fallbackEntry,
+      id,
+      title: id,
+      base: `${import.meta.env.BASE_URL}timelines/${id}`,
+    };
+
+  let entry = pick(requestedTrack());
+  let track = entry.id;
   let timeline;
   try {
-    timeline = await loadTimeline(timelineUrl(track));
+    // A server track whose content moved is evicted before the read-through
+    // below can answer from a stale copy of half of it.
+    if (entry.source !== 'bundled') await invalidateIfStale(entry);
+    timeline = await loadTimeline(entry.base, fetcherFor(entry));
+    if (entry.source !== 'bundled') rememberCachedTrack(entry);
   } catch (err) {
     // A missing or broken timeline must not dead-end the app: the synthetic one
     // ships with the repo and always loads.
     if (track === FALLBACK_TRACK) throw err;
     console.warn(`timeline "${track}" failed to load; falling back to "${FALLBACK_TRACK}"`, err);
-    track = FALLBACK_TRACK;
-    timeline = await loadTimeline(timelineUrl(track));
+    entry = pick(FALLBACK_TRACK);
+    track = entry.id;
+    timeline = await loadTimeline(entry.base, fetcherFor(entry));
   }
   const sampler = new TimelineSampler(timeline, SECONDS_PER_TICK);
 
@@ -146,7 +192,11 @@ async function main(): Promise<void> {
       beats: timeline.manifest.beats,
       downbeats: timeline.manifest.downbeats,
     },
-    { secondsPerTick: SECONDS_PER_TICK, audioUrl: `${timelineUrl(track)}/audio.wav` },
+    {
+      secondsPerTick: SECONDS_PER_TICK,
+      audioUrl: `${entry.base}/audio.wav`,
+      fetcher: fetcherFor(entry),
+    },
   );
   // Fetch ahead of the first gesture; the click-track fallback costs nothing if
   // this 404s.
@@ -646,6 +696,13 @@ async function main(): Promise<void> {
       },
       impulses,
       explorer: explorerHost,
+      tracks: {
+        tracks: catalog.tracks,
+        current: track,
+        serverUp: catalog.server,
+        serverCount: catalog.serverCount,
+        switchTo: switchTrack,
+      },
       workbench: {
         sim,
         modulator,
