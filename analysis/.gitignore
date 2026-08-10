@@ -13,3 +13,8 @@ tracks/*
 *.flac
 *.m4a
 *.ogg
+
+# `uv run` writes this; the documented workflow is `uv venv` + `uv pip install -e`,
+# which never reads it, and it can only pin the light deps -- the model extras are
+# installed by hand into a CUDA env. A lockfile nothing consults is noise.
+uv.lock

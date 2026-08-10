@@ -349,10 +349,72 @@ into its activations). `stages/structure.py` now seeds `random`, `numpy` and
 MuQ inference on CUDA turned out to be bit-reproducible run to run without any
 help: `embedding.bin` matched exactly even before the seeding fix.
 
+## The server
+
+`terrarium-server` is the same pipeline behind an HTTP API, so the web workbench
+can hand it a file and then load the result exactly the way it loads a track
+that shipped in `data/timelines/`. It is not on the runtime path: the browser
+talks to it twice per track (list, then fetch) and works with it absent.
+
+```bash
+cd analysis
+uv run --extra server terrarium-server            # http://127.0.0.1:8765
+uv run --extra server terrarium-server --help     # --host --port --data-dir --strict
+```
+
+It writes into `<repo>/data/timelines/<slug>/` by default — the directory
+`web/scripts/sync-data.mjs` copies from — so an uploaded track is a real track:
+`npm run sync-data` bundles it like any other, and until then the web side
+fetches it from the server.
+
+| route | |
+|---|---|
+| `POST /analyze` | multipart `file=` a `.wav` or `.mp3` → `{jobId, trackId, …}`; 415 on anything else, 413 over 256 MB |
+| `GET /jobs/{id}` | `{status: queued\|running\|done\|error, stage, progress, message, error}` |
+| `GET /tracks` | `{tracks: [{id, title, duration, frames, tempo, events, hasAudio, version}]}` |
+| `GET /tracks/{id}/{file}` | `timeline.json`, `timeline.bin`, `audio.wav`, `run.json` — nothing else |
+
+- **Polling, not a websocket.** A job is one long burst with six coarse
+  transitions in it and the client is a panel that redraws at human speed.
+  Progress is read off the log the stages already write (`"<stage>: …"`), which
+  is why no callback had to be threaded through `pipeline.run`.
+- **`version` is a content hash** of `timeline.json` + `timeline.bin`, not an
+  mtime. It is what the browser's offline cache keys on, and re-running the
+  pipeline with the same seed produces identical bytes — an mtime would evict a
+  multi-megabyte track for a run that changed nothing.
+- **One job at a time.** Both heavy stages want the whole GPU.
+- **Uploaded ids are slugs** (`"Pink Loop (2).wav"` → `pink-loop-2`), unique by
+  suffix, and a re-upload never overwrites an existing track — the browser may
+  be holding it in cache.
+- **CORS** allows `http://localhost:<any>` and `127.0.0.1`, because vite moves to
+  5174/5175 when 5173 is taken. Dev-only, and the bind is localhost by default.
+
+### Where to run it
+
+Wherever the model extras are, which on this machine means WSL2 (see the Windows
+note above). The Windows side has the light deps only, so a job started there
+skips every model stage and produces a timeline of zeros; `--strict` turns that
+into a failed job instead. Pointing the WSL2 server at the Windows repo works
+and is what was used to verify this:
+
+```bash
+wsl -d Ubuntu
+cd ~/lmt/analysis && . .venv/bin/activate
+uv pip install -e ".[dev,server]"
+# 0.0.0.0, not 127.0.0.1: WSL2's localhost forwarding only picks up a listener
+# bound to all interfaces. The browser on Windows then reaches it at localhost.
+terrarium-server --host 0.0.0.0 --port 8765 \
+    --data-dir /mnt/c/Users/<you>/wryskware/latent-music-terrarium/data/timelines
+```
+
+A 40 s excerpt goes queued → running → done in ~30 s that way, writing
+`timeline.json` (55 KB), `timeline.bin` (400 × 73 × 4 = 116 800 B), `run.json`
+and `audio.wav` into the track directory.
+
 ## Tests
 
 ```bash
-uv run pytest -q
+uv run --extra dev --extra server pytest -q
 ```
 
 Covers the emitter layout (against a hand-built buffer and against the shared
@@ -365,3 +427,10 @@ and its robust scale, bounded backtracking, silence and bleed producing nothing,
 dedupe, the kicks-per-beat guard, and the manifest round trip), and the
 guarantee that importing the package pulls in no model dependency. All on
 synthetic inputs — no audio, no weights, no network.
+
+The server's own tests (`test_server.py`, skipped without the `server` extra)
+cover everything around the pipeline rather than the pipeline: the slug rules
+the browser's `?track=` regex depends on, the upload gate, the served-file
+whitelist and its media types, the content-hash `version` staying put across a
+byte-identical rewrite, CORS, and the progress watcher — including that it does
+not shadow `logging.Handler.lock`, which is what deadlocked the first live run.
