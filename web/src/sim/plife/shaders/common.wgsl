@@ -13,12 +13,12 @@ const TAU: f32 = 6.28318530718;
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 //
-// 24 words = 96 bytes = 6 × 16. `pad0` is explicit rather than implicit: the
-// uniform address space would round 23 words up to 96 bytes anyway, and an
-// unnamed hole is exactly the kind of thing the TS writer drifts into. Word
-// offsets are documented because that writer (`writeGlobals` in plife.ts,
-// GLOBALS_WORDS = 24) indexes this block positionally and nothing checks the
-// two agree.
+// 28 words = 112 bytes = 7 × 16. The three `pad` words are explicit rather than
+// implicit: the uniform address space would round 25 words up to 112 bytes
+// anyway, and an unnamed hole is exactly the kind of thing the TS writer drifts
+// into. Word offsets are documented because that writer (`writeGlobals` in
+// plife.ts, GLOBALS_WORDS = 28) indexes this block positionally and nothing
+// checks the two agree.
 //
 //   0 worldW         5 cellH          10 tick             15 respawnKey
 //   1 worldH         6 speciesCount   11 dt               16 maxSpeed
@@ -27,6 +27,7 @@ const TAU: f32 = 6.28318530718;
 //   4 cellW          9 seed           14 respawnFraction  19 feedbackZoom
 //
 //  20 riseTau       21 fallTau        22 splashCount      23 nearStencil
+//  24 farOn         25 pad0           26 pad1             27 pad2
 struct Globals {
   // World space is toroidal, h = 1 and w = aspect, fixed for the sim's life.
   worldW: f32,
@@ -82,6 +83,15 @@ struct Globals {
   // wrapped search window can never visit the same cell twice and double-count a
   // pair on a small grid.
   nearStencil: u32,
+
+  // 0 = the far lane is off: the whole splat/blur chain is skipped on the CPU
+  // and the force pass does not sample the (then stale) field. A gate rather
+  // than a zero coefficient, because zero coefficients would still cost eight
+  // texture fetches per particle per substep for a guaranteed zero.
+  farOn: u32,
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
 }
 
 // One impulse hotspot disc, in WORLD units (physarum's equivalent struct is in

@@ -39,6 +39,8 @@ import { saveModulationLocal } from '../mapping/persist';
 import type { ImpulseEngine } from '../sim/impulses';
 import {
   defaultPlifeMacros,
+  FAR_GAIN_RANGE,
+  FAR_SCALE_RANGE,
   MACRO_LABELS,
   MACRO_RANGE,
   MAX_NEAR_STENCIL,
@@ -381,11 +383,38 @@ export function createPlifePanel(
     step: 1,
     label: stencilLabel(),
   });
+  // The far lane. Two knobs, both outside θ, both riding the extras block — and
+  // deliberately in the same folder as the stencil, because the stencil is σ1:
+  // it is the seam the two lanes meet at, and moving it moves the far lane's
+  // inner scale with it. That is one knob doing one job, not a coupling to
+  // remember.
+  //
+  // seam: neither of these is modulated, and a θ/modulation lane for them is
+  // explicitly future work (see `PlifeFieldConfig`). If it lands, they move into
+  // preset.ts's slot table and this folder keeps only the stencil.
+  const farGain = { min: FAR_GAIN_RANGE.min, max: FAR_GAIN_RANGE.max, step: 0.01 };
+  const farScaleLabel = (): string =>
+    `far scale σ2  (effective ${sim.farSigma.toFixed(3)})`;
+  const scaleBinding = reach.addBinding(config.field, 'farScale', {
+    min: FAR_SCALE_RANGE.min,
+    max: FAR_SCALE_RANGE.max,
+    step: 0.005,
+    label: farScaleLabel(),
+  });
   stencilBinding.on('change', () => {
-    // The label carries the derived reach, and `sim.nearReach` only moves when
-    // this slider does — so it is re-read here rather than in `refresh()`, where
-    // it would rebuild a string sixty times a second to say the same thing.
+    // Both labels carry a derived number, and both only move when a slider does
+    // — so they are rebuilt here rather than in `refresh()`, where they would
+    // rebuild a string sixty times a second to say the same thing. The stencil
+    // touches both, because it is σ1 and σ1 is σ2's floor.
     stencilBinding.label = stencilLabel();
+    scaleBinding.label = farScaleLabel();
+    persistExtras();
+  });
+  reach
+    .addBinding(config.field, 'farGain', { ...farGain, label: 'far gain  (0 = lane off)' })
+    .on('change', persistExtras);
+  scaleBinding.on('change', () => {
+    scaleBinding.label = farScaleLabel();
     persistExtras();
   });
 

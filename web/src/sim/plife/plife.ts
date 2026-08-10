@@ -58,6 +58,10 @@ import {
   defaultPlifeMacros,
   defaultPlifePaletteColor,
   defaultPlifePopulation,
+  FAR_GAIN_RANGE,
+  FAR_SCALE_MIN_RATIO,
+  FAR_SCALE_RANGE,
+  FAR_SCALE_REF,
   MACRO_RANGE,
   MAX_BRIGHTNESS,
   MAX_FRICTION,
@@ -89,6 +93,7 @@ import commonWgsl from './shaders/common.wgsl?raw';
 import gridWgsl from './shaders/grid.wgsl?raw';
 import stepWgsl from './shaders/step.wgsl?raw';
 import renderWgsl from './shaders/render.wgsl?raw';
+import farWgsl from './shaders/far.wgsl?raw';
 
 /** One thread per particle for the force pass; 64 keeps occupancy up on the long inner loop. */
 const PARTICLE_WORKGROUP = 64;
@@ -99,7 +104,80 @@ const FLOATS_PER_SPECIES = 16;
 /** must match the Splash struct in common.wgsl: two vec4f */
 const FLOATS_PER_SPLASH = 8;
 /** must match the Globals struct in common.wgsl, padding included */
-const GLOBALS_WORDS = 24;
+const GLOBALS_WORDS = 28;
+/**
+ * Height of the far lane's per-species density target, in texels; the width
+ * follows the world's aspect so the texels stay square.
+ *
+ * 144 is a deliberate *under*-sampling of the screen and that is the point: this
+ * field is only ever read through Gaussians of σ ≥ 0.02 world (≈ 3 texels), so
+ * anything finer would be blurred away in the first pass having cost bandwidth
+ * to splat. It is also fine enough that the smallest σ2 the panel allows (0.05
+ * world ≈ 7 texels) still resolves as a Gaussian rather than as a box.
+ *
+ * The whole chain is 8 textures at this size — at 16:9, 256×144×8 B × 8 = 2.4 MB,
+ * which fits in L2 on anything modern and is why a four-pass full-resolution
+ * blur is cheaper here than the pyramid it replaces.
+ */
+const FAR_HEIGHT = 144;
+/**
+ * Gaussian taps each side of centre, per blur pass. Beyond this the tap *stride*
+ * grows instead of the tap count, so the cost of the σ2 pass is bounded no
+ * matter how far the far-scale knob is dragged.
+ *
+ * Striding is safe here because the σ2 pass runs on the output of the σ1 pass:
+ * its source is already band-limited to σ1 ≥ ~3 texels, so a stride under about
+ * that is not sampling anything the source still contains. At the very top of
+ * the range (σ2 = 0.5) the stride reaches ~3.4 texels, which is marginal at
+ * stencil 1 and comfortable at 2 or 3 — and the field being estimated there is a
+ * half-screen blur, where a percent of ringing is not a thing anyone can see.
+ */
+const FAR_MAX_HALF_TAPS = 64;
+/** blur passes in the chain: σ1 X, σ1 Y, σ2-residual X, σ2-residual Y + DoG */
+const FAR_BLUR_PASSES = 4;
+/**
+ * Converts a normalised density gradient into a force in the near lane's units.
+ *
+ * This is the one empirical constant in the far lane, and it is empirical
+ * because the quantity it scales — how steep a *relative* density gradient the
+ * sim's own clustering produces — is a property of the world, not of the
+ * arithmetic. Everything else in `uploadFar` is a normalisation with a
+ * derivation.
+ *
+ * ## How it was sized, and why not the way it was planned
+ *
+ * The plan was to set `farGain` 1 at a terminal drift of 0.02–0.05 world/s
+ * (terminal speed is `|F| · forceGain · forceScale / friction`). That was
+ * measured directly — splat and blur the live particle buffer on the CPU, apply
+ * the same coefficients, take the gradient — and at 5e-4 it landed exactly in
+ * that band: median drift 0.008, p90 0.024, p99 0.057 world/s.
+ *
+ * And it was invisible. The reason is a number the budget did not account for:
+ * the near lane's own motion. Particles in a clumped world run at a median
+ * speed of 0.13–0.26 world/s, so their random walk has a diffusivity that
+ * flattens a 0.03 world/s current before it can move anything by σ2. Measured
+ * on a fixed snapshot, 6000 substeps, as the coarse-grained per-species density
+ * contrast (σ = 0.2, std/mean — it rises when a species occupies domains rather
+ * than the whole world):
+ *
+ *   farGain (at 5e-4)   ×1     ×3     ×6     ×10    ×20    ×30
+ *   contrast            0.034  0.039  0.059  0.064  0.178  0.256
+ *   speed-clamp frac    0.475  0.469  0.488  0.485  0.571  0.615
+ *
+ * Baseline contrast with the lane off is 0.034, and the near lane alone already
+ * pins ~48% of particles at `maxSpeed`, so "does the clamp saturate" cannot be
+ * the test here — the clamp is already saturated by the thing the far lane is
+ * meant to sit under.
+ *
+ * 4e-3 puts `farGain` 1 at the ×8 column: contrast roughly doubled, no measured
+ * change in clamp saturation, and a median far drift of ~0.06 world/s against a
+ * near-lane median speed of ~0.26. That preserves the *intent* of the budget —
+ * the far field is a current the near field's structures are carried on, never
+ * the thing shaping them — while being a current you can see. The panel's
+ * ceiling of 3 reaches the ×24 column, which is the strongly-segregating,
+ * clamp-pushing regime a maximum ought to be.
+ */
+const FAR_FORCE_SCALE = 4e-3;
 /** the stems channel's width, by analysis contract — bass, drums, vocals, other */
 const STEM_DIMS = 4;
 /** must match `struct Particle` in common.wgsl: two vec2f + four f32 */
@@ -223,6 +301,24 @@ export class PlifeSim implements Sim, ModTarget {
   }
 
   /**
+   * σ2 as the shader will actually use it: the knob, floored at
+   * `FAR_SCALE_MIN_RATIO × σ1`.
+   *
+   * The floor is not a taste clamp. The far term is `G_σ1*ρ − G_σ2*ρ`, and at
+   * σ2 ≤ σ1 that difference is zero or *inverted* — the lane would silently
+   * reverse its sign rather than fade out. Public so the panel can show the
+   * effective value when the two knobs disagree.
+   */
+  get farSigma(): number {
+    return Math.max(this.config.field.farScale, FAR_SCALE_MIN_RATIO * this.nearReach);
+  }
+
+  /** Is the far lane doing anything? Gates the whole chain and the shader's sampling. */
+  private farActive(): boolean {
+    return this.ready && this.config.field.farGain > 0;
+  }
+
+  /**
    * Live impulse lane, owned by the ImpulseEngine and mutated in place. Read,
    * never written, and applied *after* whatever set the base parameters — the
    * modulator's slew limiter included — so transients are never smoothed away.
@@ -269,6 +365,34 @@ export class PlifeSim implements Sim, ModTarget {
   private popPrimed = false;
   /** length K, the integer population target `uploadSpecies` last wrote */
   private readonly targetAlive: Uint32Array;
+
+  // ── far field (the density pyramid) ────────────────────────────────────────
+  //
+  // Sized from the WORLD's aspect, not the canvas's, and therefore fixed for the
+  // sim's life exactly like the neighbour grid: a canvas resize re-allocates the
+  // post surfaces and leaves these alone, because the field is a property of the
+  // world being simulated rather than of the window it is being watched through.
+  // Each sim instance owns its own set, which is what makes the explorer's nine
+  // tiles work with no extra plumbing — a tile is a PlifeSim with a smaller ctx.
+  private farW = 0;
+  private farH = 0;
+  /** the four stages, two RGBA16F textures each (K = 8 species, 4 per texture) */
+  private farSplat: GPUTexture[] = [];
+  private farTmp: GPUTexture[] = [];
+  private farNear: GPUTexture[] = [];
+  private farDog: GPUTexture[] = [];
+  private farSampler!: GPUSampler;
+  private splatPipeline!: GPURenderPipeline;
+  private blurPipeline!: GPURenderPipeline;
+  private splatBinds: GPUBindGroup[] = [];
+  private blurBinds: GPUBindGroup[] = [];
+  private blurParamBufs: GPUBuffer[] = [];
+  /** per pass: the two views it renders into, in attachment order */
+  private blurTargets: GPUTextureView[][] = [];
+  private farSplatViews: GPUTextureView[] = [];
+  private readonly blurParams = new ArrayBuffer(32);
+  private readonly blurParamsF32 = new Float32Array(this.blurParams);
+  private readonly blurParamsU32 = new Uint32Array(this.blurParams);
 
   private globalsBuf!: GPUBuffer;
   private speciesBuf!: GPUBuffer;
@@ -623,6 +747,13 @@ export class PlifeSim implements Sim, ModTarget {
     fl.nearStencil = Math.round(
       clampNum(fs['nearStencil'], defF.nearStencil, 1, MAX_NEAR_STENCIL),
     );
+    fl.farGain = clampNum(fs['farGain'], defF.farGain, FAR_GAIN_RANGE.min, FAR_GAIN_RANGE.max);
+    fl.farScale = clampNum(
+      fs['farScale'],
+      defF.farScale,
+      FAR_SCALE_RANGE.min,
+      FAR_SCALE_RANGE.max,
+    );
 
     // The population lane. Ranges are the panel's own (ui/plife-panel.ts, the
     // "population · stems → colonies" folder), so a loaded value can never sit
@@ -718,7 +849,19 @@ export class PlifeSim implements Sim, ModTarget {
     this.totalParticles = this.segSize * k;
 
     this.speciesData = new Float32Array(k * FLOATS_PER_SPECIES);
-    this.interactionData = new Float32Array(3 * k * k);
+    // Four K² blocks now: θ's attraction / maxR / minR, then the far lane's
+    // per-pair coefficient, which is not θ and is rebuilt every frame.
+    this.interactionData = new Float32Array(4 * k * k);
+
+    // Square texels: the width follows the world's aspect. Clamped because a
+    // degenerate aspect (a very tall explorer tile) would otherwise ask for a
+    // one-texel-wide field, and the blur's `repeat` wrap on a 1-texel axis is a
+    // constant.
+    this.farH = FAR_HEIGHT;
+    this.farW = Math.min(
+      Math.max(Math.round((FAR_HEIGHT * this.worldW) / this.worldH), 32),
+      1024,
+    );
 
     const cells = this.gridW * this.gridH;
 
@@ -776,6 +919,42 @@ export class PlifeSim implements Sim, ModTarget {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
+    // The far chain's four stages. Allocated unconditionally even when the lane
+    // is off: they are 2.4 MB in total and making them conditional would make
+    // three bind groups conditional with them, which is a lot of branching to
+    // avoid an allocation that a slider can undo at any moment.
+    const farStage = (name: string): GPUTexture[] =>
+      [0, 1].map((i) =>
+        device.createTexture({
+          label: `plife.far.${name}${i}`,
+          size: { width: this.farW, height: this.farH },
+          format: HDR_FORMAT,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        }),
+      );
+    this.farSplat = farStage('splat');
+    this.farTmp = farStage('tmp');
+    this.farNear = farStage('near');
+    this.farDog = farStage('dog');
+    this.farSplatViews = this.farSplat.map((t) => t.createView());
+    // `repeat` on both axes, because the world is a torus: the blur has to wrap
+    // or the field flattens toward the edges and anything crossing the seam is
+    // torn in the far lane while the near lane (`wrapDelta`) still sees it whole.
+    this.farSampler = device.createSampler({
+      label: 'plife.far.sampler',
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
+    this.blurParamBufs = Array.from({ length: FAR_BLUR_PASSES }, (_, i) =>
+      device.createBuffer({
+        label: `plife.far.blurParams${i}`,
+        size: this.blurParams.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      }),
+    );
+
     const src = (body: string): GPUShaderModule =>
       device.createShaderModule({ code: `${commonWgsl}\n${body}` });
 
@@ -796,6 +975,9 @@ export class PlifeSim implements Sim, ModTarget {
         { binding: 6, visibility: C, buffer: rw },
       ],
     });
+    // Bindings 10–12 are the far lane's field. `initParticles` and
+    // `respawnParticles` share this layout and never touch them, which is legal:
+    // a layout may describe more than an entry point statically uses.
     const stepLayout = device.createBindGroupLayout({
       label: 'plife.stepLayout',
       entries: [
@@ -807,6 +989,9 @@ export class PlifeSim implements Sim, ModTarget {
         { binding: 5, visibility: C, buffer: ro },
         { binding: 6, visibility: C, buffer: ro },
         { binding: 7, visibility: C, buffer: ro },
+        { binding: 10, visibility: C, sampler: { type: 'filtering' } },
+        { binding: 11, visibility: C, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 12, visibility: C, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     });
     // The splash pass's own layout. It shares step.wgsl's module but names only
@@ -923,6 +1108,107 @@ export class PlifeSim implements Sim, ModTarget {
       primitive: { topology: 'triangle-strip' },
     });
 
+    // ── far field pipelines ──────────────────────────────────────────────────
+    //
+    // One module, two pipelines, disjoint binding numbers — the same arrangement
+    // render.wgsl uses. The splat reads particles in the *vertex* stage (core
+    // WebGPU allows read-only storage there) so one draw covers the whole pool
+    // with no vertex buffer.
+    const farModule = src(farWgsl);
+    const splatLayout = device.createBindGroupLayout({
+      label: 'plife.far.splatLayout',
+      entries: [
+        { binding: 0, visibility: V, buffer: uniform },
+        { binding: 1, visibility: V, buffer: ro },
+      ],
+    });
+    const blurLayout = device.createBindGroupLayout({
+      label: 'plife.far.blurLayout',
+      entries: [
+        { binding: 2, visibility: F, buffer: uniform },
+        { binding: 3, visibility: F, sampler: { type: 'filtering' } },
+        { binding: 4, visibility: F, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 5, visibility: F, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 6, visibility: F, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 7, visibility: F, texture: { sampleType: 'float', viewDimension: '2d' } },
+      ],
+    });
+    // Additive and unbounded, exactly like the particle pass: a density splat is
+    // a sum, and rgba16float has the range to hold one honestly.
+    const additive: GPUBlendState = {
+      color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+      alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+    };
+    this.splatPipeline = device.createRenderPipeline({
+      label: 'plife.far.splat',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [splatLayout] }),
+      vertex: { module: farModule, entryPoint: 'vsSplat' },
+      fragment: {
+        module: farModule,
+        entryPoint: 'fsSplat',
+        targets: [
+          { format: HDR_FORMAT, blend: additive },
+          { format: HDR_FORMAT, blend: additive },
+        ],
+      },
+      primitive: { topology: 'point-list' },
+    });
+    this.blurPipeline = device.createRenderPipeline({
+      label: 'plife.far.blur',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [blurLayout] }),
+      vertex: { module: farModule, entryPoint: 'vsBlur' },
+      fragment: {
+        module: farModule,
+        entryPoint: 'fsBlur',
+        targets: [{ format: HDR_FORMAT }, { format: HDR_FORMAT }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    this.splatBinds = [0, 1].map((p) =>
+      device.createBindGroup({
+        label: `plife.far.splat.parity${p}`,
+        layout: splatLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.globalsBuf } },
+          { binding: 1, resource: { buffer: this.particleBuf[p] as GPUBuffer } },
+        ],
+      }),
+    );
+    // The chain, stage by stage:
+    //
+    //   0  splat --σ1 X--> tmp
+    //   1  tmp   --σ1 Y--> near        (near = G_σ1 * ρ)
+    //   2  near  --σr X--> tmp         (σr² = σ2² − σ1²; blurs compose)
+    //   3  tmp   --σr Y--> dog = near − that   (= G_σ1*ρ − G_σ2*ρ)
+    //
+    // Pass 3 is the only one that reads `near`, but every bind group has to name
+    // bindings 6/7 because the shader statically uses them. The other three bind
+    // `dog` there instead of `near` — deliberately, not arbitrarily: pass 1
+    // *writes* `near`, and a texture cannot be a render attachment and a sampled
+    // resource in the same pass.
+    const chain: { srcTex: GPUTexture[]; nearTex: GPUTexture[]; dst: GPUTexture[] }[] = [
+      { srcTex: this.farSplat, nearTex: this.farDog, dst: this.farTmp },
+      { srcTex: this.farTmp, nearTex: this.farDog, dst: this.farNear },
+      { srcTex: this.farNear, nearTex: this.farDog, dst: this.farTmp },
+      { srcTex: this.farTmp, nearTex: this.farNear, dst: this.farDog },
+    ];
+    this.blurBinds = chain.map((stage, i) =>
+      device.createBindGroup({
+        label: `plife.far.blur${i}`,
+        layout: blurLayout,
+        entries: [
+          { binding: 2, resource: { buffer: this.blurParamBufs[i] as GPUBuffer } },
+          { binding: 3, resource: this.farSampler },
+          { binding: 4, resource: (stage.srcTex[0] as GPUTexture).createView() },
+          { binding: 5, resource: (stage.srcTex[1] as GPUTexture).createView() },
+          { binding: 6, resource: (stage.nearTex[0] as GPUTexture).createView() },
+          { binding: 7, resource: (stage.nearTex[1] as GPUTexture).createView() },
+        ],
+      }),
+    );
+    this.blurTargets = chain.map((stage) => stage.dst.map((t) => t.createView()));
+
     this.post.init(ctx);
     this.post.ensureSize(ctx.width, ctx.height);
 
@@ -954,6 +1240,9 @@ export class PlifeSim implements Sim, ModTarget {
           { binding: 5, resource: { buffer: this.cellCountBuf } },
           { binding: 6, resource: { buffer: this.cellStartBuf } },
           { binding: 7, resource: { buffer: this.sortedIdxBuf } },
+          { binding: 10, resource: this.farSampler },
+          { binding: 11, resource: (this.farDog[0] as GPUTexture).createView() },
+          { binding: 12, resource: (this.farDog[1] as GPUTexture).createView() },
         ],
       }),
     );
@@ -1267,9 +1556,197 @@ export class PlifeSim implements Sim, ModTarget {
     // (which is what makes a splash a sustained shove for the length of its
     // decay rather than a single frame's nudge).
     if (steps > 0) this.uploadSplashes();
+    // Once per clock tick, ahead of the substeps and outside the loop: the far
+    // field is a *smoothed* quantity at σ ≥ 0.04 world, and nothing in it moves
+    // measurably in the 1/60 s a substep covers. Re-splatting it per substep
+    // would be four times the cost at the ceiling for a field that had barely
+    // changed, and the near lane is the one that has to resolve fast motion.
+    if (steps > 0 && this.farActive()) this.runFarField();
     for (let s = 0; s < steps; s++) {
       this.runStep(simTick * MAX_SUBSTEPS + s);
     }
+  }
+
+  /**
+   * The far lane, once per frame: splat every live particle into a per-species
+   * density target, then four separable-Gaussian passes that leave
+   * `G_σ1*ρ − G_σ2*ρ` in `farDog`. `stepParticles` samples that field's gradient
+   * every substep.
+   *
+   * Its own encoder and submit, ahead of the substeps' — the force pass reads
+   * what this writes, and a submit boundary is the least ambiguous way to say so.
+   */
+  private runFarField(): void {
+    const { device } = this.ctx as GpuContext;
+    // Order matters: `uploadSpecies` is what recomputes `targetAlive`, and the
+    // per-species mean density the coefficients divide by comes from it.
+    this.uploadSpecies();
+    this.writeGlobals(this.lastPcgTick);
+    this.uploadFar();
+    this.writeBlurParams();
+
+    const encoder = device.createCommandEncoder({ label: 'plife.far' });
+    const splat = encoder.beginRenderPass({
+      label: 'plife.far.splat',
+      colorAttachments: this.farSplatViews.map((view) => ({
+        view,
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        loadOp: 'clear' as const,
+        storeOp: 'store' as const,
+      })),
+    });
+    splat.setPipeline(this.splatPipeline);
+    splat.setBindGroup(0, this.splatBinds[this.parity] as GPUBindGroup);
+    // One point per pool slot. Dormant slots emit an off-screen position and are
+    // clipped before any fragment work, exactly as the sprite pass does with a
+    // degenerate quad — cheaper than a CPU-side compaction and a readback.
+    splat.draw(this.totalParticles);
+    splat.end();
+
+    for (let i = 0; i < FAR_BLUR_PASSES; i++) {
+      const targets = this.blurTargets[i] as GPUTextureView[];
+      const pass = encoder.beginRenderPass({
+        label: `plife.far.blur${i}`,
+        colorAttachments: targets.map((view) => ({
+          view,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear' as const,
+          storeOp: 'store' as const,
+        })),
+      });
+      pass.setPipeline(this.blurPipeline);
+      pass.setBindGroup(0, this.blurBinds[i] as GPUBindGroup);
+      pass.draw(3);
+      pass.end();
+    }
+    device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * The four blur passes' parameters. Rewritten every frame rather than on
+   * change: it is 128 bytes total, and "on change" would mean tracking two
+   * knobs, the stencil and the grid, any of which moving invalidates all four.
+   *
+   * σ1 is the near lane's cutoff, σ2 the knob (floored — see `farSigma`), and
+   * the second pair of passes blurs by the *residual* σr with
+   * σr² = σ2² − σ1², because Gaussians compose in quadrature: blurring the
+   * σ1 field by σr yields the σ2 field for free instead of a second full-width
+   * blur of the raw splat.
+   */
+  private writeBlurParams(): void {
+    const { device } = this.ctx as GpuContext;
+    const s1 = this.nearReach;
+    const s2 = this.farSigma;
+    const sr = Math.sqrt(Math.max(s2 * s2 - s1 * s1, 1e-12));
+    const passes: { sigma: number; axis: 0 | 1; dog: 0 | 1 }[] = [
+      { sigma: s1, axis: 0, dog: 0 },
+      { sigma: s1, axis: 1, dog: 0 },
+      { sigma: sr, axis: 0, dog: 0 },
+      { sigma: sr, axis: 1, dog: 1 },
+    ];
+    const f = this.blurParamsF32;
+    const u = this.blurParamsU32;
+    for (let i = 0; i < passes.length; i++) {
+      const p = passes[i] as { sigma: number; axis: 0 | 1; dog: 0 | 1 };
+      // Per-axis, because `farW` is rounded and its texels are not exactly the
+      // same world size as `farH`'s. Sizing each axis in its own texels keeps
+      // the kernel isotropic in the units that matter.
+      const texels =
+        p.axis === 0 ? (p.sigma * this.farW) / this.worldW : (p.sigma * this.farH) / this.worldH;
+      const s = Math.max(texels, 1e-3);
+      const half = Math.min(Math.ceil(3 * s), FAR_MAX_HALF_TAPS);
+      f[0] = p.axis === 0 ? 1 / this.farW : 0;
+      f[1] = p.axis === 0 ? 0 : 1 / this.farH;
+      f[2] = s;
+      // Tap spacing. 1 texel until the ±3σ support needs more taps than the
+      // budget, then it stretches — the kernel keeps its shape and loses
+      // resolution instead of losing its tails.
+      f[3] = (3 * s) / Math.max(half, 1);
+      u[4] = half;
+      u[5] = p.dog;
+      u[6] = 0;
+      u[7] = 0;
+      device.queue.writeBuffer(this.blurParamBufs[i] as GPUBuffer, 0, this.blurParams);
+    }
+  }
+
+  /**
+   * The far lane's per-pair coefficient block — the fourth K² block of the
+   * interaction buffer, rebuilt every frame because two of its factors (the
+   * populations, the matrix) move every tick.
+   *
+   * As implemented, with everything folded in:
+   *
+   *   Afar[i][j] = (A[i][j] / max|A|)      structure and sign, reused from θ
+   *              × farGain                 the one global strength knob
+   *              × FAR_FORCE_SCALE         units: gradient → near-lane force
+   *              × (σ2 / FAR_SCALE_REF)    far-scale compensation
+   *              × (farW·farH / alive_j)   1 / ρ̄_j, the mean-density normaliser
+   *              × (farH / 2·worldH)       central difference → world derivative
+   *
+   * and the shader computes `Σ_j Afar[i][j] · (D_j(u+e) − D_j(u−e))`.
+   *
+   * Why each normalisation is not optional:
+   *
+   * - **max|A|** — the attraction matrix is drawn from the seed and its overall
+   *   scale varies with `matrixGen.sigma`. Without dividing by its own maximum,
+   *   `farGain` would mean something different on every reroll. Reusing A's
+   *   *structure* is what makes the far lane agree with the near one about who
+   *   chases whom — and it is why a structurally-zero cell of the partition
+   *   contributes exactly 0 out here too, by arithmetic rather than by a rule
+   *   that could drift.
+   * - **1 / ρ̄_j** — the population lane swings a species' count by 3× over a
+   *   track and `aliveFraction` differs 3× between primaries and accents. An
+   *   un-normalised density field would make the far force track the population
+   *   rather than the *shape* of it, so a loud chorus would be a stronger
+   *   current and a species with a small colony would be ignored. Dividing by
+   *   the current mean makes the field a relative density and the lane
+   *   population-invariant.
+   * - **σ2 / FAR_SCALE_REF** — a structure at scale σ2 has a DoG gradient going
+   *   as 1/σ2, so without this the far-scale knob would double as a strength
+   *   knob and there would be no way to ask for "bigger organisation, same pull".
+   *
+   * The far term is added into `force` *before* the integrator's
+   * `forceGain · forceScale` multiply, so it inherits both — and therefore the
+   * `force` macro — deliberately: it is a force among forces, and a performance
+   * gesture that pushes the world harder should push all of it harder.
+   */
+  private uploadFar(): void {
+    const k = this.config.speciesCount;
+    const kk = k * k;
+    const d = this.interactionData;
+    const base = 3 * kk;
+    const gain = Math.max(this.config.field.farGain, 0);
+
+    let maxAbs = 0;
+    for (let i = 0; i < kk; i++) maxAbs = Math.max(maxAbs, Math.abs(this.config.attraction[i] ?? 0));
+
+    if (gain <= 0 || maxAbs <= 0) {
+      d.fill(0, base, base + kk);
+    } else {
+      const scaleComp = this.farSigma / FAR_SCALE_REF;
+      const texels = this.farW * this.farH;
+      const gradToWorld = this.farH / (2 * this.worldH);
+      const common = (gain * FAR_FORCE_SCALE * scaleComp * gradToWorld * texels) / maxAbs;
+      for (let j = 0; j < k; j++) {
+        // A species with nobody in it has no density to normalise against, and
+        // 1/0 would be an infinite coefficient multiplying an all-zero field —
+        // NaN, in a buffer that feeds back into itself. Zero is the honest
+        // answer: an absent species exerts no far force.
+        const alive = this.targetAlive[j] ?? 0;
+        const norm = alive > 0 ? common / alive : 0;
+        for (let i = 0; i < k; i++) {
+          d[base + i * k + j] = (this.config.attraction[i * k + j] ?? 0) * norm;
+        }
+      }
+    }
+    (this.ctx as GpuContext).device.queue.writeBuffer(
+      this.interactionBuf,
+      base * 4,
+      d,
+      base,
+      kk,
+    );
   }
 
   /**
@@ -1542,6 +2019,10 @@ export class PlifeSim implements Sim, ModTarget {
     this.cellStartBuf.destroy();
     this.sortedIdxBuf.destroy();
     this.splashBuf.destroy();
+    for (const t of [...this.farSplat, ...this.farTmp, ...this.farNear, ...this.farDog]) {
+      t.destroy();
+    }
+    for (const b of this.blurParamBufs) b.destroy();
   }
 
   // ── GPU uploads ────────────────────────────────────────────────────────────
@@ -1632,6 +2113,10 @@ export class PlifeSim implements Sim, ModTarget {
     f[21] = Math.max(cfg.population.fallTau, 1e-3);
     u[22] = this.splashCount >>> 0;
     u[23] = this.stencil() >>> 0;
+    u[24] = this.farActive() ? 1 : 0;
+    u[25] = 0;
+    u[26] = 0;
+    u[27] = 0;
     ctx.device.queue.writeBuffer(this.globalsBuf, 0, this.globalsBytes);
   }
 

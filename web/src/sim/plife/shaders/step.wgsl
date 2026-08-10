@@ -16,13 +16,18 @@
 // names only what that entry point statically touches.
 //
 //   step / init / respawn   0 globals, 1 species, 2 interaction, 3 src,
-//                           4 dst, 5 cellCount, 6 cellStart, 7 sortedIdx
+//                           4 dst, 5 cellCount, 6 cellStart, 7 sortedIdx,
+//                           10 far sampler, 11/12 far DoG pair
 //   splash                  0 globals, 8 splashes, 9 particles (read_write)
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var<storage, read> species: array<Species>;
-// 3 K^2 floats: [attraction | maxR | minR], in that order, matching the theta
-// vector's block order (see preset.ts). One buffer, one writeBuffer per apply.
+// 4 K^2 floats: [attraction | maxR | minR | Afar]. The first three are theta's
+// own block order (see preset.ts); the fourth is not theta at all — it is the
+// far lane's per-pair coefficient, rebuilt on the CPU every frame from the
+// attraction matrix, the far gain and each species' current mean density. It
+// rides this buffer rather than one of its own because it is the same shape,
+// the same lifetime and one more writeBuffer.
 @group(0) @binding(2) var<storage, read> interaction: array<f32>;
 @group(0) @binding(3) var<storage, read> src: array<Particle>;
 @group(0) @binding(4) var<storage, read_write> dst: array<Particle>;
@@ -31,6 +36,13 @@
 @group(0) @binding(7) var<storage, read> sortedIdx: array<u32>;
 @group(0) @binding(8) var<storage, read> splashes: array<Splash>;
 @group(0) @binding(9) var<storage, read_write> particles: array<Particle>;
+// The far lane's difference-of-Gaussians field, K species packed into two
+// RGBA16F textures. Rebuilt once per FRAME (far.wgsl), sampled every substep —
+// the field is smooth and slow, and re-splatting it four times inside one clock
+// tick would be four times the cost for a field that had barely moved.
+@group(0) @binding(10) var farSamp: sampler;
+@group(0) @binding(11) var farDog0: texture_2d<f32>;
+@group(0) @binding(12) var farDog1: texture_2d<f32>;
 
 // Hard-core repulsion slope. Universal and sign-blind: it applies to every pair
 // regardless of what `attraction` says, because without it two species with a
@@ -259,6 +271,58 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
         force = force + dir * (f * q.energy);
       }
     }
+  }
+
+  // ── far field ───────────────────────────────────────────────────────────────
+  //
+  // F_far = Σ_j Afar[i][j] · ∇[(G_σ1*ρ_j − G_σ2*ρ_j) / ρ̄_j] · (σ2 / 0.2)
+  //
+  // Everything except the gradient itself is folded into `Afar` on the CPU (see
+  // `uploadFar` in plife.ts): the sign and structure of the attraction matrix,
+  // the global gain, the per-species mean-density normalisation, the far-scale
+  // compensation and the texel→world derivative conversion. That is not an
+  // optimisation, it is what keeps the shader from having to know about
+  // population counts — and it means a structurally-zero cell of the partition
+  // contributes exactly 0.0 here too, by arithmetic rather than by a branch.
+  //
+  // The gradient is a central difference of BILINEAR samples one texel either
+  // side. Central differences of a bilinear field are continuous in position (a
+  // difference of two continuous piecewise-linear functions), which is what
+  // keeps this from drawing the texel lattice onto the world; a one-sided
+  // difference, or a raw texel fetch, would not be.
+  //
+  // Eight samples per particle covers all K species, because each RGBA fetch
+  // carries four of them.
+  if (g.farOn != 0u) {
+    let dim = vec2f(textureDimensions(farDog0, 0));
+    let uv = here / world;
+    let ex = vec2f(1.0 / dim.x, 0.0);
+    let ey = vec2f(0.0, 1.0 / dim.y);
+    let ax = textureSampleLevel(farDog0, farSamp, uv + ex, 0.0)
+           - textureSampleLevel(farDog0, farSamp, uv - ex, 0.0);
+    let ay = textureSampleLevel(farDog0, farSamp, uv + ey, 0.0)
+           - textureSampleLevel(farDog0, farSamp, uv - ey, 0.0);
+    let bx = textureSampleLevel(farDog1, farSamp, uv + ex, 0.0)
+           - textureSampleLevel(farDog1, farSamp, uv - ex, 0.0);
+    let by = textureSampleLevel(farDog1, farSamp, uv + ey, 0.0)
+           - textureSampleLevel(farDog1, farSamp, uv - ey, 0.0);
+    // Unpacked into arrays rather than indexed as vectors: a fixed-size `var`
+    // array is the one form WGSL indexes dynamically without argument.
+    var gx: array<f32, 8>;
+    var gy: array<f32, 8>;
+    gx[0] = ax.x; gx[1] = ax.y; gx[2] = ax.z; gx[3] = ax.w;
+    gx[4] = bx.x; gx[5] = bx.y; gx[6] = bx.z; gx[7] = bx.w;
+    gy[0] = ay.x; gy[1] = ay.y; gy[2] = ay.z; gy[3] = ay.w;
+    gy[4] = by.x; gy[5] = by.y; gy[6] = by.z; gy[7] = by.w;
+
+    let fbase = 3u * kk + si * k;
+    var far = vec2f(0.0);
+    let jn = min(k, 8u);
+    for (var j = 0u; j < jn; j = j + 1u) {
+      let a = interaction[fbase + j];
+      far = far + vec2f(gx[j], gy[j]) * a;
+    }
+    force = force + far;
   }
 
   // Wander: a spatially coherent direction field, sampled at the particle's own

@@ -306,7 +306,48 @@ export interface PlifeFieldConfig {
    * Effective near reach cap is `nearStencil × R_CAP` — 0.02 / 0.04 / 0.06.
    */
   nearStencil: number;
+  /**
+   * The far lane's global strength. 0 turns the whole density pyramid off — no
+   * splat, no blur, no sampling — so it is a real bypass, not a zero multiply.
+   *
+   * Sized so 1.0 is a *current*, not a force: measured, it is a median terminal
+   * drift around 0.06 world/s against a near-lane median speed of ~0.26, which
+   * roughly doubles the coarse-grained density contrast without changing how
+   * often the speed clamp is hit. 3 is the strongly-segregating end. See
+   * `FAR_FORCE_SCALE` in plife.ts for the sweep those numbers come from.
+   */
+  farGain: number;
+  /**
+   * σ2, the far lane's outer smoothing scale, in world units. This is the size
+   * of the organisation the lane produces: 0.05 is a coarse grain, 0.5 is
+   * hemisphere-scale banding.
+   *
+   * σ1 has no knob — it is `nearStencil × R_CAP`, the near lane's own cutoff, so
+   * the two lanes meet at one seam by construction. σ2 is clamped up to
+   * `FAR_SCALE_MIN_RATIO × σ1` if it is dialled below it, because a
+   * difference-of-Gaussians with σ2 ≤ σ1 has no band left to be a band.
+   */
+  farScale: number;
 }
+
+/**
+ * Panel range and loader clamp for the far knobs, in one table for the same
+ * reason `MACRO_RANGE` is: a saved value can never sit outside the slider that
+ * is meant to show it.
+ */
+export const FAR_GAIN_RANGE = { min: 0, max: 3 } as const;
+export const FAR_SCALE_RANGE = { min: 0.05, max: 0.5 } as const;
+
+/** σ2 must exceed σ1 by at least this factor or the DoG band collapses. */
+export const FAR_SCALE_MIN_RATIO = 1.5;
+
+/**
+ * The reference far scale the lane's strength is normalised to. The sampled
+ * gradient is multiplied by `farScale / FAR_SCALE_REF`, so moving the far scale
+ * changes the SIZE of the organisation and not how hard it pulls: a structure at
+ * scale σ2 has a DoG gradient going as 1/σ2, and this cancels it.
+ */
+export const FAR_SCALE_REF = 0.2;
 
 export function defaultPlifeField(): PlifeFieldConfig {
   return {
@@ -317,6 +358,8 @@ export function defaultPlifeField(): PlifeFieldConfig {
     // rather than an accident, and it costs 2.8× the pair work of 1 (25 cells vs
     // 9), which measured fine at this particle count.
     nearStencil: 2,
+    farGain: 1,
+    farScale: FAR_SCALE_REF,
   };
 }
 
