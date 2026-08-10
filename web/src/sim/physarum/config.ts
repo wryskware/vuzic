@@ -47,6 +47,17 @@ export const MAX_DEPOSIT = 7 * MAX_EFFECTIVE_DEPOSIT;
  */
 export const MAX_BRIGHTNESS = 2;
 
+/**
+ * Hard bounds on `SpeciesConfig.scale`. One table, read by the θ slot table
+ * (`mapping/preset.ts`), the panel slider and the clamp in `uploadSpecies`, so a
+ * loaded file, a seeded personality and a slider can never disagree about how far
+ * this may go. ×4 already turns a species into three or four fat channels across
+ * the frame; ×0.25 is the point below which the trail is thinner than the blur
+ * kernel and the network stops resolving at all.
+ */
+export const MIN_SPECIES_SCALE = 0.25;
+export const MAX_SPECIES_SCALE = 4;
+
 export interface AdaptiveTriple {
   /** constant term */
   p1: number;
@@ -75,6 +86,23 @@ export interface SpeciesConfig {
   aliveFraction: number;
   /** 3x3 blur centre weight: 1/9 = box blur (widest), 1 = no blur */
   diffuseCentre: number;
+  /**
+   * This species' structural scale, 0.25..4, default 1. One multiplier on BOTH
+   * the sensorDist curve and the moveDist curve, so the whole geometry of the
+   * network — how far an agent looks and how far it then walks — moves together
+   * rather than drifting apart.
+   *
+   * It exists because sensorDist and moveDist are six independent θ slots and the
+   * modulator wires each one to its own random projection: they move, but they
+   * move *incoherently*, which cancels out into a network whose apparent scale
+   * never changes across a track. Scaling the pair by one number is the only
+   * shape of control that reads as "this species got coarser".
+   *
+   * Not to be confused with the `reach`/`agility` macros: those are global
+   * performance trims outside θ and multiply on top of this. This one is
+   * per-species character, inside θ, and the music may move it.
+   */
+  scale: number;
   sensorDist: AdaptiveTriple;
   sensorAngle: AdaptiveTriple;
   rotate: AdaptiveTriple;
@@ -220,7 +248,11 @@ export interface PhysarumConfig {
   matrix: number[];
 }
 
-interface Template extends Omit<SpeciesConfig, 'name' | 'brightness'> {
+// `scale` is omitted alongside `brightness`: both ship at 1 for every template
+// (the authored character lives in the curves themselves, and scale is the knob
+// that moves them afterwards), so listing it four times would only be four more
+// places for a future edit to disagree with itself.
+interface Template extends Omit<SpeciesConfig, 'name' | 'brightness' | 'scale'> {
   name: string;
   /** palette entry, not a species field — see `defaultPalette` */
   colorHex: string;
@@ -319,6 +351,7 @@ export function defaultSpecies(index: number): SpeciesConfig {
     decay: t.decay,
     aliveFraction: t.aliveFraction,
     diffuseCentre: t.diffuseCentre,
+    scale: 1,
     sensorDist: cloneTriple(t.sensorDist),
     sensorAngle: cloneTriple(t.sensorAngle),
     rotate: cloneTriple(t.rotate),

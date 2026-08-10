@@ -23,6 +23,8 @@ import {
   MAX_BRIGHTNESS,
   MAX_DEPOSIT,
   MAX_EFFECTIVE_DEPOSIT,
+  MAX_SPECIES_SCALE,
+  MIN_SPECIES_SCALE,
   PHYSARUM_MACRO_RANGE,
   type PhysarumConfig,
   type PhysarumMacros,
@@ -1265,11 +1267,36 @@ export class PhysarumSim implements Sim, ModTarget {
       const brightMul = imp ? (imp.brightMul[k] ?? 1) : 1;
       const sensorMul = imp ? (imp.sensorMul[k] ?? 1) : 1;
 
+      // Per-species structural scale — the θ slot, so the modulator and the
+      // sliders both reach it. It multiplies BOTH distance lanes below (and
+      // nothing else), which is the entire point: sensor reach and step length
+      // move together, so the network gets coarser or finer instead of merely
+      // differently proportioned.
+      //
+      // Composed here, alongside the macros rather than inside them, so the three
+      // layers stay separable and stay in this order:
+      //
+      //   θ curve  ×  scale (θ, per-species)  ×  macro (outside θ, global)
+      //                                          ×  impulse sensorMul (transient)
+      //
+      // Multiplication is associative and exactly 1.0 is an exact float identity,
+      // so a config at scale = 1 produces bit-identical uniforms to the code
+      // before this slot existed — which is what makes the shipped defaults a
+      // usable A/B baseline.
+      //
+      // Clamped to the same hard bounds the panel slider and the θ registry use,
+      // because this is the point where the value becomes geometry: a file or a
+      // rebased base carrying something wilder must not reach the shader.
+      const scale = Math.min(
+        Math.max(s.scale, MIN_SPECIES_SCALE),
+        MAX_SPECIES_SCALE,
+      );
+
       // Sensor pop scales the whole curve p1 + p2·x^p3, not just its base, so the
       // reach grows at every trail intensity instead of only in empty space.
       // Macro `reach` rides the same lane and multiplies alongside it: both are
       // outside θ, and both mean "how far this species looks".
-      const reach = Math.max(macros.reach, 0);
+      const reach = Math.max(macros.reach, 0) * scale;
       d[o + 0] = s.sensorDist.p1 * reach * sensorMul;
       d[o + 1] = s.sensorDist.p2 * reach * sensorMul;
       d[o + 2] = s.sensorDist.p3;
@@ -1284,7 +1311,9 @@ export class PhysarumSim implements Sim, ModTarget {
       d[o + 11] = 0;
       // Macro `agility`, the whole move curve — same treatment as `reach`, one
       // lane down: how far an agent travels per step at any trail intensity.
-      const agility = Math.max(macros.agility, 0);
+      // `scale` rides here too; that pairing is what makes it a *scale* rather
+      // than a second reach knob.
+      const agility = Math.max(macros.agility, 0) * scale;
       d[o + 12] = s.moveDist.p1 * agility;
       d[o + 13] = s.moveDist.p2 * agility;
       d[o + 14] = s.moveDist.p3;

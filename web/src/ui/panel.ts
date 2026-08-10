@@ -3,6 +3,8 @@ import { saveModulationLocal } from '../mapping/persist';
 import type { PhysarumSim } from '../sim/physarum/physarum';
 import {
   defaultPhysarumMacros,
+  MAX_SPECIES_SCALE,
+  MIN_SPECIES_SCALE,
   PHYSARUM_MACRO_LABELS,
   PHYSARUM_MACRO_RANGE,
   type AdaptiveTriple,
@@ -496,6 +498,17 @@ function addSpeciesFolder(
     const b = f.addBinding(s, key, params);
     bands?.add(b, slotOf(`species${index}.${String(key)}`), params.min, params.max);
   };
+  // First control in the folder, and the only per-species slider that changes the
+  // *shape* of the network rather than its light or its rate. It is here, at the
+  // top, because the thing it replaces was two AdaptiveTriples three folders down
+  // — sensor dist p1/p2 and move dist p1/p2 — which nobody reaches for mid-track
+  // and which cannot be moved together by hand at all.
+  bind('scale', {
+    min: MIN_SPECIES_SCALE,
+    max: MAX_SPECIES_SCALE,
+    step: 0.01,
+    label: 'scale ×  (sensor + move dist)',
+  });
   // Honest label, both ways round (Revision 4): the modulator never writes these
   // any more, so with stem-follow off they are absolute, and with it on they are
   // the base it scales. Which one is live is stated in the stem-follow folder.

@@ -10,8 +10,9 @@
  * θ has two representations and they are interchangeable:
  *
  *   Preset  — JSON-shaped, mirrors PhysarumConfig field for field.
- *   vector  — Float64Array of length 18·K + K² + 4. What gets modulated, slewed
- *             and clamped.
+ *   vector  — Float64Array of length 19·K + K² + 4. What gets modulated, slewed
+ *             and clamped. (19 since `scale` joined the per-species block,
+ *             2026-08-09 — appended, so no existing offset moved.)
  *
  * Colour is NOT in here (plan.md Revision 2). Modulating hue muddied the image
  * and made species impossible to track, so the palette is static and lives in
@@ -30,6 +31,8 @@
  */
 import {
   MAX_EFFECTIVE_DEPOSIT,
+  MAX_SPECIES_SCALE,
+  MIN_SPECIES_SCALE,
   type AdaptiveTriple,
   type PhysarumConfig,
   type SpeciesConfig,
@@ -63,7 +66,7 @@ export interface Preset {
 }
 
 /** Vector slots per species. */
-export const PER_SPECIES = 18;
+export const PER_SPECIES = 19;
 /** Globals appended after the matrix block. */
 export const GLOBAL_SLOTS = 4;
 
@@ -77,6 +80,11 @@ const S_SENSOR_DIST = 6; // +3
 const S_SENSOR_ANGLE = 9; // +3
 const S_ROTATE = 12; // +3
 const S_MOVE = 15; // +3
+// Appended rather than inserted: every constant above is a hard-coded offset and
+// the vector layout has no versioning, so growing the block at the end is the one
+// edit that does not silently renumber the slots the workbench, the explorer log
+// and the tuning-log rows are already stated over.
+const S_SCALE = 18;
 
 const G_SENSE_GAIN = 0;
 const G_EXPOSURE = 1;
@@ -212,6 +220,34 @@ const SPECIES_BOUNDS: Bound[] = [
     add('structure', 0.15, 5, 0.8, 0.6),
     add('structure', -2, 5, 0.7, 0.5),
   ),
+  /**
+   * Structural scale — one multiplier over this species' whole sensorDist AND
+   * moveDist curves, composed in `physarum.ts uploadSpecies` beside the
+   * `reach`/`agility` macros.
+   *
+   * It is appended, not inserted, so the six triple slots above keep their
+   * offsets (see `S_SCALE`). Multiplicative, because it *is* a ratio: ±0.5 in ln
+   * space reads the same whether the curve it scales was authored at 4 or at 13.
+   *
+   * **Deliberately authoritative, and deliberately not plife's `radiusScale`
+   * treatment.** That slot is cautious (half 0.35) because it multiplies a whole
+   * maxR row and compounds with the row's own excursions. This one is answering
+   * the opposite complaint: with sensorDist and moveDist each wired to their own
+   * random projection, the six of them move *incoherently* and the network's
+   * apparent scale never changes over a track — the one structural property a
+   * listener would actually notice. half 0.5 puts full-tanh at ×0.61…×1.65 and
+   * the typical |tanh| ≈ 0.55 excursion at roughly ×0.76…×1.32, which is a
+   * visible coarsening and refining rather than a shimmer. The [lo, hi] envelope
+   * is wider than the tanh band on purpose: it is the room a *rebased* slider
+   * still has, so pulling the hand control to 2 leaves the music somewhere to go.
+   */
+  {
+    name: 'scale',
+    cls: CLASS_MEDIUM,
+    min: MIN_SPECIES_SCALE,
+    max: MAX_SPECIES_SCALE,
+    mod: mul('structure', 0.4, 2.5, 0.5, 0.25),
+  },
 ];
 
 /**
@@ -358,6 +394,7 @@ export function cloneSpeciesPreset(s: SpeciesPreset): SpeciesPreset {
     decay: s.decay,
     aliveFraction: s.aliveFraction,
     diffuseCentre: s.diffuseCentre,
+    scale: s.scale,
     sensorDist: triple(s.sensorDist),
     sensorAngle: triple(s.sensorAngle),
     rotate: triple(s.rotate),
@@ -401,6 +438,7 @@ export function applyPreset(cfg: PhysarumConfig, p: Preset): void {
     dst.decay = src.decay;
     dst.aliveFraction = src.aliveFraction;
     dst.diffuseCentre = src.diffuseCentre;
+    dst.scale = src.scale;
     copyTriple(dst.sensorDist, src.sensorDist);
     copyTriple(dst.sensorAngle, src.sensorAngle);
     copyTriple(dst.rotate, src.rotate);
@@ -431,6 +469,7 @@ export function presetToVector(p: Preset, k: number, out?: Float64Array): Float6
     v[o + S_DECAY] = sp.decay;
     v[o + S_ALIVE] = sp.aliveFraction;
     v[o + S_DIFFUSE] = sp.diffuseCentre;
+    v[o + S_SCALE] = sp.scale;
     writeTriple(v, o + S_SENSOR_DIST, sp.sensorDist);
     writeTriple(v, o + S_SENSOR_ANGLE, sp.sensorAngle);
     writeTriple(v, o + S_ROTATE, sp.rotate);
@@ -489,6 +528,7 @@ export function applyVector(
     if (on(o + S_DECAY)) dst.decay = v[o + S_DECAY] as number;
     if (on(o + S_ALIVE)) dst.aliveFraction = v[o + S_ALIVE] as number;
     if (on(o + S_DIFFUSE)) dst.diffuseCentre = v[o + S_DIFFUSE] as number;
+    if (on(o + S_SCALE)) dst.scale = v[o + S_SCALE] as number;
     readTriple(dst.sensorDist, v, o + S_SENSOR_DIST, mask);
     readTriple(dst.sensorAngle, v, o + S_SENSOR_ANGLE, mask);
     readTriple(dst.rotate, v, o + S_ROTATE, mask);
@@ -516,6 +556,7 @@ export function vectorToPreset(v: ArrayLike<number>, k: number): Preset {
       decay: v[o + S_DECAY] as number,
       aliveFraction: v[o + S_ALIVE] as number,
       diffuseCentre: v[o + S_DIFFUSE] as number,
+      scale: v[o + S_SCALE] as number,
       sensorDist: { p1: 0, p2: 0, p3: 1 },
       sensorAngle: { p1: 0, p2: 0, p3: 1 },
       rotate: { p1: 0, p2: 0, p3: 1 },

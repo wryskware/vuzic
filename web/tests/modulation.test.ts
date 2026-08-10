@@ -153,10 +153,15 @@ function defaultTheta(): Float64Array {
 // ── the registry ─────────────────────────────────────────────────────────────
 
 test('the slot table still has the layout the runtime indexes by', () => {
-  assert.equal(LEN, 18 * K + K * K + 4);
+  // 19 per species since `scale` was appended (2026-08-09). Appended, not
+  // inserted: the assertions below and the offset constants in preset.ts both
+  // depend on brightness still being slot 0 of a species block.
+  assert.equal(LEN, 19 * K + K * K + 4);
   const names = fieldNames(K);
   assert.equal(names.length, LEN);
   assert.equal(names[0], 'species0.brightness');
+  assert.equal(names[18], 'species0.scale', 'scale is the last slot of a species block');
+  assert.equal(names[19], 'species1.brightness', 'the block really is 19 wide');
   assert.ok(!names.some((n) => n.includes('color')), 'no colour slot survives in θ');
   assert.equal(names[names.length - 1], 'stemGain');
   assert.equal(fieldClasses(K).length, LEN);
@@ -187,6 +192,36 @@ test('the exclusions are exactly the documented ones', () => {
     MASK.reduce((a, b) => a + b, 0),
     LEN - excluded.length,
   );
+});
+
+test('per-species scale is a modulated structure slot with real authority', () => {
+  // The slot exists to fix a specific complaint: sensorDist and moveDist are six
+  // independently-wired slots, so the network's apparent scale never moves over a
+  // track. A cautious `half` would reproduce that failure with more machinery, so
+  // the size of the excursion is part of the contract, not a taste setting.
+  const names = fieldNames(K);
+  for (let s = 0; s < K; s++) {
+    const i = names.indexOf(`species${s}.scale`);
+    assert.ok(i >= 0, `species${s}.scale is missing from the registry`);
+    const spec = SLOTS[i] as ModSpec | null;
+    assert.ok(spec, 'scale must be modulated, not slider-only');
+    assert.equal(MASK[i], 1);
+    assert.equal(spec.group, 'structure');
+    assert.ok(spec.mult, 'scale is a ratio, so it moves in ln space');
+    // full-tanh reach, i.e. what the band on the slider draws at base 1
+    assert.ok(Math.exp(-spec.half) < 0.7, `×${Math.exp(-spec.half)} is too timid to read`);
+    assert.ok(Math.exp(spec.half) > 1.5, `×${Math.exp(spec.half)} is too timid to read`);
+    // the envelope is wider than the tanh band, so a rebased hand slider still
+    // leaves the music somewhere to go in both directions
+    assert.ok(spec.lo < Math.exp(-spec.half) && spec.hi > Math.exp(spec.half));
+    // …and it stays inside the hard θ bound the panel slider and the shader clamp
+    assert.ok(spec.lo >= 0.25 && spec.hi <= 4);
+  }
+  // the shipped default is neutral: scale = 1 is the bit-identical A/B baseline
+  const defaults = defaultTheta();
+  for (let s = 0; s < K; s++) {
+    assert.equal(defaults[names.indexOf(`species${s}.scale`)], 1);
+  }
 });
 
 test('the matrix diagonal is kept positive, so networks always form', () => {
