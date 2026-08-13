@@ -5,8 +5,9 @@ import type { FeaturesFrame } from '../timeline/sampler';
  * The seam the simulation slots into. The main loop owns the audio clock, the sampler and
  * the frame pacing; a Sim only advances its own state and draws.
  *
- * `tick` is called once per fixed sim step (possibly several times per rAF, possibly zero)
- * with the timeline sampled at that tick. `render` is called at most once per rAF.
+ * `tick` is called once per fixed app-clock tick (possibly several times per rAF,
+ * possibly zero) with the timeline sampled there. A substrate may deliberately
+ * take zero model steps on that call; `render` is called at most once per rAF.
  * `frame.values` is a reused buffer — read it, do not retain it.
  */
 export interface Sim {

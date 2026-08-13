@@ -70,3 +70,18 @@ records the original open questions and the reasoning behind them.
 
 The decisions in `plan.md` are settled. Do not silently reverse one — if the
 evidence turns out to contradict a decision, say so and let the user choose.
+
+## Indexed code retrieval
+
+For unfamiliar implementation questions, start with the local
+`cce-latent-music-terrarium` semantic search and request a narrow result set
+(normally 3–8 hits). Once a symbol is known, use `codebase-memory` graph tools
+only for structural questions such as callers, callees, dependencies, impact,
+or paths through the code. Read the exact source before changing it; source is
+authoritative when an index is stale or incomplete.
+
+Use direct Grep/Glob/Read for known paths, exact strings, generated timeline
+fields, shader bindings, query parameters, and other data-driven or dynamic
+references. Avoid broad duplicate searches and stop retrieving when the
+evidence is sufficient. Both indexes are local; never send repository source
+to the remote `claude.ai Era Context` server.

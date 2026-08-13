@@ -1,0 +1,12 @@
+# Generated analysis products and copied runtime data are exact-search territory.
+data/timelines/
+analysis/out/
+web/public/timelines/
+media/
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.npy
+*.npz

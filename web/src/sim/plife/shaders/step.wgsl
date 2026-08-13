@@ -186,7 +186,7 @@ fn pairForce(
     // outside rmin dwarfed a bounded -3 from the few inside it. A core that
     // steepens toward contact is how the original vuzic sim (R0_FORCE = 100,
     // ~1/r) kept its clusters open, and the eps floor keeps it finite so the
-    // integrator stays stable at dt=1/60 (the maxSpeed clamp downstream bounds
+    // integrator stays stable at dt=1/120 (the maxSpeed clamp downstream bounds
     // the worst case regardless).
     f = REPULSE * (r - rmin) / (r + 0.05 * rmin);
   } else {

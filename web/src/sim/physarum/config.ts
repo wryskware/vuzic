@@ -233,7 +233,7 @@ export interface PhysarumConfig {
   senseGain: number;
   exposure: number;
   gamma: number;
-  /** sim steps per clock tick, accumulated so fractional values work */
+  /** sim steps per 60 Hz model tick, accumulated so fractional values work */
   speed: number;
   paused: boolean;
   /** phase-5 preview: stem k scales species k's deposit */
@@ -422,4 +422,3 @@ export function defaultConfig(speciesCount = 4): PhysarumConfig {
     matrix: defaultMatrix(k),
   };
 }
-

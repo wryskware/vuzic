@@ -27,6 +27,12 @@ export interface RenderFolderHost {
   renderPasses(): number;
   autoExposureState(): { gain: number; mean: number };
   invalidatePalette(): void;
+  /**
+   * Fired for every widget in this folder. Nothing in here is modulated, so
+   * without it a look edit lives only in memory and the next reload comes back
+   * with the shipped defaults. The callers hand it their debounced autosave.
+   */
+  onChange?(): void;
   /** physarum's soil-underlay controls; omit for sims with no soil */
   soil?: boolean;
 }
@@ -44,10 +50,30 @@ export function addRenderFolder(container: PanelContainer, host: RenderFolderHos
   const readout = { passes: '—', adapt: '—' };
 
   const root = container.addFolder({ title: 'render · HDR chain', expanded: true });
-  root.addBinding(readout, 'passes', { readonly: true, label: 'render passes' });
+  const passesBinding = root.addBinding(readout, 'passes', {
+    readonly: true,
+    label: 'render passes',
+  });
   // The measured HDR mean is the number to aim `target mean` at; the gain is
   // where the controller has settled. Both are one or two frames stale.
-  root.addBinding(readout, 'adapt', { readonly: true, label: 'gain / mean' });
+  const adaptBinding = root.addBinding(readout, 'adapt', { readonly: true, label: 'gain / mean' });
+  // One handler for the whole folder: tweakpane bubbles a binding's change up
+  // through its ancestor containers, so every widget below is covered without a
+  // per-binding `.on('change', …)` — **except the two readouts above**, which
+  // must be filtered out rather than shrugged off. `pane.refresh()` re-emits
+  // change for them on every refresh cycle (the adapt string moves whenever the
+  // controller does, i.e. always), and the callers' autosave is a *trailing*
+  // debounce: a change stream faster than the debounce window resets the timer
+  // forever and the save never runs. At 60 Hz the ~500 ms refresh cadence
+  // squeaked past a 400 ms debounce; on a 240 Hz display the panel refreshes
+  // every ~125 ms and look edits were silently never persisted — found live,
+  // as "my exposure settings are lost on reload".
+  if (host.onChange) {
+    const monitors = new Set<unknown>([passesBinding, adaptBinding]);
+    root.on('change', (ev) => {
+      if (!monitors.has(ev.target)) host.onChange?.();
+    });
+  }
 
   // Scene exposure and gamma are in θ but **excluded from modulation** — see the
   // exclusion note in the owning sim's preset registry. They are yours, always.
@@ -62,7 +88,11 @@ export function addRenderFolder(container: PanelContainer, host: RenderFolderHos
   auto.addBinding(r.grade, 'autoTarget', { min: 0.01, max: 2, step: 0.01, label: 'target mean' });
   auto.addBinding(r.grade, 'autoTau', { min: 0.2, max: 30, step: 0.1, label: 'τ (seconds)' });
   auto.addBinding(r.grade, 'autoMinGain', { min: 0.01, max: 1, step: 0.01, label: 'min gain' });
-  auto.addBinding(r.grade, 'autoMaxGain', { min: 1, max: 32, step: 0.5, label: 'max gain' });
+  // 64, not 32: vizfx ships autoMaxGain 64, and a binding whose max is below the
+  // live value is not just a short slider — pane.refresh() writes values back
+  // through the widget's own constraints, so the old 32 was silently clamping
+  // the shipped rail every refresh cycle.
+  auto.addBinding(r.grade, 'autoMaxGain', { min: 1, max: 64, step: 0.5, label: 'max gain' });
 
   // Bloom and grade start collapsed: with the whole chain expanded the look tab
   // opened on thirty sliders, and the two readouts plus scene exposure are what

@@ -426,7 +426,8 @@ export const ATTRACTION_MOD: ModSpec = ATTRACTION_BOUND.mod as ModSpec;
  * response, and it fights the one knob the user reaches for to set the sim's
  * overall energy. The always-yours handles are the `force`/`agility` macros;
  * these θ slots stay for files and the panel, absolute in every mode. Both
- * remain bounded well inside explicit-Euler stability at dt = 1/60.
+ * remain bounded well inside explicit-Euler stability at dt = 1/120. Halving
+ * the old step strictly increases the integrator's stability margin.
  */
 const GLOBAL_BOUNDS: readonly Bound[] = [
   {

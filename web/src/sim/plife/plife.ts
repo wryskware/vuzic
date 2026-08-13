@@ -25,7 +25,8 @@
  * 2²⁰ pool, primaries at aliveFraction 0.5, accents at 0.12 — that is roughly
  * 325 k live particles in a grid of ~700 cells, so ~460 per cell and ~4 200
  * candidates tested per particle per substep: about 1.4 × 10⁹ candidate tests
- * per substep, 8 × 10¹⁰ per second at 60 fps. **That will not hold 60 fps on
+ * per substep, 1.6 × 10¹¹ per second at the 120 Hz physics rate. **That will not
+ * hold 120 fps on
  * most hardware.** The levers, in the order worth pulling:
  *
  *   1. `maxParticles` — quadratic in effect (fewer particles *and* shorter cell
@@ -63,11 +64,13 @@
  */
 import type { GpuContext } from '../../gpu/context';
 import type { ModTarget, ThetaRegistry } from '../../mapping/target';
+import { SECONDS_PER_TICK } from '../../timing';
 import type { FeaturesFrame } from '../../timeline/sampler';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
 import { paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { Sim } from '../types';
+import { advanceStepCadence } from '../step-cadence';
 import {
   BUDGET_FPS_RANGE,
   BUDGET_MIN,
@@ -111,6 +114,7 @@ import {
   presetToVector,
   vectorLength,
 } from './preset';
+import { PLIFE_SUBSTEP_DT } from './timing';
 
 import commonWgsl from './shaders/common.wgsl?raw';
 import gridWgsl from './shaders/grid.wgsl?raw';
@@ -212,21 +216,10 @@ const BYTES_PER_PARTICLE = 32;
  */
 const MAX_CELLS = 16384;
 /**
- * Seconds a single substep advances the world. Constant, not derived from the
- * frame time: `config.speed` means "substeps per clock tick", so raising it
- * makes the world run faster rather than making each step coarser, and the
- * integrator's stability margin never depends on frame rate.
+ * Seconds a single substep advances the world. Particle Life deliberately runs
+ * one true integration on every 120 Hz app tick; this is shared with the clock
+ * rather than mirrored as another rate literal.
  */
-const SUBSTEP_DT = 1 / 60;
-/**
- * Seconds one *clock* tick covers, for the population lane's EMAs. `Sim.tick`
- * is handed a frame and a tick index but no dt — the whole app runs on a fixed
- * 1/60 s timestep (main.ts's `SECONDS_PER_TICK`) and the sim's own substep dt is
- * the same number — so this is stated as a constant rather than threaded through
- * the interface for one lane. If the app's timestep ever becomes configurable,
- * this is the line that has to follow it.
- */
-const TICK_DT = 1 / 60;
 
 // ── the adaptive particle governor ───────────────────────────────────────────
 //
@@ -1020,6 +1013,10 @@ export class PlifeSim implements Sim, ModTarget {
       speciesEnabled: this.config.species
         .slice(0, this.config.speciesCount)
         .map((s) => s.enabled !== false),
+      // θ, but the two slots excluded from modulation and owned by the look tab.
+      // Saved here because nothing else persists θ, and a reload that reset the
+      // exposure you just dialled in is indistinguishable from a bug.
+      look: { exposure: this.config.exposure, gamma: this.config.gamma },
     };
   }
 
@@ -1142,6 +1139,17 @@ export class PlifeSim implements Sim, ModTarget {
     for (let i = 0; i < this.config.speciesCount; i++) {
       const sp = this.config.species[i];
       if (sp) sp.enabled = readBool(flags[i], true);
+    }
+
+    // Scene exposure / gamma. Bounds are the panel's own (ui/plife-panel.ts's
+    // `exposureRange` and the gamma slider), so a loaded value cannot sit off
+    // the slider meant to show it; absent keeps whatever the preset gave us.
+    const lk = plainObject(o['look']);
+    if (lk['exposure'] !== undefined) {
+      this.config.exposure = clampNum(lk['exposure'], this.config.exposure, 0.05, 4);
+    }
+    if (lk['gamma'] !== undefined) {
+      this.config.gamma = clampNum(lk['gamma'], this.config.gamma, 1, 3);
     }
   }
 
@@ -1937,7 +1945,7 @@ export class PlifeSim implements Sim, ModTarget {
     // Ahead of the substep loop and outside the paused branch: the population
     // lane is a *smoother*, and freezing its EMAs while the transport runs would
     // mean un-pausing snapped the whole field to whatever the music had become.
-    this.updatePopulation(frame, TICK_DT, !this.popPrimed);
+    this.updatePopulation(frame, SECONDS_PER_TICK, !this.popPrimed);
     this.popPrimed = true;
 
     let steps = 0;
@@ -1947,12 +1955,15 @@ export class PlifeSim implements Sim, ModTarget {
         steps = 1;
       }
     } else {
-      this.stepAccumulator += Math.max(this.config.speed, 0);
-      while (this.stepAccumulator >= 1 && steps < MAX_SUBSTEPS) {
-        this.stepAccumulator -= 1;
-        steps++;
-      }
-      if (this.stepAccumulator > MAX_SUBSTEPS) this.stepAccumulator = 0;
+      const next = advanceStepCadence(
+        this.stepAccumulator,
+        this.config.speed,
+        MAX_SUBSTEPS,
+        simTick,
+        1,
+      );
+      this.stepAccumulator = next.accumulator;
+      steps = next.steps;
     }
 
     this.stepsThisFrame = steps;
@@ -1963,7 +1974,7 @@ export class PlifeSim implements Sim, ModTarget {
     if (steps > 0) this.uploadSplashes();
     // Once per clock tick, ahead of the substeps and outside the loop: the far
     // field is a *smoothed* quantity at σ ≥ 0.04 world, and nothing in it moves
-    // measurably in the 1/60 s a substep covers. Re-splatting it per substep
+    // measurably in the 1/120 s a substep covers. Re-splatting it per substep
     // would be four times the cost at the ceiling for a field that had barely
     // changed, and the near lane is the one that has to resolve fast motion.
     if (steps > 0 && this.farActive()) this.runFarField();
@@ -2489,7 +2500,7 @@ export class PlifeSim implements Sim, ModTarget {
     u[9] = this.seed >>> 0;
     u[10] = pcgTick >>> 0;
     const macros = cfg.macros;
-    f[11] = SUBSTEP_DT;
+    f[11] = PLIFE_SUBSTEP_DT;
     // Macro `force`, outside θ: forceGain is modulated, this multiplies whatever
     // the modulator left there — same relationship stem-follow has to brightness.
     f[12] = Math.max(cfg.forceGain, 0) * Math.max(macros.force, 0);

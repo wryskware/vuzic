@@ -11,10 +11,12 @@ import {
   vectorLength,
 } from '../../mapping/preset';
 import type { FeaturesFrame } from '../../timeline/sampler';
+import { LEGACY_TICK_DIVISOR } from '../../timing';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
 import { hexToLinear, paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { Sim } from '../types';
+import { advanceStepCadence } from '../step-cadence';
 import {
   defaultConfig,
   defaultPaletteColor,
@@ -44,7 +46,7 @@ const FLOATS_PER_SPECIES = 24;
 const FLOATS_PER_SPLASH = 8;
 /** must match the Globals struct in common.wgsl, padding included */
 const GLOBALS_WORDS = 28;
-/** sim substeps a single clock tick may expand into; folded into the PCG tick key */
+/** sim substeps a single 60 Hz model tick may expand into; folded into the PCG tick key */
 const MAX_SUBSTEPS = 8;
 const STEM_DIMS = 4;
 
@@ -373,6 +375,10 @@ export class PhysarumSim implements Sim, ModTarget {
       },
       stemDrive: this.config.stemDrive,
       stemGain: this.config.stemGain,
+      // θ, but the two slots excluded from modulation and owned by the look tab.
+      // Saved here because nothing else persists θ, and a reload that reset the
+      // exposure you just dialled in is indistinguishable from a bug.
+      look: { exposure: this.config.exposure, gamma: this.config.gamma },
     };
   }
 
@@ -416,6 +422,17 @@ export class PhysarumSim implements Sim, ModTarget {
     // matrix and a species array to answer two scalars.
     this.config.stemDrive = readBool(o['stemDrive'], false);
     this.config.stemGain = clampNum(o['stemGain'], 1.5, 0, 6);
+
+    // Scene exposure / gamma. Bounds are the panel's own (ui/panel.ts's
+    // `exposureRange` and the gamma slider); absent keeps what the preset gave
+    // us, so a file from before this block loads unchanged.
+    const lk = plainObject(o['look']);
+    if (lk['exposure'] !== undefined) {
+      this.config.exposure = clampNum(lk['exposure'], this.config.exposure, 0.005, 1.5);
+    }
+    if (lk['gamma'] !== undefined) {
+      this.config.gamma = clampNum(lk['gamma'], this.config.gamma, 1, 3);
+    }
   }
 
   /**
@@ -971,18 +988,24 @@ export class PhysarumSim implements Sim, ModTarget {
         steps = 1;
       }
     } else {
-      this.stepAccumulator += Math.max(this.config.speed, 0);
-      while (this.stepAccumulator >= 1 && steps < MAX_SUBSTEPS) {
-        this.stepAccumulator -= 1;
-        steps++;
-      }
-      if (this.stepAccumulator > MAX_SUBSTEPS) this.stepAccumulator = 0;
+      const next = advanceStepCadence(
+        this.stepAccumulator,
+        this.config.speed,
+        MAX_SUBSTEPS,
+        simTick,
+        LEGACY_TICK_DIVISOR,
+      );
+      this.stepAccumulator = next.accumulator;
+      steps = next.steps;
     }
 
     this.stepsThisFrame = steps;
     if (steps > 0) this.uploadSplashes();
+    // Convert the 120 Hz app key back to the 60 Hz model key. On the even ticks
+    // that can run steps this is exactly the key the old 60 Hz clock supplied.
+    const modelTick = Math.floor(simTick / LEGACY_TICK_DIVISOR);
     for (let s = 0; s < steps; s++) {
-      this.runStep(simTick * MAX_SUBSTEPS + s);
+      this.runStep(modelTick * MAX_SUBSTEPS + s);
     }
   }
 

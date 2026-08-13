@@ -473,6 +473,100 @@ Design decisions worth recording:
   before the force step. Section boundaries respawn a fraction of particles
   ("new matter into an old world"), unchanged in meaning.
 
+## Revision 6 — 2026-08-12: a third substrate family (vizfx / "nebula")
+
+A family of **milkdrop/projectM-idiom shader visualizers** joins the two
+simulations, first member `?sim=nebula`. Structurally a vizfx visual is a
+screen-space feedback system — ping-pong HDR textures, a warp pass that
+resamples the previous frame (zoom, rotation, swirl, drift, decay), a draw
+pass that stamps new light on top — rendered through the shared phase-7 HDR
+chain. No agents, no compute passes; its whole "world" is the accumulation
+texture.
+
+Why it fits without new machinery: milkdrop's per-frame equations *are* the
+modulation system. The classic preset knobs (zoom, rot, warp, decay, wave
+gain, cx/cy, color rotation) are exactly what a θ slot table with `ModSpec`
+bounds, groups and slew classes expresses — so a visualizer brings a slot
+table, not a new mapping layer, which is precisely the seam Revision 5 built.
+
+Decisions worth recording:
+
+- **Chassis + visual split** (`web/src/sim/vizfx/`): the chassis owns the
+  feedback rig and ModTarget plumbing; a visual is a WGSL warp/draw pair plus
+  a declarative θ table. Each visual is its own sim entry with its own simId
+  and autosave slot — the chassis is code reuse, not an identity.
+- **4 species = the 4 stems**, directly: palette is per-layer colour,
+  stem-follow scales each layer's draw intensity, so "the vocal entered" is
+  legible by construction. Nebula draws four seeded orbiting emitter clusters,
+  one per stem; impulses fire shockwave rings and per-layer flashes.
+- **The feedback texture is the world**: snapshot copies it, `keepWorld`
+  reseeds keep it, section boundaries inject seeded noise into it. These
+  visualizers have seconds of memory, not minutes — they are a *complement*
+  to the terrarium sims, not a replacement, and the continuity priority still
+  belongs to physarum/plife.
+- **Timeline-driven only, deliberately.** The one capability a literal Winamp
+  oscilloscope needs — a live `AnalyserNode` waveform tap — is deferred; the
+  draw layer runs on stems + impulses, which is the project's ethos anyway
+  (obvious events, not FFT reactivity). The tap is a known, contained
+  fast-follow if a future visual wants real waveform geometry.
+
+## Revision 7 — 2026-08-12, later the same day: the repertoire and milkdrop mode
+
+The vizfx family grew from one visual to four — **nebula, tunnel, kaleido,
+plasma** — and gained its presentation layer. The picker now offers three
+*modes* (physarum / plife / milkdrop); inside milkdrop a `preset` dropdown
+selects the running visual, and an **advance-on-section** toggle (default on)
+live-swaps to the next preset when steady playback crosses a section boundary.
+Detection follows the event-cursor rule: a boundary crossed by playback fires,
+one skipped by a seek does not; a 12 s dwell stops short segments thrashing.
+Identity is unchanged underneath — each visual keeps its own simId, `?sim=`
+value and autosave slot, and `?sim=milkdrop` is an alias resolved before it can
+become a persistence key. `main.ts` derives the sim whitelist, constructor and
+picker from `sim/vizfx/visuals.ts`, so registering a visual is one line and the
+list's order is both the picker order and the transition cycle.
+
+The three new visuals each earned a recorded lesson:
+
+- **tunnel** (radial-gradient perspective flow, stems as angular sectors
+  stacked in depth): a gain-1 averaging kernel is still a *diffusion* — energy
+  arguments say nothing about structure, and the shipped streak erased the
+  image it was meant to extend. Also: modulation bounds must be checked against
+  *frame geometry* (sources were being modulated off-screen), and per-seed
+  quality is a distribution to sweep (512 seeds), not an anecdote.
+- **kaleido** (mirror-fold mandala, integer-snapped modulated symmetry order
+  5–8): a mirror rosette **cannot rotate** — locally area-preserving angular
+  offsets unbalance the 2n-to-1 fold gather globally, a divergent loop no
+  pixel-local clamp can see. And **no area-preserving radial ring wave
+  exists** (J ≡ 1 integrates to f² = r² + C), so its ring wave was replaced by
+  `hubDrain` from that exact family. Per-stem identity lives in radius bands
+  plus fixed angular lanes, which are permanent *because* the warp has no
+  angular transport.
+- **plasma** (stream-function interference field, divergence-free by
+  construction so the Jacobian correction is exact and second-order): presence
+  must buy **coverage, not intensity** — auto-exposure undoes any gain change
+  within a second but cannot undo a threshold moving the histogram's shape.
+  And a chain-level fact all visuals inherit: the grade's black cutoff
+  (≈0.119) sits *above* the auto-exposure target (0.10), so most of any frame
+  is below black by construction and only bloom — added after the measure
+  pass — can rescue dark regions; a smooth field with no pixel over the bloom
+  threshold renders mostly black however correct its energy budget.
+
+Open items, deliberately recorded rather than silently fixed:
+
+- **Transition exposure racing.** A section swap starts the new visual on a
+  black field, so auto-exposure races toward its rail and the first ~3 s
+  render over-exposed before settling. Fix belongs in the swap (carry or
+  pre-seed the adapted gain), not in any visual.
+- **Chassis emitter stride.** `VizFxSim.redrawEmitters` writes the emitter
+  buffer at stride `MAX_EMITTERS_PER_LAYER` (6) while shaders read at stride
+  `emitPerLayer` (4), so layers alias constellation entries. Confirmed
+  independently by two visual authors; both matched the behaviour rather than
+  fix it, because the fix visibly changes every visual's constellations and
+  should be a deliberate, before/after-judged change.
+- **tunnel is the weakest of the four** and seed-sensitive; its winding
+  distribution was retuned from a 512-seed sweep but the final look call needs
+  a real-time window, like every motion judgement here.
+
 ## Later, and deliberately not now
 
 Additive to the timeline: SongFormer labels, CLAP text-anchor axes,

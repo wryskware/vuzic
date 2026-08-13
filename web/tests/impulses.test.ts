@@ -18,8 +18,9 @@ import {
   ImpulseEngine,
   MAX_SPLASHES,
 } from '../src/sim/impulses.ts';
+import { SECONDS_PER_TICK } from '../src/timing.ts';
 
-const SPT = 1 / 60;
+const SPT = SECONDS_PER_TICK;
 
 function ev(t: number, kind: EventKind, strength = 1): TimelineEvent {
   return { t, kind, strength };
@@ -38,22 +39,22 @@ function fired(cursor: EventCursor, from: number, to: number): number[] {
 // ── event → tick mapping ─────────────────────────────────────────────────────
 
 test('an event maps to the nearest tick and fires on exactly that tick', () => {
-  // 1.0s -> tick 60; 1.004s rounds to 60 too; 1.02s -> tick 61.
+  // 1.0s -> tick 120; 1.004s rounds to 120 too; 1.02s -> tick 122.
   const events = [ev(1.0, 'kick'), ev(1.004, 'snare'), ev(1.02, 'hat')];
   const c = new EventCursor(events, SPT);
-  assert.equal(c.tickOf(0), 60);
-  assert.equal(c.tickOf(1), 60);
-  assert.equal(c.tickOf(2), 61);
+  assert.equal(c.tickOf(0), 120);
+  assert.equal(c.tickOf(1), 120);
+  assert.equal(c.tickOf(2), 122);
 
-  assert.deepEqual(fired(c, 58, 59), []);
-  assert.deepEqual(fired(c, 60, 60), [0, 1]);
-  assert.deepEqual(fired(c, 61, 61), [2]);
+  assert.deepEqual(fired(c, 118, 119), []);
+  assert.deepEqual(fired(c, 120, 120), [0, 1]);
+  assert.deepEqual(fired(c, 121, 122), [2]);
 });
 
 test('re-advancing to the same tick fires nothing (a paused transport does not retrigger)', () => {
   const c = new EventCursor([ev(0.5, 'kick')], SPT);
-  assert.deepEqual(fired(c, 0, 30), [0]);
-  for (let i = 0; i < 10; i++) assert.deepEqual(fired(c, 30, 30), []);
+  assert.deepEqual(fired(c, 0, 60), [0]);
+  for (let i = 0; i < 10; i++) assert.deepEqual(fired(c, 60, 60), []);
 });
 
 test('a whole run fires every event exactly once, in order', () => {
@@ -73,46 +74,46 @@ test('a whole run fires every event exactly once, in order', () => {
 test('seeking backwards relocates the pointer and replays from there', () => {
   const events = [ev(1, 'kick'), ev(2, 'snare'), ev(3, 'hat'), ev(4, 'bass')];
   const c = new EventCursor(events, SPT);
-  assert.deepEqual(fired(c, 0, 250), [0, 1, 2, 3]);
-  // jump back to tick 150 (2.5s): events 0 and 1 are behind the new playhead and
+  assert.deepEqual(fired(c, 0, 500), [0, 1, 2, 3]);
+  // jump back to tick 300 (2.5s): events 0 and 1 are behind the new playhead and
   // stay behind it; 2 (3s) and 3 (4s) play again as the walk reaches them.
-  assert.deepEqual(fired(c, 150, 250), [2, 3]);
+  assert.deepEqual(fired(c, 300, 500), [2, 3]);
 });
 
 test('seeking forward past events skips them instead of dumping a backlog', () => {
   const events = [ev(1, 'kick'), ev(2, 'snare'), ev(3, 'hat'), ev(50, 'bass')];
   const c = new EventCursor(events, SPT);
-  // land at tick 240 (4s) directly: the first three are behind us and are dropped
-  assert.deepEqual(fired(c, 240, 240), []);
-  assert.deepEqual(fired(c, 241, 3010), [3]);
+  // land at tick 480 (4s) directly: the first three are behind us and are dropped
+  assert.deepEqual(fired(c, 480, 480), []);
+  assert.deepEqual(fired(c, 481, 6020), [3]);
 });
 
-test('the app default forward seek (+2s = exactly 120 ticks) skips rather than dumping', () => {
+test('the app default forward seek (+2s = exactly 240 ticks) skips rather than dumping', () => {
   // Eight hats a quarter-second apart from 1.0s, plus one event past the landing
-  // point. ArrowRight seeks +2s, which at 1/60s is exactly 120 ticks — the walk
+  // point. ArrowRight seeks +2s, which at 1/120s is exactly 240 ticks — the walk
   // would fire all seven skipped hats on the landing tick.
   const events = [...Array.from({ length: 8 }, (_, i) => ev(1 + i * 0.25, 'hat')), ev(4, 'bass')];
   const c = new EventCursor(events, SPT);
-  assert.deepEqual(fired(c, 0, 60), [0]); // 1.0s = tick 60
-  assert.deepEqual(fired(c, 180, 180), []); // 3.0s, reached by one 120-tick jump
-  assert.deepEqual(fired(c, 181, 260), [8]); // and the cursor is left at the playhead
+  assert.deepEqual(fired(c, 0, 120), [0]); // 1.0s = tick 120
+  assert.deepEqual(fired(c, 360, 360), []); // 3.0s, reached by one 240-tick jump
+  assert.deepEqual(fired(c, 361, 520), [8]); // and the cursor is left at the playhead
 });
 
 test('a seek that lands exactly on an event still fires it', () => {
   const c = new EventCursor([ev(1, 'kick'), ev(9, 'snare')], SPT);
-  fired(c, 0, 100);
-  assert.deepEqual(fired(c, 540, 540), [1]); // 9s = tick 540, reached by a jump
+  fired(c, 0, 200);
+  assert.deepEqual(fired(c, 1080, 1080), [1]); // 9s = tick 1080, reached by a jump
 });
 
 test('relocation and the plain walk agree', () => {
   const events = Array.from({ length: 120 }, (_, i) => ev(i * 0.25, 'hat'));
   const walked = new EventCursor(events, SPT);
   const jumped = new EventCursor(events, SPT);
-  // 600 ticks of walking, vs. one jump straight to tick 600 then walking on
-  const a = fired(walked, 0, 900).filter((i) => (events[i] as TimelineEvent).t >= 10);
-  fired(jumped, 600, 600);
-  const b = fired(jumped, 601, 900);
-  // tick 600 = 10.0s = event 40 exactly, which the jump fires and the filter keeps
+  // 1200 ticks of walking, vs. one jump straight to tick 1200 then walking on
+  const a = fired(walked, 0, 1800).filter((i) => (events[i] as TimelineEvent).t >= 10);
+  fired(jumped, 1200, 1200);
+  const b = fired(jumped, 1201, 1800);
+  // tick 1200 = 10.0s = event 40 exactly, which the jump fires and the filter keeps
   assert.equal(a[0], 40);
   assert.deepEqual(a.slice(1), b);
 });
@@ -131,7 +132,7 @@ test('envelope: instant attack, exponential decay with the configured tau', () =
   engine.testFire('kick', 1);
   assert.equal(engine.levelOf('kick'), 1);
 
-  // exp(-elapsed/tau) exactly; `elapsed` is a whole number of 60 Hz ticks, which
+  // exp(-elapsed/tau) exactly; `elapsed` is a whole number of 120 Hz ticks, which
   // is why this is not compared against exp(-1) at tighter than ~1%.
   const ticks = Math.round(tau / SPT);
   run(engine, ticks);
@@ -161,7 +162,7 @@ test('envelope: hats decay fast, vocals slowly', () => {
   const engine = new ImpulseEngine(1, 4, [], SPT);
   engine.testFire('hat', 1);
   engine.testFire('vocal', 1);
-  run(engine, 12); // 200 ms
+  run(engine, 24); // 200 ms
   assert.ok(engine.levelOf('hat') < 0.15, `hat ${engine.levelOf('hat')}`);
   assert.ok(engine.levelOf('vocal') > 0.5, `vocal ${engine.levelOf('vocal')}`);
 });
@@ -170,7 +171,7 @@ test('envelope: a retrigger takes the max, so a roll sustains and never ramps aw
   const engine = new ImpulseEngine(1, 4, [], SPT);
   for (let i = 0; i < 40; i++) {
     engine.testFire('hat', 0.6);
-    run(engine, 4, 1 + i * 4);
+    run(engine, 8, 1 + i * 8);
   }
   assert.ok(engine.levelOf('hat') <= 0.6 + 1e-6, String(engine.levelOf('hat')));
   assert.ok(engine.levelOf('hat') > 0.2);
@@ -180,7 +181,7 @@ test('envelopes and splashes reach exactly zero, so an idle engine is a no-op', 
   const engine = new ImpulseEngine(1, 4, [], SPT);
   engine.testFire('snare', 1);
   assert.ok(engine.activeSplashes > 0);
-  run(engine, 600); // 10 s
+  run(engine, 1200); // 10 s
   assert.equal(engine.levelOf('snare'), 0);
   assert.equal(engine.activeSplashes, 0);
   for (const m of [engine.state.depositMul, engine.state.brightMul, engine.state.sensorMul]) {

@@ -1,3 +1,5 @@
+import { SECONDS_PER_TICK } from '../timing.ts';
+
 export interface ClickTrackSource {
   duration: number;
   beats: readonly number[];
@@ -25,8 +27,6 @@ export interface AudioClockOptions {
 
 /** Which buffer the transport ended up playing. */
 export type AudioSourceKind = 'track' | 'click';
-
-const DEFAULT_TICK = 1 / 60;
 
 /**
  * AudioContext.currentTime is the master clock. Sim ticks are derived from it by a
@@ -59,8 +59,11 @@ export class AudioClock {
   constructor(source: ClickTrackSource, opts: AudioClockOptions = {}) {
     this.source = source;
     this.duration = source.duration;
-    this.secondsPerTick = opts.secondsPerTick ?? DEFAULT_TICK;
-    this.maxTicksPerFrame = opts.maxTicksPerFrame ?? 8;
+    // The default is the app clock itself rather than a second local literal, so
+    // a caller that omits the option cannot silently fall back to the old rate.
+    this.secondsPerTick = opts.secondsPerTick ?? SECONDS_PER_TICK;
+    // 16 at 120 Hz preserves the old 8-at-60-Hz catch-up window (~133 ms).
+    this.maxTicksPerFrame = opts.maxTicksPerFrame ?? 16;
     this.audioUrl = opts.audioUrl ?? null;
     // Bound unconditionally — including a caller-supplied fetcher — because it
     // is stored on `this` and called as `this.fetcher(...)`: native `fetch`

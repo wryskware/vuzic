@@ -1,0 +1,5 @@
+# Structural graph should contain source, not generated analysis/runtime payloads.
+data/timelines/
+analysis/out/
+web/public/timelines/
+media/

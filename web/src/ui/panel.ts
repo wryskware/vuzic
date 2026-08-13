@@ -26,6 +26,7 @@ import {
   type SliderParams,
 } from './mod-fill';
 import { addRenderFolder } from './render-folder';
+import { createSimFolder, type SimPanelHost } from './sim-panel';
 import { createTrackFolder, type TrackPanelHost } from './track-panel';
 import { createWorkbench, type WorkbenchHandle, type WorkbenchHost } from './workbench';
 
@@ -142,6 +143,8 @@ export function createPanel(
     explorer?: ExplorerPanelHost;
     /** omit to hide the track picker entirely */
     tracks?: TrackPanelHost;
+    /** omit to hide the substrate picker entirely */
+    sims?: SimPanelHost;
   },
 ): PanelHandle {
   const config = sim.config;
@@ -182,6 +185,10 @@ export function createPanel(
   // that belongs to neither the sim nor the mapping, and picking a song comes
   // before shaping what it drives.
   if (opts.tracks) createTrackFolder(tabs.play, opts.tracks);
+  // And directly under it, the other "what am I looking at" decision. Same shape,
+  // same reason for the placement, and it is mounted from all three panels
+  // identically — see `createSimFolder`.
+  if (opts.sims) createSimFolder(tabs.play, opts.sims);
 
   // The world seed is created here, above the macros, rather than by the
   // workbench — the workbench fills it in. Ordering is mount order in tweakpane,
@@ -437,6 +444,7 @@ export function createPanel(
     renderPasses: () => sim.stats().renderPasses,
     autoExposureState: () => sim.post.autoExposureState,
     invalidatePalette: () => sim.invalidatePalette(),
+    onChange: persistExtras,
     soil: true,
   });
 

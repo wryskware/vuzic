@@ -76,8 +76,8 @@ export class EventCursor {
   }
 
   /**
-   * The tick an event lands on. Nearest tick rather than floor: at 60 Hz a tick is
-   * 16.7 ms and rounding halves the worst-case timing error, which is audible-scale
+   * The tick an event lands on. Nearest tick rather than floor: at 120 Hz a tick is
+   * 8.3 ms and rounding halves the worst-case timing error, which is audible-scale
    * on a transient. Deterministic, and monotonic in `t`, which is what the walk needs.
    */
   tickOf(index: number): number {

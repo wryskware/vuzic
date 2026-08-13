@@ -72,6 +72,7 @@ import {
 } from './mod-fill';
 import { createPanelTabs, type PanelHandle, type PanelWorkbench } from './panel';
 import { addRenderFolder } from './render-folder';
+import { createSimFolder, type SimPanelHost } from './sim-panel';
 import { createTrackFolder, type TrackPanelHost } from './track-panel';
 import { createWorkbench, type WorkbenchHandle } from './workbench';
 
@@ -104,6 +105,8 @@ export function createPlifePanel(
     explorer?: ExplorerPanelHost;
     /** omit to hide the track picker entirely */
     tracks?: TrackPanelHost;
+    /** omit to hide the substrate picker entirely */
+    sims?: SimPanelHost;
   },
 ): PanelHandle {
   const config = sim.config;
@@ -144,6 +147,8 @@ export function createPlifePanel(
   // that belongs to neither the sim nor the mapping, and picking a song comes
   // before shaping what it drives.
   if (opts.tracks) createTrackFolder(tabs.play, opts.tracks);
+  // And directly under it, the other "what am I looking at" decision.
+  if (opts.sims) createSimFolder(tabs.play, opts.sims);
 
   // Created before the macros folder because tweakpane orders by mount order and
   // the seed belongs above them; the workbench fills it in below.
@@ -682,6 +687,7 @@ export function createPlifePanel(
     renderPasses: () => sim.stats().renderPasses,
     autoExposureState: () => sim.post.autoExposureState,
     invalidatePalette: () => sim.invalidatePalette(),
+    onChange: persistExtras,
     // No soil field in this sim, so the ember underlay has nothing to draw from.
   });
 

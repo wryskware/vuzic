@@ -1,0 +1,20 @@
+compression:
+  level: minimal
+  output: "off"
+
+retrieval:
+  top_k: 8
+  confidence_threshold: 0.25
+  marginal_ratio: 0.75
+  bootstrap_max_tokens: 4000
+
+indexer:
+  watch: true
+  debounce_ms: 750
+  redact_secrets: true
+
+memory:
+  redact_pii: true
+
+audit:
+  enabled: false

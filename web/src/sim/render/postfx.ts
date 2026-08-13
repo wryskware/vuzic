@@ -474,6 +474,24 @@ export class PostFx {
     this.ctx?.device.queue.writeBuffer(this.autoBuf, 0, new Float32Array([1, 0, 0, 0]));
   }
 
+  /**
+   * Start the controller at a caller-supplied gain instead of 1.
+   *
+   * A live substrate swap hands the incoming chain the outgoing chain's adapted
+   * gain: the new sim starts on an empty field, and a controller re-hunting from
+   * 1× against black races to its rail and renders the first seconds badly
+   * over-exposed. Seeding it where the outgoing controller had settled makes the
+   * moment after a swap exposed like the moment before it. Clamped to the live
+   * rails so a stale or foreign value cannot park the controller out of range.
+   */
+  seedAutoExposure(gain: number): void {
+    const g = this.cfg.grade;
+    const lo = Math.max(g.autoMinGain, 1e-3);
+    const hi = Math.max(g.autoMaxGain, lo);
+    const seeded = Math.min(Math.max(Number.isFinite(gain) ? gain : 1, lo), hi);
+    this.ctx?.device.queue.writeBuffer(this.autoBuf, 0, new Float32Array([seeded, 0, 0, 0]));
+  }
+
   dispose(): void {
     this.disposed = true;
     this.releaseTextures();

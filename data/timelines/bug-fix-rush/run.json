@@ -1,0 +1,32 @@
+{
+  "trackId": "Bug Fix Rush",
+  "input": "/mnt/c/Users/perag/wryskware/latent-music-terrarium/data/timelines/bug-fix-rush/audio.wav",
+  "wav": "/mnt/c/Users/perag/wryskware/latent-music-terrarium/data/timelines/bug-fix-rush/audio.wav",
+  "seed": 1358424564,
+  "hopSeconds": 0.1,
+  "frames": 1572,
+  "device": "auto",
+  "stagesRun": [
+    "audio",
+    "beats",
+    "structure",
+    "stems",
+    "events",
+    "character",
+    "recurrence"
+  ],
+  "stagesSkipped": [],
+  "muq": {
+    "model": "OpenMuQ/MuQ-large-msd-iter",
+    "layer": 6
+  },
+  "events": {
+    "total": 2401,
+    "kick": 346,
+    "snare": 569,
+    "hat": 652,
+    "bass": 365,
+    "vocal": 469
+  },
+  "notes": []
+}

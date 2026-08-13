@@ -5,7 +5,7 @@ import { ExplorerLog, type ExplorerAction } from './explore/log';
 import { ExplorerRig, TILE_COUNT } from './explore/rig';
 import { ExplorerSearch, type CandidateSet, type ExplorerSubspace } from './explore/search';
 import { initGpu, renderUnsupportedPage, type GpuContext } from './gpu/context';
-import { buildDriverBank, Modulator } from './mapping/modulation';
+import { buildDriverBank, MAX_CONTINUOUS_TICK_GAP, Modulator } from './mapping/modulation';
 import {
   defaultModulationConfig,
   downloadText,
@@ -21,21 +21,53 @@ import { defaultPlifeConfig } from './sim/plife/config';
 import { PlifeSim } from './sim/plife/plife';
 import { resolveSeed } from './sim/seed';
 import type { Sim } from './sim/types';
+import { VIZFX_VISUALS } from './sim/vizfx/visuals';
+import { VizFxSim } from './sim/vizfx/vizfx';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
 import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
 import { loadTimeline } from './timeline/loader';
 import { TimelineSampler, type FeaturesFrame } from './timeline/sampler';
+import { SECONDS_PER_TICK, TICK_HZ } from './timing';
 import type { ExplorerPanelHost } from './ui/explore-panel';
 import { createPanel, type PanelHandle } from './ui/panel';
 import { createPlifePanel } from './ui/plife-panel';
+import { MILKDROP_MODE } from './ui/sim-panel';
+import { createVizFxPanel } from './ui/vizfx-panel';
 
 const DEFAULT_TRACK = 'free-fall';
 const FALLBACK_TRACK = 'synthetic';
 const DEFAULT_SIM = 'physarum';
-/** Every `?sim=` value that resolves to a real substrate. */
-const SIMS = ['physarum', 'plife'] as const;
-const SECONDS_PER_TICK = 1 / 60;
-const MAX_FREE_TICKS_PER_FRAME = 4;
+/**
+ * Every `?sim=` value that resolves to a real substrate.
+ *
+ * The two simulations are spelled out; the vizfx visuals are appended from the
+ * repertoire (`sim/vizfx/visuals.ts`), because each visual is its own entry here
+ * — its own θ vector, its own autosave slot — and the repertoire file is the one
+ * place a new visual is declared. Only string-ness is relied on below (`includes`
+ * and the picker's option list), so the derivation costs no type safety that the
+ * old literal tuple was actually providing.
+ */
+const VIZFX_IDS: readonly string[] = VIZFX_VISUALS.map((v) => v.id);
+const SIMS: readonly string[] = ['physarum', 'plife', ...VIZFX_IDS];
+/**
+ * How long a milkdrop preset is guaranteed before a section boundary may replace
+ * it. 12 s.
+ *
+ * Section boundaries are not evenly spaced: an intro tag, a two-bar fill lifted
+ * into its own segment, or a bridge that the analysis split in two can arrive
+ * within seconds of each other, and honouring every one of them would be a
+ * strobe of substrate swaps rather than a slideshow. 12 s is comfortably shorter
+ * than a real verse or chorus (15–30 s) — so consecutive *sections* each still
+ * get their own visual — and long enough that a cluster of short segments
+ * collapses to one transition.
+ *
+ * Measured from the last committed swap of any kind, deliberately including the
+ * manual ones: picking a preset by hand and having a boundary take it away one
+ * second later is exactly the thrash this exists to prevent.
+ */
+const AUTO_ADVANCE_DWELL_MS = 12_000;
+// Eight 120 Hz ticks preserves the old four-60-Hz-tick catch-up window.
+const MAX_FREE_TICKS_PER_FRAME = 8;
 const PANEL_REFRESH_FRAMES = 30;
 
 /**
@@ -47,7 +79,8 @@ const PANEL_REFRESH_FRAMES = 30;
 const EXPLORER_STEP_DEFAULT = 0.3;
 
 /**
- * Fixed steps per *plife* tile tick in explorer mode. 2, i.e. half rate.
+ * App ticks per *plife* tile tick in explorer mode. 2, i.e. half the live sim's
+ * new 120 Hz physics rate (the tiles remain a 60-state-per-second fallback).
  *
  * Particle life's world is normalised rather than measured in pixels, so a small
  * tile is not a cheap tile: nine tiles is nine full populations and nine full
@@ -144,10 +177,19 @@ function switchTrack(id: string): void {
  * also the persistence key (`ModTarget.simId`), so an unknown value has to be
  * refused rather than passed through — otherwise `?sim=typo` would quietly start
  * physarum against an empty autosave slot named after the typo.
+ *
+ * `?sim=milkdrop` is accepted as an *alias* for the first visual in the
+ * repertoire, because the mode picker calls the family by that name and a URL
+ * that cannot say what the UI says is a small trap. It is resolved to a concrete
+ * id here, before anything downstream exists — so the string never reaches
+ * `buildSimBundle`, never becomes a `ModTarget.simId`, and can never name an
+ * autosave slot. `switchSim` writes the concrete id back into the URL on the
+ * first swap, so the alias is an entry point and not a state.
  */
 function requestedSim(): string {
   const param = new URLSearchParams(location.search).get('sim');
-  return param !== null && /^[a-z-]+$/.test(param) ? param : DEFAULT_SIM;
+  if (param === null || !/^[a-z-]+$/.test(param)) return DEFAULT_SIM;
+  return param === MILKDROP_MODE ? (VIZFX_IDS[0] ?? DEFAULT_SIM) : param;
 }
 
 /**
@@ -212,6 +254,7 @@ async function main(): Promise<void> {
     timeline = await loadTimeline(entry.base, fetcherFor(entry));
   }
   const sampler = new TimelineSampler(timeline, SECONDS_PER_TICK);
+  console.info(`simulation clock: ${TICK_HZ} Hz fixed timestep`);
 
   const clock = new AudioClock(
     {
@@ -233,6 +276,120 @@ async function main(): Promise<void> {
     onSeek: (t) => clock.seek(t),
   });
 
+  // The modulation input: ~16 named drivers built from this timeline's own
+  // structure channels and its 64-dim latent channel, variance-reordered and
+  // z-scored once, here (plan.md Revision 4). No sidecar, no background upgrade.
+  //
+  // Timeline-shaped, not substrate-shaped, so it is built once out here and
+  // handed to every Modulator a sim swap goes on to construct — the same reason
+  // the sampler, the clock and the overlay above it are not rebuilt either.
+  const drivers = buildDriverBank(timeline);
+  const tuningLog = new TuningLog();
+  if (sampler.events.length === 0) {
+    console.info(`timeline "${track}" has no events array; impulses idle until test-fired`);
+  }
+
+  /**
+   * A substrate and the two lanes whose *shape* comes from it. Exactly three
+   * things: everything else in this file is either timeline-shaped (sampler,
+   * clock, drivers, overlay) or device-shaped (the GPU context), and both survive
+   * a substrate change untouched.
+   */
+  interface SimBundle {
+    sim: PhysarumSim | PlifeSim | VizFxSim;
+    impulses: ImpulseEngine;
+    modulator: Modulator;
+  }
+
+  /**
+   * The one construction path. Startup calls it; `switchSim` calls it.
+   *
+   * That it is *one* function is the whole point rather than a tidiness
+   * preference. The order below is load-bearing in three separate places (the
+   * accent channels before the first tick, `applyBase` before `setMode`,
+   * `onSeedChange` before anything can reseed), and every one of those is the kind
+   * of constraint that a second, hand-kept-in-step copy silently loses six months
+   * later. If a live swap had been written as its own sequence it would have been
+   * a slowly diverging duplicate of this; instead the only thing the swap owns is
+   * *when* to call this and what to tear down first.
+   *
+   * `sim.init(ctx)` is deliberately **not** in here. It is the one step whose
+   * failure has to be recoverable differently by the two callers — at startup it
+   * means "this browser cannot run the app", during a swap it means "keep the sim
+   * you already have" — so it stays at each call site where that choice is made.
+   */
+  const buildSimBundle = (id: string, forSeed: number): SimBundle => {
+    // Typed as the union rather than as `Sim`: everything downstream talks to
+    // either `Sim` or `ModTarget`, which every substrate satisfies, and the union
+    // is only needed for the handful of substrate-specific call sites (the accent
+    // channels, the panel factory, the frame-rate governor) that are guarded by
+    // an instanceof.
+    const visual = VIZFX_VISUALS.find((v) => v.id === id);
+    const sim: PhysarumSim | PlifeSim | VizFxSim =
+      id === 'plife'
+        ? new PlifeSim(forSeed, defaultPlifeConfig())
+        : visual
+          ? new VizFxSim(visual, forSeed)
+          : new PhysarumSim(forSeed, defaultConfig(4));
+    // All three substrates read the stems channel directly, for different things:
+    // physarum drives deposit with it, plife drives population, nebula drives
+    // per-layer presence. None of them is the Modulator's stem-follow lane, which
+    // owns brightness and is wired separately.
+    sim.setStemChannel(sampler.getChannel('stems'));
+    if (sim instanceof PlifeSim) {
+      // Novelty → accent population. Deliberately a direct wire rather than a
+      // seeded projection: the projections give the accents character, this is
+      // what makes "the chorus arrived" legible on every seed.
+      sim.setAccentChannels(sampler.getChannel('novelty16'), sampler.getChannel('actChorus'));
+    }
+
+    // The impulse lane. It exists whether or not the timeline carries events: with
+    // none, every multiplier stays at 1 and the workbench's test-fire buttons are
+    // still the way to tune the responses. Sized to *this* substrate's species
+    // count, which is exactly why a swap cannot carry the old engine across.
+    const impulses = new ImpulseEngine(
+      forSeed,
+      sim.config.speciesCount,
+      sampler.events,
+      SECONDS_PER_TICK,
+    );
+    sim.setImpulses(impulses.state);
+
+    // `sim.simId` and not the requested id: it is the autosave slot's name, and
+    // taking it from the object that was actually constructed is what keeps an
+    // unrecognised `?sim=` reading physarum's mapping rather than opening an empty
+    // slot named after the typo.
+    const stored = loadModulationLocal(sim.simId);
+    const modConfig =
+      stored && modulationFits(stored, sim.config.speciesCount, sim.simId)
+        ? stored
+        : defaultModulationConfig(sim.config, sim.simId);
+    const modulator = new Modulator(sim, sampler, drivers, modConfig, forSeed);
+    // Before `setMode`, and that order is load-bearing. Turning modulation on
+    // adopts whatever θ the config currently holds as the base of every modulated
+    // slot (the VST rule: modulation breathes around the value you own), so the
+    // seeded personality has to be *in* the config by then or the first act of the
+    // app would be to adopt the shipped defaults and throw the seed's personality
+    // away. Stamping it here rather than waiting for `sim.init`'s onSeedChange also
+    // covers the WebGPU-unavailable path, where that callback never runs.
+    modulator.applyBase();
+    modulator.setMode(modConfig.enabled && modulator.available ? 'modulated' : 'manual');
+    console.info(
+      `modulation: ${sim.simId} · ${modulator.sourceLabel} → ${modulator.modulatedCount} parameters, ` +
+        `seed ${forSeed}${pinned ? ' (pinned)' : ''}`,
+    );
+
+    // One seed, three consumers. Hotspot placement, projection wiring and the
+    // seeded personality all re-key from here, so a reseed, a reroll and a snapshot
+    // restore each move all three together without any caller remembering to.
+    sim.onSeedChange = (s) => {
+      impulses.setSeed(s);
+      modulator.setSeed(s);
+    };
+
+    return { sim, impulses, modulator };
+  };
+
   // Resolve which sim to build before building it, so a second substrate slots
   // in here rather than being threaded through the twenty call sites below —
   // those all talk to `ModTarget` now and do not care which one they got.
@@ -240,77 +397,63 @@ async function main(): Promise<void> {
   if (!(SIMS as readonly string[]).includes(wantedSim)) {
     console.warn(`sim "${wantedSim}" not available; using ${DEFAULT_SIM}`);
   }
-  // Typed as the union rather than as `Sim`: everything below this line talks to
-  // either `Sim` or `ModTarget`, both of which both substrates satisfy, and the
-  // union is only needed for the two physarum-specific call sites (the stems
-  // channel and the parameter panel) that are guarded by an instanceof.
-  const sim: PhysarumSim | PlifeSim =
-    wantedSim === 'plife'
-      ? new PlifeSim(seed, defaultPlifeConfig())
-      : new PhysarumSim(seed, defaultConfig(4));
-  // Both substrates read the stems channel directly now, for different things:
-  // physarum drives deposit with it, plife drives population. Neither is the
-  // Modulator's stem-follow lane, which owns brightness and is wired separately.
-  sim.setStemChannel(sampler.getChannel('stems'));
-  if (sim instanceof PlifeSim) {
-    // Novelty → accent population. Deliberately a direct wire rather than a
-    // seeded projection: the projections give the accents character, this is
-    // what makes "the chorus arrived" legible on every seed.
-    sim.setAccentChannels(sampler.getChannel('novelty16'), sampler.getChannel('actChorus'));
-  }
-  const simId = sim.simId;
+  // `let` and not `const`, because the substrate picker replaces all three at
+  // once (`switchSim`). Every closure below reads them rather than capturing
+  // them, which is what makes the swap invisible to the frame loop.
+  let { sim, impulses, modulator } = buildSimBundle(wantedSim, seed);
 
-  // The impulse lane. It exists whether or not the timeline carries events: with
-  // none, every multiplier stays at 1 and the workbench's test-fire buttons are
-  // still the way to tune the responses.
-  const impulses = new ImpulseEngine(
-    seed,
-    sim.config.speciesCount,
-    sampler.events,
-    SECONDS_PER_TICK,
-  );
-  sim.setImpulses(impulses.state);
-  if (sampler.events.length === 0) {
-    console.info(`timeline "${track}" has no events array; impulses idle until test-fired`);
-  }
+  // ── milkdrop mode ──────────────────────────────────────────────────────────
+  //
+  // "milkdrop" is what the picker calls the vizfx family, and it is presentation
+  // only: every visual keeps its own `simId`, its own `?sim=` value and its own
+  // autosave slot, and everything below deals in those concrete ids. The two
+  // things the mode actually owns are this block.
+  //
+  /**
+   * Whether a section boundary advances to the next preset. **On by default**,
+   * and that is a judgement call worth stating:
+   *
+   * - it is the behaviour the feature was asked for, and the one that makes the
+   *   mode a slideshow rather than a picker with a spare button;
+   * - it is inert at a repertoire of one, which is what ships today — so the
+   *   default cannot surprise anyone until a second visual exists, by which
+   *   point it is the requested behaviour;
+   * - the flag is session-local (below), so defaulting it *off* would mean
+   *   turning it on again after every reload, which is real friction on a
+   *   feature someone explicitly wanted.
+   *
+   * What it costs is that a swap can arrive mid-tune, rebuilding the panel under
+   * a slider. The gates in `noteSectionBoundary` are what keep that rare — never
+   * while paused, never while exploring, never inside the dwell window — and the
+   * toggle is one click away in the milkdrop folder.
+   *
+   * Session-local on purpose: it is a way of watching, not a mapping decision,
+   * so it has no business in the autosave slot that holds θ.
+   */
+  let autoAdvance = true;
+  /**
+   * Which visual "milkdrop" means when it is picked from the mode selector: the
+   * last one that actually ran this session, not the first in the repertoire.
+   * Held here because the panel that displays it is destroyed by every swap.
+   */
+  let milkdropEntry = sim instanceof VizFxSim ? sim.simId : (VIZFX_IDS[0] ?? '');
+  /** `performance.now()` of the last committed swap — the dwell window's origin. */
+  let lastSwapAt = performance.now();
+  /** Segment index last seen by the boundary detector; -2 is "never looked". */
+  let lastSegment = -2;
+  /** Sim tick last seen by the boundary detector, for the playback/seek test. */
+  let lastBoundaryTick = -1;
+  /**
+   * What the detector decided about the most recent segment change, for scripted
+   * checks — the gate chain is otherwise invisible from outside, and "it did not
+   * swap" is the same observation whether the logic ran or never fired at all.
+   */
+  let lastBoundaryDecision: { time: number; segment: number; action: string } | null = null;
 
-  // The modulation input: ~16 named drivers built from this timeline's own
-  // structure channels and its 64-dim latent channel, variance-reordered and
-  // z-scored once, here (plan.md Revision 4). No sidecar, no background upgrade.
-  const drivers = buildDriverBank(timeline);
-  const stored = loadModulationLocal(simId);
-  const modConfig =
-    stored && modulationFits(stored, sim.config.speciesCount, simId)
-      ? stored
-      : defaultModulationConfig(sim.config, simId);
-  const modulator = new Modulator(
-    sim,
-    sampler,
-    drivers,
-    modConfig,
-    seed,
-  );
-  // Before `setMode`, and that order is now load-bearing. Turning modulation on
-  // adopts whatever θ the config currently holds as the base of every modulated
-  // slot (the VST rule: modulation breathes around the value you own), so the
-  // seeded personality has to be *in* the config by then or the first act of the
-  // app would be to adopt the shipped defaults and throw the seed's personality
-  // away. Stamping it here rather than waiting for `sim.init`'s onSeedChange also
-  // covers the WebGPU-unavailable path, where that callback never runs.
-  modulator.applyBase();
-  modulator.setMode(modConfig.enabled && modulator.available ? 'modulated' : 'manual');
-  console.info(
-    `modulation: ${modulator.sourceLabel} → ${modulator.modulatedCount} parameters, ` +
-      `seed ${seed}${pinned ? ' (pinned)' : ''}`,
-  );
-  const tuningLog = new TuningLog();
-
-  // One seed, three consumers. Hotspot placement, projection wiring and the
-  // seeded personality all re-key from here, so a reseed, a reroll and a snapshot
-  // restore each move all three together without any caller remembering to.
-  sim.onSeedChange = (s) => {
-    impulses.setSeed(s);
-    modulator.setSeed(s);
+  /** The next entry in repertoire order, wrapping. Equal to `id` when there is one. */
+  const nextVisualAfter = (id: string): string => {
+    const i = VIZFX_IDS.indexOf(id);
+    return VIZFX_IDS[(i + 1) % VIZFX_IDS.length] ?? id;
   };
 
   let gpu: GpuContext | null = null;
@@ -400,6 +543,19 @@ async function main(): Promise<void> {
    * parameter sets rather than the parameter sets themselves.
    */
   const createExplorerTile = (): Sim & ModTarget => {
+    if (sim instanceof VizFxSim) {
+      // A vizfx tile is the cheapest of the three by a wide margin: its cost is
+      // three full-screen passes at the tile's own pixel count, so nine
+      // third-size tiles are exactly the work of one full-size sim. Nothing to
+      // force off and no tick divisor, unlike plife.
+      //
+      // The tile takes the live sim's *visual* by reference — it is frozen data
+      // (a slot table and two WGSL strings), so there is nothing to clone — and a
+      // structuredClone of its config, for the reason the block above states.
+      const tile = new VizFxSim(sim.visual, sim.currentSeed, structuredClone(sim.config));
+      tile.setStemChannel(sampler.getChannel('stems'));
+      return tile;
+    }
     if (sim instanceof PlifeSim) {
       const tile = new PlifeSim(sim.currentSeed, structuredClone(sim.config));
       // Nine tiles never run the brute pair search, whatever the live sim is
@@ -559,7 +715,8 @@ async function main(): Promise<void> {
    * `adoptParticleState` closes that gap for the one substrate where it is a
    * clean copy.
    *
-   * **plife promotes, physarum does not**, and the asymmetry is a decision:
+   * **plife promotes, physarum and vizfx do not**, and the asymmetry is a
+   * decision:
    *
    * - plife's tiles are `structuredClone`s of the live config, so they run the
    *   same `maxParticles` in the same normalised world space, and per-particle
@@ -571,6 +728,12 @@ async function main(): Promise<void> {
    *   there is nothing size-compatible to copy and nothing meaningful to
    *   resample. It also needs it least: the look is carried by the trail field,
    *   which re-forms from the agents within seconds of exit.
+   * - a vizfx tile's world *is* a texture at the tile's own size, so the copy is
+   *   not merely size-incompatible, it is meaning-incompatible: every θ radius is
+   *   expressed in aspect-corrected screen units, and rescaling the field would
+   *   change what all of them meant. The same objection `VizFxSim.ensureField`
+   *   states about a canvas resize. The picked θ still comes with you and rebuilds
+   *   a comparable nebula over the field's own memory, about a second.
    *
    * Ordering is load-bearing twice. The copy is encoded *before* `close()`,
    * which disposes the tile's buffers; and it is submitted from a DOM event
@@ -719,13 +882,22 @@ async function main(): Promise<void> {
     },
   };
 
-  try {
-    gpu = await initGpu(stage);
-    await sim.init(gpu);
-    // A panel binds tweakpane widgets to its sim's config fields by name, so each
-    // substrate has its own. Everything *around* the widgets — the workbench, the
-    // impulse folder, the HDR chain — is shared, so the two calls differ only in
-    // which factory they name and take identical options.
+  /**
+   * Build the workbench for whichever substrate is live *now*.
+   *
+   * A panel binds tweakpane widgets to its sim's config fields by name, so each
+   * substrate has its own. Everything *around* the widgets — the workbench, the
+   * impulse folder, the HDR chain, the two pickers — is shared, so the three
+   * calls differ only in which factory they name and take an identical options
+   * object.
+   *
+   * Every one of those options is read at call time rather than captured once:
+   * `sim`, `impulses` and `modulator` are the three things a swap replaces, and a
+   * panel built against the previous trio would be a live set of sliders wired to
+   * a disposed sim. The hosts that are *not* rebuilt (the explorer host, the two
+   * `switchTo` callbacks) are closures over `let`s for the same reason.
+   */
+  const buildPanel = (): PanelHandle => {
     const panelOpts = {
       pinned,
       // Both reroll buttons land here, after sim.reseed() — which has already
@@ -747,6 +919,20 @@ async function main(): Promise<void> {
         serverCount: catalog.serverCount,
         switchTo: switchTrack,
       },
+      sims: {
+        ids: SIMS,
+        presets: VIZFX_IDS,
+        current: sim.simId,
+        entryPreset: milkdropEntry,
+        switchTo: (id: string): void => void switchSim(id),
+        // Read at build time, written through: the panel is rebuilt by every
+        // swap, so the value it shows is re-derived from this `let` rather than
+        // being the panel's own copy of the truth.
+        autoAdvance,
+        setAutoAdvance: (on: boolean): void => {
+          autoAdvance = on;
+        },
+      },
       workbench: {
         sim,
         modulator,
@@ -757,8 +943,144 @@ async function main(): Promise<void> {
         seek: (t: number) => clock.seek(t),
       },
     };
-    panel =
-      sim instanceof PhysarumSim ? createPanel(sim, panelOpts) : createPlifePanel(sim, panelOpts);
+    return sim instanceof PhysarumSim
+      ? createPanel(sim, panelOpts)
+      : sim instanceof PlifeSim
+        ? createPlifePanel(sim, panelOpts)
+        : createVizFxPanel(sim, panelOpts);
+  };
+
+  /** open() is async; without this a double click builds two substrates */
+  let swapping = false;
+
+  /**
+   * Change substrate **without a reload**, unlike `switchTrack` above.
+   *
+   * The two are not the same problem, which is why they get opposite answers. A
+   * track reaches into the sampler, the clock, the driver bank *and* the sim, and
+   * rebuilding it live would mean a second construction path for each. A
+   * substrate reaches into exactly three objects — itself, the impulse engine
+   * sized to its species count, and the modulator keyed to its θ registry — and
+   * those three already have a single construction path (`buildSimBundle`) that
+   * this function calls rather than reimplements. The timeline, the sampler, the
+   * clock, the catalog, the driver bank, the overlay and the GPU context are all
+   * substrate-independent and stay exactly where they are.
+   *
+   * What that buys is the thing a reload cannot: **the music does not stop**. The
+   * whole point of a substrate picker is to answer "which of these looks better
+   * against this bar", and a reload puts you back at 0:00 with a cold audio
+   * element every time you ask.
+   *
+   * ## The order here is the careful part
+   *
+   * 1. **Explorer first.** Its nine tiles are the *old* substrate, its rig's tick
+   *    divisor was chosen for the old substrate, and its log is keyed to the old
+   *    `simId`. So the mode is exited, the rig dropped (its `close()` disposes the
+   *    tiles and releases the layered target) and the log dropped, before anything
+   *    else moves. Re-entering after a swap rebuilds all three against the new sim.
+   *
+   *    One visible consequence, and it is the right one: exiting explorer mode
+   *    normally leaves modulation in `manual`, because the human has just spent
+   *    the mode hand-authoring a θ and handing it straight back to the music would
+   *    make that work invisible. A swap re-reads the *new* substrate's autosave
+   *    slot and comes back modulated — correctly, because the θ that rule exists
+   *    to protect belongs to the substrate that just went away.
+   * 2. **Build and `init` the new sim while the old one is still running.** The
+   *    frame loop keeps ticking and rendering the outgoing sim throughout the
+   *    await — it reads `sim`, which has not moved yet — so there is no window
+   *    where the loop can touch a sim whose pipelines do not exist. Two substrates
+   *    hold GPU memory at once for the duration; explorer mode already runs ten at
+   *    once, so this is not the expensive case.
+   * 3. **Commit, then dispose.** The three `let`s are reassigned together and the
+   *    panel is rebuilt before the old sim's buffers are destroyed. Both happen in
+   *    a promise continuation, never inside `frame()` — JS gives no way to
+   *    interleave with a synchronous `advance`/`render`/`submit` — so the queue
+   *    sees every one of the old sim's passes submitted before its textures go.
+   *
+   * The seed carried across is `sim.currentSeed` and not the startup `seed`: a
+   * reroll moves the former and not the latter, and "switch substrate" must mean
+   * the world you are looking at, not the one you started with. A pinned `?seed=`
+   * is untouched by that, so it keeps meaning exactly what it meant.
+   *
+   * `?sim=` is updated with `replaceState` rather than `pushState`: this is not a
+   * navigation — nothing about it should make Back mean "return to physarum" when
+   * Back has meant "leave the app" all session. What it does buy is that a manual
+   * reload, and every `switchTrack`/`syncUrlSeed` write after it, lands on the
+   * substrate you are actually looking at.
+   */
+  const switchSim = async (id: string): Promise<void> => {
+    // The GPU guard is not defensive dressing: with no device there is no panel,
+    // so the only caller that can reach this is a scripted one.
+    if (swapping || !gpu || id === sim.simId) return;
+    if (!(SIMS as readonly string[]).includes(id)) {
+      console.warn(`sim "${id}" not available; staying on "${sim.simId}"`);
+      return;
+    }
+    swapping = true;
+    let next: SimBundle | null = null;
+    try {
+      explorerExit();
+      explorerRig?.close();
+      explorerRig = null;
+      explorerLog = null;
+
+      next = buildSimBundle(id, sim.currentSeed);
+      await next.sim.init(gpu);
+      // Within the vizfx family the look is one preference, not one per visual:
+      // exposure, the grade and the adapted gain all carry across the swap, so a
+      // section-boundary auto-advance neither resets the sliders to the shipped
+      // defaults nor spends its first seconds racing the exposure controller up
+      // from 1× against an empty field. After `init` on purpose — init's own
+      // resetAutoExposure runs first and the seed here overrides it.
+      if (sim instanceof VizFxSim && next.sim instanceof VizFxSim) next.sim.adoptLook(sim);
+
+      const outgoing = sim;
+      const outgoingPanel = panel;
+      ({ sim, impulses, modulator } = next);
+      // Cleared at the commit point so the catch below cannot dispose the sim it
+      // just installed. Everything after this line — `buildPanel`, the disposals,
+      // `replaceState` — throws into a world where `next.sim` *is* the live sim,
+      // and `next?.sim.dispose()` there would destroy the running substrate's
+      // buffers and leave nothing to fall back to. Before it, `next` is the
+      // half-built bundle nobody has seen and disposing it is exactly right.
+      next = null;
+      // Both before `buildPanel`, which reads them. The dwell origin is stamped
+      // on *every* committed swap, hand-driven or automatic, so a manual preset
+      // pick gets the same protection from the next boundary that an automatic
+      // one does; the entry memory only moves when a visual actually ran, so a
+      // failed `init` cannot redirect the mode selector to something unusable.
+      lastSwapAt = performance.now();
+      if (sim instanceof VizFxSim) milkdropEntry = sim.simId;
+      panel = buildPanel();
+      outgoingPanel?.dispose();
+      outgoing.dispose();
+      panel.refresh();
+
+      const url = new URL(location.href);
+      url.searchParams.set('sim', id);
+      history.replaceState(null, '', url.toString());
+    } catch (err) {
+      // Two shapes of failure, one recovery. Before the commit (the common one —
+      // `init` threw) the running app is exactly as it was, except for the picker,
+      // which has already moved itself to the value that failed. After it, the new
+      // sim is live and it is the *old* one that may not have been disposed. Both
+      // are answered by rebuilding the panel against whatever `sim` is now, which
+      // is the same rebuild the success path does and the thing that makes the
+      // picker tell the truth again.
+      console.error(`sim: could not switch to "${id}"; staying on "${sim.simId}"`, err);
+      next?.sim.dispose();
+      panel?.dispose();
+      panel = buildPanel();
+      panel.refresh();
+    } finally {
+      swapping = false;
+    }
+  };
+
+  try {
+    gpu = await initGpu(stage);
+    await sim.init(gpu);
+    panel = buildPanel();
     panel.refresh();
   } catch (err) {
     console.error(err);
@@ -772,15 +1094,46 @@ async function main(): Promise<void> {
   // (snapshot/restore fidelity, mapping behaviour across sections) need a way in.
   if (import.meta.env.DEV) {
     (globalThis as unknown as Record<string, unknown>)['terrarium'] = {
-      sim,
-      modulator,
+      // Getters for the three a substrate swap replaces. Captured values would
+      // hand a scripted check the disposed sim of whatever was running when the
+      // page loaded, which is the kind of stale handle that makes a check pass
+      // against nothing.
+      get sim() {
+        return sim;
+      },
+      get modulator() {
+        return modulator;
+      },
+      get impulses() {
+        return impulses;
+      },
       sampler,
       clock,
       tuningLog,
-      impulses,
       // The explorer is driven by clicking tiles, which is exactly the kind of
       // thing a scripted check cannot do; the host is the whole surface.
       explorer: explorerHost,
+      switchSim,
+      // The transition lane is otherwise unobservable from outside: it fires at
+      // most once per section and its whole contract is about the boundaries it
+      // *declines*. `lastBoundaryDecision` is how a scripted check tells "played
+      // through a boundary and skipped because the repertoire is one" apart from
+      // "the detector never ran". Writing `autoAdvance` here moves the flag, not
+      // the checkbox — the panel re-derives it on the next rebuild.
+      milkdrop: {
+        get autoAdvance(): boolean {
+          return autoAdvance;
+        },
+        set autoAdvance(on: boolean) {
+          autoAdvance = on;
+        },
+        get repertoire(): readonly string[] {
+          return VIZFX_IDS;
+        },
+        get lastBoundary(): { time: number; segment: number; action: string } | null {
+          return lastBoundaryDecision;
+        },
+      },
     };
   }
 
@@ -895,7 +1248,118 @@ async function main(): Promise<void> {
    * that: both are stateful smoothers, and running them against a sim nobody is
    * stepping would leave them describing a world that never happened.
    */
+  /**
+   * Milkdrop's transition engine: watch the transport cross a section boundary
+   * and hand the next preset to `switchSim`.
+   *
+   * ## Crossed, not merely arrived at
+   *
+   * The detector's whole job is to tell "the song moved from the verse into the
+   * chorus" apart from "somebody dropped the playhead into the chorus", and it
+   * does it exactly the way `EventCursor` and the Modulator already do: one tick
+   * forward is playback, the same tick again is an idle transport, and anything
+   * else — a restart, an arrow key, an overlay scrub, an A/B restore — is a
+   * jump. A jump **relocates** `lastSegment` without firing, for the reason the
+   * cursor gives about walking a gap: a seek is a statement about where you want
+   * to be, not a claim to have travelled through everything in between, and a
+   * scrub across four sections would otherwise be four swaps in four frames.
+   * The first sight of a segment is a relocation too — there is no boundary
+   * behind the first frame of the session.
+   *
+   * ## Tracking is unconditional; only the response is gated
+   *
+   * Same reasoning as `Modulator.trackSegment`'s: short-circuiting on the toggle
+   * would let `lastSegment` go stale while the toggle was off, so turning it back
+   * on mid-track would read the next tick as a crossing and swap the substrate at
+   * an arbitrary point in the song. Everything that can say "not now" therefore
+   * says it *after* the state has been advanced — and is recorded, because from
+   * the outside "no swap happened" looks identical whether the chain ran and
+   * declined or never fired at all.
+   *
+   * The gates, in order after the crossing itself: milkdrop must be the running
+   * mode (a `VizFxSim` — physarum and plife have no repertoire to advance
+   * through), the toggle must be on, explorer mode must be closed (a swap exits
+   * it and drops the rig, which would end a climb the human is in the middle of),
+   * the transport must be *playing* (a free-running idle sim is not crossing
+   * anything the music did), no swap may be in flight, and the current preset
+   * must have had its dwell.
+   *
+   * A boundary that lands mid-swap is **dropped, not queued**. `switchSim`'s own
+   * guard would refuse it anyway, but a boundary is a moment: a transition that
+   * fired 400 ms late because an `init` was still awaiting would be a transition
+   * in the wrong place, which is worse than the one that did not happen.
+   *
+   * At a repertoire of one — today — the last gate always wins and this is inert
+   * by construction rather than by being switched off.
+   */
+  const noteSectionBoundary = (features: FeaturesFrame): void => {
+    const gap = features.tick - lastBoundaryTick;
+    const continuous = lastBoundaryTick >= 0 && gap >= 0 && gap <= MAX_CONTINUOUS_TICK_GAP;
+    lastBoundaryTick = features.tick;
+
+    const seg = sampler.segmentIndexAt(features.time);
+    // Outside the segment map, or still in the one we were in: nothing happened.
+    if (seg < 0 || seg === lastSegment) return;
+    const first = lastSegment === -2;
+    lastSegment = seg;
+
+    const decide = (action: string): void => {
+      lastBoundaryDecision = { time: features.time, segment: seg, action };
+    };
+    if (first || !continuous) {
+      decide(first ? 'first' : 'seek');
+      return;
+    }
+    if (!(sim instanceof VizFxSim)) {
+      decide('not-milkdrop');
+      return;
+    }
+    if (!autoAdvance) {
+      decide('off');
+      return;
+    }
+    if (explorerActive) {
+      decide('exploring');
+      return;
+    }
+    if (!clock.isPlaying) {
+      decide('idle');
+      return;
+    }
+    if (swapping) {
+      decide('swapping');
+      return;
+    }
+    const dwell = performance.now() - lastSwapAt;
+    if (dwell < AUTO_ADVANCE_DWELL_MS) {
+      decide('dwell');
+      console.info(
+        `milkdrop: section ${seg} at ${features.time.toFixed(1)}s — held, ` +
+          `${(dwell / 1000).toFixed(1)}s into a ${AUTO_ADVANCE_DWELL_MS / 1000}s dwell`,
+      );
+      return;
+    }
+    const next = nextVisualAfter(sim.simId);
+    if (next === sim.simId) {
+      // One visual in the repertoire. Logged rather than silent: this is the
+      // only externally visible sign that the lane is armed and working.
+      decide('single');
+      console.info(
+        `milkdrop: section ${seg} at ${features.time.toFixed(1)}s — ` +
+          `"${sim.simId}" is the whole repertoire, staying`,
+      );
+      return;
+    }
+    decide('advance');
+    console.info(`milkdrop: section ${seg} at ${features.time.toFixed(1)}s → "${next}"`);
+    void switchSim(next);
+  };
+
   const advance = (tick: number, features: FeaturesFrame): void => {
+    // Ahead of the explorer branch, because segment tracking is unconditional
+    // even though the response is not — see the header. The mode's own gate is
+    // inside.
+    noteSectionBoundary(features);
     if (explorerActive) {
       explorerRig?.tick(features, stepIndex);
       return;
@@ -1010,12 +1474,18 @@ async function main(): Promise<void> {
     // world, so it sits at the end where the eye can find it without reading the
     // rest — and it is the segment you watch while dragging the pair-search mode
     // or the particle cap.
+    // "milkdrop · nebula" rather than "nebula": the picker calls the family
+    // milkdrop and the status line has to agree with the control that got you
+    // here. Assembled here and not inside the sim — the grouping is main's
+    // presentation decision, and `Sim.name` stays the visual's own id, which is
+    // what `?sim=` carries and what the autosave slot is named after.
+    const simLabel = sim instanceof VizFxSim ? `${MILKDROP_MODE} · ${sim.name}` : sim.name;
     statusEl.textContent = explorerActive
-      ? `${track} · ${clock.sourceKind} audio · sim "${sim.name}" · ` +
+      ? `${track} · ${clock.sourceKind} audio · sim "${simLabel}" · ` +
         `explorer gen ${explorerSet?.generation ?? 0} · ${explorerSubspace} · ` +
         `step ${explorerStep.toFixed(2)} · ${explorerLog?.size ?? 0} logged · ` +
         `${modulator.mode} · ${gpuState} · ${fpsShown} fps`
-      : `${track} · ${clock.sourceKind} audio · sim "${sim.name}" ` +
+      : `${track} · ${clock.sourceKind} audio · sim "${simLabel}" ` +
         `${sim.status()} · ` +
         `${modulator.mode}${
           modulator.mode === 'modulated' ? ` ${modulator.sourceLabel}` : ''
