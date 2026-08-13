@@ -1,5 +1,34 @@
 # Headless export handoff
 
+## Update — 2026-08-13 (later the same day)
+
+All three "Next priorities" below are implemented, tested, and committed:
+
+- `6db254e` — persistent `ExportSession` controller; job state, download link,
+  and duplicate-submission guard survive panel/simulation rebuilds.
+- `e972202` — `DELETE /jobs/{id}` cancellation with terminal `cancelled` state,
+  cooperative `CTRL_BREAK_EVENT` then bounded `taskkill /T /F` process-tree
+  cleanup, worker SIGBREAK/SIGTERM/SIGINT handling with `.partial` removal, and
+  a cancel button in the panel. Smoke-verified mid-render on native Windows.
+- `7804257` — real HDR10: scene-linear HDR grade (paper white 203 / mastering
+  peak 1000, recipe-bounded) → GPU PQ/BT.2020/P010 packing compute pass → HEVC
+  Main10 NVENC with restamped VUI and a post-encode ST 2086 `mdcv` box. New
+  profiles `hevc-hdr10-2160p120` / `hevc-hdr10-1080p120` (now the default),
+  capability-gated on 10-bit encoder support; SDR debug profiles unchanged.
+
+Suites: 305 web / 146 python, all green. Known caveats: HDR playback on a real
+HDR display is still unverified (ffprobe + decoded-pixel statistics only); HDR
+MP4s have no faststart (the mastering box is injected into the trailing
+`moov`); no AV1 HDR profile (av1_nvenc drops VUI color tags with no bitstream
+filter to restore them); 4K120 HDR measured ~8.7× slower than real time;
+analysis-job cancellation returns 409 by design. Remaining product work is
+unchanged from "Lower-priority hardening" below plus those caveats.
+
+The rest of this document describes the state *before* that work and is kept
+for context.
+
+---
+
 Status as of 2026-08-13: the first useful native-Windows rendering path is implemented, committed, and tested. A browser session can submit its current seed and settings to the local FastAPI service and render a full track as an AV1/AAC MP4. Both 1080p120 and honest SDR 4K120 profiles work. The remaining work is hardening and true HDR, not a blocker to creating renders now.
 
 ## Checkpoints
