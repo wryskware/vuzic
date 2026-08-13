@@ -19,7 +19,7 @@ function recipe(): ExportRecipe {
     'plife',
   );
   return {
-    version: 1,
+    version: 2,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',
@@ -27,6 +27,7 @@ function recipe(): ExportRecipe {
     seedPinned: true,
     simulation,
     modulation,
+    modulationBase: [1, 2, 3],
     impulses: defaultImpulseConfig(),
     render,
     particleBudget: simulation.budget.cap,
@@ -50,12 +51,26 @@ test('recipe canonical serialization round-trips the complete concrete state', (
 });
 
 test('unsupported recipe versions and mutable sequence behavior are rejected', () => {
-  const unsupported = { ...recipe(), version: 2 };
-  assert.throws(() => validateExportRecipe(unsupported), /unsupported version 2/);
+  const unsupported = { ...recipe(), version: 1 };
+  assert.throws(() => validateExportRecipe(unsupported), /unsupported version 1/);
 
   const sequence = recipe() as unknown as Record<string, unknown>;
   sequence['presentation'] = { mode: 'single', autoAdvance: true };
   assert.throws(() => validateExportRecipe(sequence), /autoAdvance.*must be false/);
+});
+
+test('v2 requires a finite explicit authored modulation base', () => {
+  const missing = recipe() as unknown as Record<string, unknown>;
+  delete missing['modulationBase'];
+  assert.throws(() => validateExportRecipe(missing), /modulationBase.*required/);
+
+  const empty = recipe();
+  empty.modulationBase = [];
+  assert.throws(() => validateExportRecipe(empty), /modulationBase.*non-empty/);
+
+  const nonFinite = recipe();
+  nonFinite.modulationBase[1] = Number.NaN;
+  assert.throws(() => validateExportRecipe(nonFinite), /modulationBase\[1\].*finite/);
 });
 
 test('identity, concrete config, and modulation discriminator must agree', () => {

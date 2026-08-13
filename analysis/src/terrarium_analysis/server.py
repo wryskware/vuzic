@@ -32,6 +32,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import re
 import secrets
 import shutil
@@ -49,6 +50,12 @@ from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
 from .context import STAGE_NAMES, Config
+from .export_jobs import (
+    ExportProcessError,
+    ExportSettings,
+    probe_export_capabilities,
+    run_export_worker,
+)
 
 log = logging.getLogger("terrarium.server")
 
@@ -73,6 +80,7 @@ SERVED_FILES = {
 }
 
 JobStatus = Literal["queued", "running", "done", "error"]
+JobKind = Literal["analysis", "export"]
 
 
 def sniff_audio(head: bytes, suffix: str) -> bool:
@@ -117,6 +125,8 @@ class Job:
     id: str
     track_id: str
     title: str
+    kind: JobKind = "analysis"
+    export_id: str = ""
     status: JobStatus = "queued"
     stage: str = ""
     message: str = ""
@@ -125,10 +135,12 @@ class Job:
     #: (structure and character are ~80 % of the wall time between them), so this
     #: is "how far through the list", not "how far through the work".
     progress: float = 0.0
+    result: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "jobId": self.id,
+            "kind": self.kind,
             "trackId": self.track_id,
             "title": self.title,
             "status": self.status,
@@ -137,6 +149,10 @@ class Job:
             "error": self.error,
             "progress": round(self.progress, 3),
         }
+        if self.kind == "export":
+            value["exportId"] = self.export_id
+            value.update(self.result)
+        return value
 
 
 class StageWatcher(logging.Handler):
@@ -181,16 +197,19 @@ class Store:
     data_dir: Path
     strict: bool = False
     jobs: dict[str, Job] = field(default_factory=dict)
+    exports: dict[str, Job] = field(default_factory=dict)
+    export_settings: ExportSettings | None = None
+    export_capabilities: dict[str, Any] | None = None
+    export_capabilities_lock: threading.Lock = field(default_factory=threading.Lock)
     #: Guards the slug claim only — the read-modify-write of "is this directory
     #: taken, take it". Job *fields* are deliberately not under it: they are
     #: written from the worker and from a logging handler, and a lock spanning
     #: those two is how the first version of this file deadlocked.
     lock: threading.Lock = field(default_factory=threading.Lock)
-    #: One at a time. Both heavy stages want the whole GPU, so a second
-    #: concurrent analysis would not finish sooner — it would just make the first
-    #: one slower and put two demucs models in VRAM at once.
+    #: One at a time. Analysis and export both want the whole GPU, so this is the
+    #: local GPU lease as well as the analysis queue.
     pool: ThreadPoolExecutor = field(
-        default_factory=lambda: ThreadPoolExecutor(max_workers=1, thread_name_prefix="analyze")
+        default_factory=lambda: ThreadPoolExecutor(max_workers=1, thread_name_prefix="terrarium-job")
     )
     #: `dir name -> (fingerprint, listing)`. See `track_entry`.
     cache: dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]] = field(default_factory=dict)
@@ -297,10 +316,154 @@ def analyze_job(store: Store, job: Job, src: Path, work_root: Path) -> None:
         src.unlink(missing_ok=True)
 
 
-def create_app(data_dir: Path, strict: bool = False) -> FastAPI:
+MAX_EXPORT_RECIPE_BYTES = 8 * 1024 * 1024
+EXPORT_PROFILES = {"hdr10-2160p120", "hdr10-1080p120"}
+
+
+def _number(value: Any, name: str, minimum: float, maximum: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < minimum
+        or value > maximum
+    ):
+        raise HTTPException(422, f"{name} must be finite and in {minimum}..{maximum}")
+    return float(value)
+
+
+def validate_export_submission(
+    payload: Any,
+    track: dict[str, Any],
+    renderer_build: str,
+) -> tuple[dict[str, Any], float, float]:
+    """Validate the browser-owned envelope before any paths are attached.
+
+    TypeScript remains the complete recipe-schema authority and the worker
+    validates it again.  Python validates the security/resource boundary and
+    the identity fields it owns: track, build, profile, encoder, and range.
+    """
+
+    if not isinstance(payload, dict) or set(payload) - {"trackId", "recipe", "range"}:
+        raise HTTPException(422, "export body has unsupported fields")
+    track_id = payload.get("trackId")
+    if track_id != track["id"]:
+        raise HTTPException(409, "trackId does not match the selected track")
+    recipe = payload.get("recipe")
+    if not isinstance(recipe, dict):
+        raise HTTPException(422, "recipe must be an object")
+    try:
+        encoded = json.dumps(recipe, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, f"recipe is not finite JSON: {exc}") from exc
+    if len(encoded) > MAX_EXPORT_RECIPE_BYTES:
+        raise HTTPException(413, f"recipe exceeds {MAX_EXPORT_RECIPE_BYTES} bytes")
+    if recipe.get("version") != 2:
+        raise HTTPException(422, "recipe version 2 is required")
+    if recipe.get("rendererBuild") != renderer_build:
+        raise HTTPException(409, "renderer build changed; refresh the app and capture again")
+    identity = recipe.get("track")
+    if not isinstance(identity, dict) or identity.get("id") != track_id:
+        raise HTTPException(409, "recipe track does not match trackId")
+    content_version = identity.get("contentVersion")
+    if content_version != track["version"]:
+        raise HTTPException(409, "track content changed; refresh the app and capture again")
+    output = recipe.get("output")
+    if not isinstance(output, dict):
+        raise HTTPException(422, "recipe.output must be an object")
+    if output.get("profile") not in EXPORT_PROFILES:
+        raise HTTPException(422, "unsupported export profile")
+    if output.get("encoder") != "av1_nvenc":
+        raise HTTPException(422, "the SDR/debug path requires av1_nvenc")
+    if not isinstance(recipe.get("sim"), str) or not re.fullmatch(
+        r"[A-Za-z0-9._-]+", recipe["sim"]
+    ):
+        raise HTTPException(422, "recipe.sim is invalid")
+    seed = recipe.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 0xFFFF_FFFF:
+        raise HTTPException(422, "recipe.seed must be a uint32")
+
+    range_value = payload.get("range")
+    if range_value is None:
+        start, duration = 0.0, float(track["duration"])
+    else:
+        if not isinstance(range_value, dict) or set(range_value) != {"startSeconds", "durationSeconds"}:
+            raise HTTPException(422, "range requires startSeconds and durationSeconds")
+        start = _number(range_value["startSeconds"], "range.startSeconds", 0, 6 * 60 * 60)
+        duration = _number(
+            range_value["durationSeconds"], "range.durationSeconds", 1e-9, 6 * 60 * 60
+        )
+    if start + duration > float(track["duration"]) + 1e-9:
+        raise HTTPException(422, "export range extends beyond the track")
+    return recipe, start, duration
+
+
+def export_job(
+    store: Store,
+    job: Job,
+    request_path: Path,
+    diagnostic_path: Path,
+    output_path: Path,
+) -> None:
+    settings = store.export_settings
+    if settings is None:
+        job.status, job.error = "error", "export runtime is not configured"
+        return
+
+    def on_message(message: dict[str, Any]) -> None:
+        kind = message.get("type")
+        if kind == "ready":
+            job.stage = "render"
+            job.message = f"{message.get('adapter', 'GPU')} · {message.get('transport', 'worker')}"
+        elif kind == "progress":
+            job.stage = str(message.get("stage") or "render")[:64]
+            frame, frames = message.get("frame"), message.get("frames")
+            if isinstance(frame, int) and isinstance(frames, int) and frames > 0:
+                job.progress = min(max(frame / frames, 0.0), 0.999)
+                job.message = f"frame {frame:,} / {frames:,}"
+        elif kind == "error":
+            job.message = str(message.get("message") or "worker failed")[:200]
+
+    try:
+        job.status, job.stage, job.message = "running", "startup", "starting native worker"
+        result = run_export_worker(settings, request_path, diagnostic_path, on_message)
+        if not output_path.is_file():
+            raise ExportProcessError("worker reported success but output is missing")
+        frames = int(result.get("frames") or 0)
+        job.result.update(
+            {
+                "filename": job.result["filename"],
+                "byteSize": output_path.stat().st_size,
+                "duration": frames / 120,
+                "width": int(result.get("width") or 0),
+                "height": int(result.get("height") or 0),
+                "frameRate": 120,
+                "frames": frames,
+                "codec": "av1",
+                "audio": bool(result.get("audio")),
+                "transport": str(result.get("transport") or "sdr-rgba8-av1-debug"),
+                "downloadUrl": f"/exports/{job.export_id}/download",
+            }
+        )
+        job.status, job.stage, job.progress = "done", "done", 1.0
+        job.message = f"wrote {job.result['filename']}"
+    except Exception as exc:  # noqa: BLE001 — one failed export must not stop the server
+        log.exception("export job %s failed", job.id)
+        job.status, job.stage = "error", "error"
+        job.error = f"{type(exc).__name__}: {exc}"
+
+
+def create_app(
+    data_dir: Path,
+    strict: bool = False,
+    export_settings: ExportSettings | None = None,
+) -> FastAPI:
     data_dir = data_dir.resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
-    store = Store(data_dir=data_dir, strict=strict)
+    if export_settings is None:
+        repo_root = Path(__file__).resolve().parents[3]
+        export_settings = ExportSettings.discover(repo_root)
+    store = Store(data_dir=data_dir, strict=strict, export_settings=export_settings)
     # Uploads and pipeline byproducts land next to the tracks so the finishing
     # move is a rename rather than a cross-device copy of ~50 MB.
     work_root = data_dir / ".work"
@@ -324,6 +487,13 @@ def create_app(data_dir: Path, strict: bool = False) -> FastAPI:
         if not re.fullmatch(r"[A-Za-z0-9._-]+", track_id) or not d.is_dir():
             raise HTTPException(404, "no such track")
         return d
+
+    def capabilities_sync() -> dict[str, Any]:
+        with store.export_capabilities_lock:
+            if store.export_capabilities is None:
+                assert store.export_settings is not None
+                store.export_capabilities = probe_export_capabilities(store.export_settings)
+            return dict(store.export_capabilities)
 
     @app.get("/tracks")
     async def list_tracks() -> dict[str, Any]:
@@ -383,6 +553,117 @@ def create_app(data_dir: Path, strict: bool = False) -> FastAPI:
         log.info("job %s: queued %s (%d bytes) as %s", job.id, file.filename, size, track_id)
         return job.as_dict()
 
+    @app.get("/exports/capabilities")
+    async def export_capabilities() -> dict[str, Any]:
+        return await run_in_threadpool(capabilities_sync)
+
+    @app.post("/exports")
+    async def create_export(payload: dict[str, Any]) -> dict[str, Any]:
+        track_id = payload.get("trackId") if isinstance(payload, dict) else None
+        if not isinstance(track_id, str):
+            raise HTTPException(422, "trackId is required")
+        directory = track_dir(track_id)
+        entry = track_entry(store, directory)
+        if entry is None:
+            raise HTTPException(409, "track is incomplete")
+        capabilities = await run_in_threadpool(capabilities_sync)
+        if not capabilities.get("available"):
+            raise HTTPException(503, str(capabilities.get("reason") or "export unavailable"))
+        recipe, start, duration = validate_export_submission(
+            payload,
+            entry,
+            str(capabilities.get("rendererBuild") or ""),
+        )
+        audio = directory / "audio.wav"
+        if not audio.is_file():
+            raise HTTPException(409, "track has no audio.wav")
+
+        settings = store.export_settings
+        assert settings is not None and settings.node_executable is not None
+        assert settings.ffmpeg_executable is not None
+        settings.output_dir.mkdir(parents=True, exist_ok=True)
+        job_id = uuid.uuid4().hex[:12]
+        export_id = uuid.uuid4().hex[:16]
+        filename = f"{track_id}-{recipe['sim']}-{recipe['seed']}-{export_id}.mp4"
+        output_path = (settings.output_dir / filename).resolve()
+        if output_path.parent != settings.output_dir:
+            raise HTTPException(500, "resolved export path escaped output directory")
+
+        private = work_root / f"export-{job_id}"
+        private.mkdir(parents=False, exist_ok=False)
+        request_path = private / "request.json"
+        diagnostic_path = private / "worker.log"
+        request = {
+            "version": 1,
+            "recipe": recipe,
+            "runtime": {
+                "ffmpegExecutable": str(settings.ffmpeg_executable),
+                "workingDirectory": str(settings.repo_root),
+            },
+            "timeline": {
+                "jsonPath": str((directory / "timeline.json").resolve()),
+                "binaryPath": str((directory / "timeline.bin").resolve()),
+            },
+            "audioPath": str(audio.resolve()),
+            "output": {
+                "path": str(output_path),
+                "profile": recipe["output"]["profile"],
+            },
+            "range": {"startSeconds": start, "durationSeconds": duration},
+        }
+        with request_path.open("x", encoding="utf-8") as stream:
+            json.dump(request, stream, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            stream.write("\n")
+
+        job = Job(
+            id=job_id,
+            track_id=track_id,
+            title=str(entry["title"]),
+            kind="export",
+            export_id=export_id,
+            result={
+                "filename": filename,
+                "recipeVersion": recipe["version"],
+                "rendererBuild": recipe["rendererBuild"],
+                "trackVersion": recipe["track"]["contentVersion"],
+                "sim": recipe["sim"],
+                "seed": recipe["seed"],
+            },
+        )
+        store.jobs[job.id] = job
+        store.exports[export_id] = job
+        store.pool.submit(
+            export_job,
+            store,
+            job,
+            request_path,
+            diagnostic_path,
+            output_path,
+        )
+        log.info("export job %s: queued %s as %s", job.id, track_id, filename)
+        return job.as_dict()
+
+    @app.get("/exports/{export_id}")
+    async def get_export(export_id: str) -> dict[str, Any]:
+        job = store.exports.get(export_id)
+        if job is None:
+            raise HTTPException(404, "no such export")
+        return job.as_dict()
+
+    @app.get("/exports/{export_id}/download")
+    async def download_export(export_id: str) -> FileResponse:
+        job = store.exports.get(export_id)
+        if job is None:
+            raise HTTPException(404, "no such export")
+        if job.status != "done":
+            raise HTTPException(409, "export is not complete")
+        settings = store.export_settings
+        assert settings is not None
+        path = settings.output_dir / str(job.result["filename"])
+        if not path.is_file():
+            raise HTTPException(410, "export file is missing")
+        return FileResponse(path, media_type="video/mp4", filename=path.name)
+
     @app.get("/jobs/{job_id}")
     async def get_job(job_id: str) -> dict[str, Any]:
         job = store.jobs.get(job_id)
@@ -410,6 +691,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--data-dir", type=Path, default=None, help="track store (default <repo>/data/timelines)")
+    p.add_argument("--node", type=Path, default=None, help="Node executable for native exports")
+    p.add_argument("--ffmpeg", type=Path, default=None, help="FFmpeg executable for native exports")
+    p.add_argument("--export-worker", type=Path, default=None, help="built Node export worker")
+    p.add_argument("--export-dir", type=Path, default=None, help="completed video output directory")
     p.add_argument(
         "--strict",
         action="store_true",
@@ -423,11 +708,27 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)-7s %(message)s",
     )
     data_dir = (args.data_dir or default_data_dir()).resolve()
+    repo_root = Path(__file__).resolve().parents[3]
+    export_settings = ExportSettings.discover(
+        repo_root,
+        node=args.node,
+        ffmpeg=args.ffmpeg,
+        worker=args.export_worker,
+        output_dir=args.export_dir,
+    )
     log.info("serving %s on http://%s:%d", data_dir, args.host, args.port)
+    if reason := export_settings.unavailable_reason():
+        log.warning("native export unavailable: %s", reason)
+    else:
+        log.info("native exports will be written to %s", export_settings.output_dir)
 
     import uvicorn
 
-    uvicorn.run(create_app(data_dir, strict=args.strict), host=args.host, port=args.port)
+    uvicorn.run(
+        create_app(data_dir, strict=args.strict, export_settings=export_settings),
+        host=args.host,
+        port=args.port,
+    )
     return 0
 
 

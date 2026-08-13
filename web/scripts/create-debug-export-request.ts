@@ -3,8 +3,15 @@ import { dirname, resolve } from 'node:path';
 
 import { validateExportWorkerRequest, type ExportWorkerRequest } from '../src/export/worker-request.ts';
 import { defaultModulationConfig } from '../src/mapping/persist.ts';
+import { baseVector } from '../src/mapping/modulation.ts';
 import { defaultImpulseConfig } from '../src/sim/impulses.ts';
 import { defaultPlifeConfig } from '../src/sim/plife/config.ts';
+import { seedMatrixBase } from '../src/sim/plife/genmatrix.ts';
+import {
+  modulationSlots,
+  presetFromConfig,
+  presetToVector,
+} from '../src/sim/plife/preset.ts';
 import type { ExportRecipe } from '../src/runtime/recipe.ts';
 
 function option(name: string, fallback: string): string {
@@ -36,9 +43,16 @@ const fullSimulation = defaultPlifeConfig();
 fullSimulation.budget.adaptive = false;
 const { render, ...simulation } = fullSimulation;
 const { render: _sharedRender, ...modulation } = defaultModulationConfig(fullSimulation, 'plife');
+const slots = modulationSlots(fullSimulation.speciesCount);
+const defaults = presetToVector(
+  presetFromConfig(fullSimulation),
+  fullSimulation.speciesCount,
+);
+const seededBase = baseVector(seed, defaults, slots, new Float64Array(slots.length));
+seedMatrixBase(seed, fullSimulation, seededBase);
 
 const recipe: ExportRecipe = {
-  version: 1,
+  version: 2,
   rendererBuild: 'phase2-native-worker',
   track: { id: 'pink-loop', contentVersion: 'local-engineering' },
   sim: 'plife',
@@ -46,6 +60,7 @@ const recipe: ExportRecipe = {
   seedPinned: true,
   simulation,
   modulation,
+  modulationBase: Array.from(seededBase),
   impulses: defaultImpulseConfig(),
   render,
   particleBudget: simulation.budget.cap,

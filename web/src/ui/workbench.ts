@@ -86,7 +86,7 @@ export interface WorkbenchHost {
   modulator: Modulator;
   log: TuningLog;
   trackId: string;
-  /** was this run's seed pinned when it started? */
+  /** whether this exact live seed was pinned when this panel was constructed */
   pinned: boolean;
   /** transport position in seconds */
   time(): number;

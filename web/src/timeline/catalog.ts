@@ -33,7 +33,7 @@ export interface TrackEntry {
   /** Human name — the analysis manifest's own `track.id` ("Free Fall (Remastered)"). */
   title: string;
   duration: number;
-  /** Content hash from the server; empty for bundled tracks, which version with the build. */
+  /** Hash of the exact timeline.json + timeline.bin bytes this entry loads. */
   version: string;
   /** Base URL for `timeline.json` / `timeline.bin` / `audio.wav`, no trailing slash. */
   base: string;
@@ -90,7 +90,7 @@ export async function loadBundledTracks(): Promise<TrackEntry[]> {
       id: String(r.id),
       title: String(r.title ?? r.id),
       duration: Number(r.duration) || 0,
-      version: '',
+      version: String(r.version ?? ''),
       base: bundledBase(String(r.id)),
       hasAudio: r.hasAudio === true,
       source: 'bundled' as const,

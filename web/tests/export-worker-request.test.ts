@@ -15,6 +15,7 @@ import {
 import { defaultModulationConfig } from '../src/mapping/persist.ts';
 import { defaultImpulseConfig } from '../src/sim/impulses.ts';
 import { defaultPlifeConfig } from '../src/sim/plife/config.ts';
+import { presetFromConfig, presetToVector } from '../src/sim/plife/preset.ts';
 import type { ExportRecipe } from '../src/runtime/recipe.ts';
 
 function recipe(): ExportRecipe {
@@ -24,7 +25,7 @@ function recipe(): ExportRecipe {
     'plife',
   );
   return {
-    version: 1,
+    version: 2,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',
@@ -32,6 +33,7 @@ function recipe(): ExportRecipe {
     seedPinned: true,
     simulation,
     modulation,
+    modulationBase: Array.from(presetToVector(presetFromConfig({ ...simulation, render }), simulation.speciesCount)),
     impulses: defaultImpulseConfig(),
     render,
     particleBudget: simulation.budget.cap,

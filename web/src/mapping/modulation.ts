@@ -773,6 +773,34 @@ export class Modulator {
   }
 
   /**
+   * Restore an explicitly authored centre without reading the target's live θ.
+   *
+   * Export capture may happen while music is displacing the target away from
+   * this centre, so `adoptBase()` would bake a transient excursion into the
+   * render. Validation is atomic: a malformed vector changes no state. The
+   * caller chooses when to apply the restored base to the target.
+   */
+  restoreBase(values: ArrayLike<number>): void {
+    if (values.length !== this.length) {
+      throw new Error(`modulation base has ${values.length} values; expected ${this.length}`);
+    }
+    for (let i = 0; i < this.length; i++) {
+      const value = values[i];
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new Error(`modulation base[${i}] must be finite`);
+      }
+      if (this.mask[i] !== 1) continue;
+      const spec = this.slots[i];
+      if (!spec || value < spec.lo || value > spec.hi) {
+        throw new Error(
+          `modulation base[${i}] must be within its authored range ${spec?.lo ?? '?'}..${spec?.hi ?? '?'}`,
+        );
+      }
+    }
+    this.base.set(values);
+  }
+
+  /**
    * Re-take "θ as we last wrote it", from the target rather than from what we
    * believe we wrote.
    *

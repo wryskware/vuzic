@@ -10,6 +10,8 @@ import {
   type BrowserGpuContext,
 } from './gpu/browser-context';
 import { buildDriverBank, MAX_CONTINUOUS_TICK_GAP } from './mapping/modulation';
+import { captureBrowserExportRecipe } from './export/browser-recipe';
+import { createLocalExportClient } from './export/client';
 import {
   defaultModulationConfig,
   downloadText,
@@ -20,11 +22,12 @@ import type { ModTarget } from './mapping/target';
 import { TuningLog } from './mapping/tuninglog';
 import { PhysarumSim } from './sim/physarum/physarum';
 import { PlifeSim } from './sim/plife/plife';
-import { resolveSeed } from './sim/seed';
+import { isSeedPinned, resolveSeed } from './sim/seed';
 import type { RenderFrame, Sim } from './sim/types';
 import { VIZFX_IDS } from './sim/vizfx/ids';
 import { VizFxSim } from './sim/vizfx/vizfx';
 import { buildSimBundle, type SimBundle } from './runtime/sim-bundle';
+import type { ExportRecipe } from './runtime/recipe';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
 import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
 import { loadTimeline } from './timeline/loader';
@@ -286,6 +289,7 @@ async function main(): Promise<void> {
   // the sampler, the clock and the overlay above it are not rebuilt either.
   const drivers = buildDriverBank(timeline);
   const tuningLog = new TuningLog();
+  const exportClient = createLocalExportClient();
   if (sampler.events.length === 0) {
     console.info(`timeline "${track}" has no events array; impulses idle until test-fired`);
   }
@@ -841,7 +845,10 @@ async function main(): Promise<void> {
    */
   const buildPanel = (): PanelHandle => {
     const panelOpts = {
-      pinned,
+      // The workbench can pin/unpin/reroll after startup. Rebuilding the panel
+      // for a substrate swap must describe the live world, not resolveSeed()'s
+      // startup snapshot.
+      pinned: isSeedPinned(sim.currentSeed),
       // Both reroll buttons land here, after sim.reseed() — which has already
       // re-keyed the hotspots via onSeedChange. What is left is dropping any
       // envelope still ringing. The transport deliberately keeps its position:
@@ -860,6 +867,19 @@ async function main(): Promise<void> {
         serverUp: catalog.server,
         serverCount: catalog.serverCount,
         switchTo: switchTrack,
+      },
+      exports: {
+        client: exportClient,
+        trackId: entry.id,
+        // `sim`, `modulator`, and `impulses` are the live `let`s replaced as one
+        // unit by a substrate swap. Capture reads them only on the button click.
+        capture: (rendererBuild: string, output: ExportRecipe['output']) =>
+          captureBrowserExportRecipe({
+            rendererBuild,
+            track: entry,
+            source: { sim, modulator, impulses },
+            output,
+          }),
       },
       sims: {
         ids: SIMS,

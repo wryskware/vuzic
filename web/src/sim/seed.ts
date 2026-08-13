@@ -29,6 +29,29 @@ export function setPinnedSeed(seed: number | null): void {
 const URL_PARAM = 'seed';
 
 /**
+ * Is this exact live world pinned *now*?
+ *
+ * Capture and panel rebuilds cannot use `resolveSeed().pinned`: that describes
+ * startup, while the workbench can pin, unpin, and reroll afterward. Both
+ * persistence channels count because a URL seed wins at startup and a seed
+ * pinned without an existing query parameter lives only in localStorage.
+ */
+export function isSeedPinned(seed: number): boolean {
+  const normalized = seed >>> 0;
+  try {
+    const param = new URLSearchParams(location.search).get(URL_PARAM);
+    if (param !== null && /^\d+$/.test(param)) {
+      // The URL is resolveSeed()'s authority. A different stale local pin must
+      // not call this world reproducible when reload would choose the URL world.
+      return (Number(param) >>> 0) === normalized;
+    }
+  } catch {
+    // Opaque/non-browser location: local persistence may still be available.
+  }
+  return loadPinnedSeed() === normalized;
+}
+
+/**
  * Rewrite `?seed=` **only when it is already there**, so the address bar never
  * lies about which world is running. Adding it unasked would be worse than the
  * bug it fixes: an unpinned run is meant to be a new world on every reload

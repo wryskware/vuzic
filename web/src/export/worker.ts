@@ -349,6 +349,13 @@ async function runRequest(requestPath: string): Promise<void> {
       outputPath: request.output.path,
       width,
       height,
+      ...(request.audioPath === undefined
+        ? {}
+        : {
+            audioPath: request.audioPath,
+            startSeconds: request.range.startSeconds,
+            durationSeconds: request.range.durationSeconds,
+          }),
     });
 
     emit({
@@ -357,6 +364,7 @@ async function runRequest(requestPath: string): Promise<void> {
       backend: ctx.backend,
       profile: request.output.profile,
       transport: 'sdr-rgba8-av1-debug',
+      audio: request.audioPath !== undefined,
       width,
       height,
       frames: outputFrames,
@@ -411,6 +419,7 @@ async function runRequest(requestPath: string): Promise<void> {
       path: request.output.path,
       profile: request.output.profile,
       transport: 'sdr-rgba8-av1-debug',
+      audio: request.audioPath !== undefined,
       width,
       height,
       fps: 120,

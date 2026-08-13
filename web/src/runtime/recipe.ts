@@ -18,7 +18,7 @@ import type { VizFxConfig } from '../sim/vizfx/config.ts';
 import { isVizFxId } from '../sim/vizfx/ids.ts';
 import { EVENT_KINDS } from '../timeline/types.ts';
 
-export const EXPORT_RECIPE_VERSION = 1 as const;
+export const EXPORT_RECIPE_VERSION = 2 as const;
 
 export const EXPORT_PROFILES = ['hdr10-2160p120', 'hdr10-1080p120'] as const;
 export type ExportProfile = (typeof EXPORT_PROFILES)[number];
@@ -39,7 +39,7 @@ export type SimulationBaseConfig =
 /** ModulationConfig also shares render in the live app; the recipe does not. */
 export type RecipeModulationConfig = Omit<ModulationConfig, 'render'>;
 
-export interface ExportRecipeV1 {
+export interface ExportRecipeV2 {
   version: typeof EXPORT_RECIPE_VERSION;
   rendererBuild: string;
   track: {
@@ -52,11 +52,13 @@ export interface ExportRecipeV1 {
   seedPinned: boolean;
   simulation: SimulationBaseConfig;
   modulation: RecipeModulationConfig;
+  /** Author-owned modulation centre, never the current music-excursed theta. */
+  modulationBase: number[];
   impulses: ImpulseConfig;
   render: RenderConfig;
   /** Authored fixed export cap. Preview adaptive-quality state is not consulted. */
   particleBudget: number;
-  /** V1 exports one concrete visual and never reads browser auto-advance state. */
+  /** V2 exports one concrete visual and never reads browser auto-advance state. */
   presentation: {
     mode: 'single';
     autoAdvance: false;
@@ -71,7 +73,7 @@ export interface ExportRecipeV1 {
   };
 }
 
-export type ExportRecipe = ExportRecipeV1;
+export type ExportRecipe = ExportRecipeV2;
 
 const TOP_LEVEL_KEYS = [
   'version',
@@ -82,6 +84,7 @@ const TOP_LEVEL_KEYS = [
   'seedPinned',
   'simulation',
   'modulation',
+  'modulationBase',
   'impulses',
   'render',
   'particleBudget',
@@ -485,15 +488,30 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
   const speciesCount = validateSimulation(recipe['simulation'], sim, particleBudget);
   const simulation = object(recipe['simulation'], '$.simulation');
   validateModulation(recipe['modulation'], sim, speciesCount, simulation['palette']);
+  const modulationBase = recipe['modulationBase'];
+  if (!Array.isArray(modulationBase) || modulationBase.length === 0) {
+    fail('$.modulationBase', 'must be a non-empty array');
+  }
+  if (modulationBase.length > MAX_ARRAY_LENGTH) {
+    fail('$.modulationBase', `exceeds ${MAX_ARRAY_LENGTH} entries`);
+  }
+  for (let i = 0; i < modulationBase.length; i++) {
+    finiteNumber(
+      modulationBase[i],
+      `$.modulationBase[${i}]`,
+      -MAX_ABS_CONFIG_NUMBER,
+      MAX_ABS_CONFIG_NUMBER,
+    );
+  }
 
   validateImpulse(recipe['impulses'], '$.impulses');
   validateRender(recipe['render'], '$.render');
 
   const presentation = object(recipe['presentation'], '$.presentation');
   keysExactly(presentation, ['mode', 'autoAdvance'], '$.presentation');
-  if (presentation['mode'] !== 'single') fail('$.presentation.mode', 'must be "single" in v1');
+  if (presentation['mode'] !== 'single') fail('$.presentation.mode', 'must be "single" in v2');
   if (presentation['autoAdvance'] !== false) {
-    fail('$.presentation.autoAdvance', 'must be false in the single-visual v1 recipe');
+    fail('$.presentation.autoAdvance', 'must be false in the single-visual v2 recipe');
   }
 
   const output = object(recipe['output'], '$.output');

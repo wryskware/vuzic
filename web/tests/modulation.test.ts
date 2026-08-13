@@ -1480,6 +1480,51 @@ test('adoptBase clamps into the modulation range and leaves unmasked slots alone
   assert.equal(rig.mod.baseValue(3), b3, 'NaN was adopted');
 });
 
+test('restoreBase adopts an explicit authored vector without reading live theta', () => {
+  const rig = makeRig(0);
+  const restored = rig.mod.baseValues();
+  for (const i of RIG_MASKED) {
+    const spec = RIG_SLOTS[i] as ModSpec;
+    restored[i] = spec.lo + (spec.hi - spec.lo) * 0.37;
+    rig.edit(i, spec.hi); // a captured music excursion must not become the centre
+  }
+  restored[2] = 123; // excluded entries are retained for an exact vector round trip
+  const liveBefore = Array.from(rig.theta);
+
+  rig.mod.restoreBase(restored);
+  assert.deepEqual(Array.from(rig.mod.baseValues()), Array.from(restored));
+  assert.deepEqual(Array.from(rig.theta), liveBefore, 'restore wrote the target before applyBase');
+
+  restored[0] = -999;
+  assert.notEqual(rig.mod.baseValue(0), -999, 'restore retained the caller vector by reference');
+  rig.mod.applyBase();
+  for (const i of RIG_MASKED) {
+    assert.equal(rig.read(i), rig.mod.baseValue(i), `slot ${i} did not receive the restored base`);
+  }
+  assert.equal(rig.read(2), liveBefore[2], 'applyBase wrote an excluded slot');
+});
+
+test('restoreBase rejects malformed vectors atomically', () => {
+  const rig = makeRig(0);
+  const before = rig.mod.baseValues();
+  const checkUnchanged = (): void => {
+    assert.deepEqual(Array.from(rig.mod.baseValues()), Array.from(before));
+  };
+
+  assert.throws(() => rig.mod.restoreBase(before.subarray(1)), /has 4 values; expected 5/);
+  checkUnchanged();
+
+  const nonFinite = before.slice();
+  nonFinite[1] = Number.NaN;
+  assert.throws(() => rig.mod.restoreBase(nonFinite), /base\[1\].*finite/);
+  checkUnchanged();
+
+  const outside = before.slice();
+  outside[0] = (RIG_SLOTS[0] as ModSpec).hi + 1;
+  assert.throws(() => rig.mod.restoreBase(outside), /base\[0\].*authored range/);
+  checkUnchanged();
+});
+
 test('setMode("manual") leaves the base exactly where it was', () => {
   const rig = makeRig(0);
   rig.mod.setMode('modulated');

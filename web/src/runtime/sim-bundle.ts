@@ -37,6 +37,8 @@ export interface BuildSimBundleOptions {
   simulationConfig?: RuntimeSimulationConfig;
   /** Complete authored event-response state. Omitted by the browser for defaults. */
   impulseConfig?: ImpulseConfig;
+  /** Exact authored modulation centre. Omitted by the browser for seeded personality. */
+  modulationBase?: ArrayLike<number>;
   /**
    * Host policy for selecting authored modulation state. Browser hosts may read
    * local persistence; export hosts can return recipe state. The shared runtime
@@ -58,6 +60,7 @@ interface RecipeRuntimeState {
   simulationConfig: RuntimeSimulationConfig;
   impulseConfig: ImpulseConfig;
   modulationConfig: ModulationConfig;
+  modulationBase: number[];
 }
 
 function owns(value: object, key: string): boolean {
@@ -117,6 +120,7 @@ function runtimeStateFromRecipe(recipe: ExportRecipe): RecipeRuntimeState {
     simulationConfig,
     impulseConfig: structuredClone(recipe.impulses),
     modulationConfig,
+    modulationBase: recipe.modulationBase.slice(),
   };
 }
 
@@ -137,6 +141,7 @@ export function buildSimBundle(options: BuildSimBundleOptions): SimBundle {
     secondsPerTick,
     simulationConfig,
     impulseConfig,
+    modulationBase,
     resolveModulationConfig,
   } = options;
   const visual = VIZFX_VISUALS.find((candidate) => candidate.id === id);
@@ -169,8 +174,10 @@ export function buildSimBundle(options: BuildSimBundleOptions): SimBundle {
 
   const modConfig = resolveModulationConfig(sim);
   const modulator = new Modulator(sim, sampler, drivers, modConfig, seed);
-  // Enabling modulation adopts the target's current theta as its base. Stamp
-  // the seeded personality first so it cannot be replaced by shipped defaults.
+  // Construction rewires the seed internally but has not written it to the
+  // target yet. A recipe replaces that internal centre before the one and only
+  // apply, so neither seed personality nor a captured music excursion leaks in.
+  if (modulationBase) modulator.restoreBase(modulationBase);
   modulator.applyBase();
   modulator.setMode(modConfig.enabled && modulator.available ? 'modulated' : 'manual');
 
@@ -195,6 +202,7 @@ export function buildSimBundleFromRecipe(options: BuildRecipeSimBundleOptions): 
     secondsPerTick,
     simulationConfig: state.simulationConfig,
     impulseConfig: state.impulseConfig,
+    modulationBase: state.modulationBase,
     resolveModulationConfig: () => state.modulationConfig,
   });
 }

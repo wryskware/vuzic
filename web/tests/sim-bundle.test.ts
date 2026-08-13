@@ -23,12 +23,13 @@ registerHooks({
   },
 });
 
-const [{ buildSimBundle, buildSimBundleFromRecipe }, { defaultModulationConfig }, { defaultImpulseConfig }, { defaultPlifeConfig }, { TimelineSampler }] =
+const [{ buildSimBundle, buildSimBundleFromRecipe }, { defaultModulationConfig }, { defaultImpulseConfig }, { defaultPlifeConfig }, { PlifeSim }, { TimelineSampler }] =
   await Promise.all([
     import('../src/runtime/sim-bundle.ts'),
     import('../src/mapping/persist.ts'),
     import('../src/sim/impulses.ts'),
     import('../src/sim/plife/config.ts'),
+    import('../src/sim/plife/plife.ts'),
     import('../src/timeline/sampler.ts'),
   ]);
 import type { ExportRecipe } from '../src/runtime/recipe.ts';
@@ -66,15 +67,40 @@ function plifeRecipe(): ExportRecipe {
   full.macros.force = 1.41;
   full.palette.colors[0] = '#123456';
   full.render.grade.exposureEv = 0.75;
-  const { render, ...simulation } = full;
   const configured = defaultModulationConfig(full, 'plife');
   configured.enabled = false;
   configured.extras = { macros: structuredClone(full.macros) };
-  const { render: _render, ...modulation } = configured;
   const impulses = defaultImpulseConfig();
   impulses.gain = 2.25;
+  const authored = buildSimBundle({
+    id: 'plife',
+    seed: 1234,
+    sampler: sampler(),
+    drivers: null,
+    secondsPerTick: 1 / 120,
+    simulationConfig: full,
+    impulseConfig: impulses,
+    resolveModulationConfig: () => configured,
+  });
+  const modulationBase = Array.from(authored.modulator.baseValues());
+  const registry = authored.sim.registry();
+  const editedIndex = registry.mask.findIndex((value, index) => value === 1 && registry.slots[index]);
+  assert.ok(editedIndex >= 0, 'plife fixture has no modulated slot');
+  const spec = registry.slots[editedIndex];
+  assert.ok(spec);
+  modulationBase[editedIndex] = spec.lo + (spec.hi - spec.lo) * 0.37;
+  authored.modulator.restoreBase(modulationBase);
+  // Capture while the displayed theta is elsewhere. The recipe's explicit base
+  // must win over this transient excursion when the export begins at time zero.
+  const excursion = authored.sim.currentVector();
+  excursion[editedIndex] = spec.hi;
+  authored.sim.applyTheta(excursion, registry.mask);
+
+  const { render, ...simulation } = full;
+  const modulationWithRender = structuredClone(authored.modulator.config);
+  const { render: _render, ...modulation } = modulationWithRender;
   return {
-    version: 1,
+    version: 2,
     rendererBuild: 'test',
     track: { id: 'test', contentVersion: 'test-v1' },
     sim: 'plife',
@@ -82,6 +108,7 @@ function plifeRecipe(): ExportRecipe {
     seedPinned: true,
     simulation,
     modulation,
+    modulationBase,
     impulses,
     render,
     particleBudget: simulation.budget.cap,
@@ -112,6 +139,25 @@ test('recipe construction applies complete authored state and reconnects shared 
   assert.equal(bundle.modulator.config.enabled, false);
   assert.equal(bundle.modulator.config.palette, bundle.sim.config.palette);
   assert.equal(bundle.modulator.config.render, bundle.sim.config.render);
+  assert.deepEqual(Array.from(bundle.modulator.baseValues()), recipe.modulationBase);
+  const registry = bundle.sim.registry();
+  const capturedConfig = {
+    ...structuredClone(recipe.simulation),
+    render: structuredClone(recipe.render),
+  };
+  const capturedTheta = new PlifeSim(recipe.seed, capturedConfig).currentVector();
+  assert.ok(
+    capturedTheta.some(
+      (value, index) => registry.mask[index] === 1 && value !== recipe.modulationBase[index],
+    ),
+    'fixture did not capture a live excursion distinct from the authored base',
+  );
+  const live = bundle.sim.currentVector();
+  for (let i = 0; i < registry.length; i++) {
+    if (registry.mask[i] === 1) {
+      assert.equal(live[i], recipe.modulationBase[i], `slot ${i} did not start on authored base`);
+    }
+  }
   assert.equal(bundle.sim.config.palette.colors[0], '#123456');
   assert.equal(bundle.sim.config.render.grade.exposureEv, 0.75);
   assert.deepEqual(recipe, original, 'runtime construction mutated its immutable recipe');
@@ -132,6 +178,20 @@ test('generic construction rejects a concrete config for a different substrate',
       resolveModulationConfig: (sim) => defaultModulationConfig(sim.config, sim.simId),
     }),
     /physarum.*not a physarum config/,
+  );
+});
+
+test('recipe construction rejects a base vector that does not fit the selected registry', () => {
+  const recipe = plifeRecipe();
+  recipe.modulationBase.pop();
+  assert.throws(
+    () => buildSimBundleFromRecipe({
+      recipe,
+      sampler: sampler(),
+      drivers: null,
+      secondsPerTick: 1 / 120,
+    }),
+    /modulation base has .* expected/,
   );
 });
 

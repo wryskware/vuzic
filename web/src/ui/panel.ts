@@ -26,6 +26,7 @@ import {
   type SliderParams,
 } from './mod-fill';
 import { addRenderFolder } from './render-folder';
+import { createExportFolder, type ExportPanelHost } from './export-panel';
 import { createSimFolder, type SimPanelHost } from './sim-panel';
 import { createTrackFolder, type TrackPanelHost } from './track-panel';
 import { createWorkbench, type WorkbenchHandle, type WorkbenchHost } from './workbench';
@@ -143,6 +144,8 @@ export function createPanel(
     explorer?: ExplorerPanelHost;
     /** omit to hide the track picker entirely */
     tracks?: TrackPanelHost;
+    /** omit when the local native export API is not part of this host */
+    exports?: ExportPanelHost;
     /** omit to hide the substrate picker entirely */
     sims?: SimPanelHost;
   },
@@ -185,6 +188,7 @@ export function createPanel(
   // that belongs to neither the sim nor the mapping, and picking a song comes
   // before shaping what it drives.
   if (opts.tracks) createTrackFolder(tabs.play, opts.tracks);
+  if (opts.exports) createExportFolder(tabs.play, opts.exports);
   // And directly under it, the other "what am I looking at" decision. Same shape,
   // same reason for the placement, and it is mounted from all three panels
   // identically — see `createSimFolder`.

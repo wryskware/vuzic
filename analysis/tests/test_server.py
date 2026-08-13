@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -20,6 +21,8 @@ pytest.importorskip("httpx", reason="fastapi's TestClient needs httpx")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import terrarium_analysis.server as server_module  # noqa: E402
+from terrarium_analysis.export_jobs import ExportSettings  # noqa: E402
 from terrarium_analysis.server import (  # noqa: E402
     SERVED_FILES,
     Job,
@@ -31,6 +34,49 @@ from terrarium_analysis.server import (  # noqa: E402
 )
 
 WAV_HEAD = b"RIFF\x24\x08\x00\x00WAVEfmt "
+
+
+def export_settings(tmp_path):
+    web_dir = tmp_path / "web"
+    worker = web_dir / "dist-export" / "worker.js"
+    worker.parent.mkdir(parents=True)
+    worker.write_text("// fixture worker", encoding="utf-8")
+    node = tmp_path / "node.exe"
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    node.write_bytes(b"node")
+    ffmpeg.write_bytes(b"ffmpeg")
+    return ExportSettings(
+        repo_root=tmp_path,
+        web_dir=web_dir,
+        worker_path=worker,
+        node_executable=node,
+        ffmpeg_executable=ffmpeg,
+        output_dir=tmp_path / "exports",
+    )
+
+
+def export_recipe(track_id, track_version, renderer_build):
+    return {
+        "version": 2,
+        "rendererBuild": renderer_build,
+        "track": {"id": track_id, "contentVersion": track_version},
+        "sim": "plife",
+        "seed": 42,
+        "seedPinned": True,
+        "simulation": {},
+        "modulationBase": [0.5],
+        "modulation": {},
+        "impulses": {},
+        "render": {},
+        "particleBudget": 1000,
+        "presentation": {"mode": "single", "autoAdvance": False},
+        "output": {
+            "profile": "hdr10-1080p120",
+            "encoder": "av1_nvenc",
+            "paperWhiteNits": 203,
+            "masteringPeakNits": 1000,
+        },
+    }
 
 
 def write_track(root, name, *, frames=3, duration=0.3, title=None, audio=True):
@@ -192,3 +238,128 @@ def test_cors_allows_a_vite_dev_origin(client):
     assert res.headers.get("access-control-allow-origin") == "http://localhost:5175"
     res = client.get("/tracks", headers={"Origin": "https://example.com"})
     assert "access-control-allow-origin" not in res.headers
+
+
+def test_export_capabilities_are_probed_once(monkeypatch, tmp_path):
+    write_track(tmp_path, "fixture-track")
+    settings = export_settings(tmp_path)
+    calls = []
+
+    def probe(actual):
+        calls.append(actual)
+        return {
+            "available": True,
+            "profiles": ["hdr10-1080p120"],
+            "encoders": ["av1_nvenc"],
+            "rendererBuild": actual.renderer_build(),
+            "transport": "sdr-rgba8-av1-debug",
+            "reason": "",
+        }
+
+    monkeypatch.setattr(server_module, "probe_export_capabilities", probe)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as export_client:
+        first = export_client.get("/exports/capabilities")
+        second = export_client.get("/exports/capabilities")
+    assert first.status_code == second.status_code == 200
+    assert first.json()["rendererBuild"] == settings.renderer_build()
+    assert calls == [settings]
+
+
+def test_export_job_runs_with_server_owned_paths_and_downloads(monkeypatch, tmp_path):
+    write_track(tmp_path, "fixture-track", duration=0.3)
+    settings = export_settings(tmp_path)
+    renderer_build = settings.renderer_build()
+
+    monkeypatch.setattr(
+        server_module,
+        "probe_export_capabilities",
+        lambda _settings: {
+            "available": True,
+            "profiles": ["hdr10-1080p120"],
+            "encoders": ["av1_nvenc"],
+            "rendererBuild": renderer_build,
+            "transport": "sdr-rgba8-av1-debug",
+            "reason": "",
+        },
+    )
+
+    requests = []
+
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message):
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        requests.append((actual_settings, request, diagnostic_path))
+        on_message({"type": "ready", "adapter": "Fixture GPU", "transport": "fixture"})
+        on_message({"type": "progress", "stage": "render", "frame": 18, "frames": 36})
+        output = tmp_path / "exports" / request["output"]["path"].split("\\")[-1]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"fixture-mp4")
+        return {
+            "type": "result",
+            "frames": 36,
+            "width": 1920,
+            "height": 1080,
+            "audio": True,
+            "transport": "sdr-rgba8-av1-debug",
+        }
+
+    monkeypatch.setattr(server_module, "run_export_worker", run_worker)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as export_client:
+        track = export_client.get("/tracks").json()["tracks"][0]
+        response = export_client.post(
+            "/exports",
+            json={
+                "trackId": "fixture-track",
+                "recipe": export_recipe("fixture-track", track["version"], renderer_build),
+                "range": {"startSeconds": 0, "durationSeconds": 0.3},
+            },
+        )
+        assert response.status_code == 200, response.text
+        queued = response.json()
+        assert queued["kind"] == "export"
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            completed = export_client.get(f"/jobs/{queued['jobId']}").json()
+            if completed["status"] in {"done", "error"}:
+                break
+            time.sleep(0.01)
+        assert completed["status"] == "done", completed
+        export_id = completed["exportId"]
+        assert export_client.get(f"/exports/{export_id}").json() == completed
+        download = export_client.get(completed["downloadUrl"])
+
+    assert download.status_code == 200
+    assert download.content == b"fixture-mp4"
+    assert completed["audio"] is True
+    assert completed["duration"] == pytest.approx(0.3)
+    actual_settings, request, diagnostic_path = requests[0]
+    assert actual_settings == settings
+    assert request["runtime"]["ffmpegExecutable"] == str(settings.ffmpeg_executable)
+    assert request["audioPath"] == str((tmp_path / "fixture-track" / "audio.wav").resolve())
+    assert diagnostic_path.parent.parent == tmp_path / ".work"
+
+
+def test_export_rejects_stale_track_or_renderer(monkeypatch, tmp_path):
+    write_track(tmp_path, "fixture-track")
+    settings = export_settings(tmp_path)
+    renderer_build = settings.renderer_build()
+    monkeypatch.setattr(
+        server_module,
+        "probe_export_capabilities",
+        lambda _settings: {
+            "available": True,
+            "profiles": ["hdr10-1080p120"],
+            "encoders": ["av1_nvenc"],
+            "rendererBuild": renderer_build,
+            "reason": "",
+        },
+    )
+    with TestClient(create_app(tmp_path, export_settings=settings)) as export_client:
+        track = export_client.get("/tracks").json()["tracks"][0]
+        stale_track = export_recipe("fixture-track", "stale", renderer_build)
+        stale_build = export_recipe("fixture-track", track["version"], "stale-build")
+        assert export_client.post(
+            "/exports", json={"trackId": "fixture-track", "recipe": stale_track}
+        ).status_code == 409
+        assert export_client.post(
+            "/exports", json={"trackId": "fixture-track", "recipe": stale_build}
+        ).status_code == 409

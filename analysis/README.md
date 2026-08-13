@@ -359,7 +359,7 @@ talks to it twice per track (list, then fetch) and works with it absent.
 ```bash
 cd analysis
 uv run --extra server terrarium-server            # http://127.0.0.1:8765
-uv run --extra server terrarium-server --help     # --host --port --data-dir --strict
+uv run --extra server terrarium-server --help     # analysis and native-export options
 ```
 
 It writes into `<repo>/data/timelines/<slug>/` by default — the directory
@@ -373,6 +373,10 @@ fetches it from the server.
 | `GET /jobs/{id}` | `{status: queued\|running\|done\|error, stage, progress, message, error}` |
 | `GET /tracks` | `{tracks: [{id, title, duration, frames, tempo, events, hasAudio, version}]}` |
 | `GET /tracks/{id}/{file}` | `timeline.json`, `timeline.bin`, `audio.wav`, `run.json` — nothing else |
+| `GET /exports/capabilities` | native Windows worker/GPU/AV1 availability and renderer build id |
+| `POST /exports` | immutable recipe v2 for an analyzed `trackId` → queued export job |
+| `GET /exports/{id}` | export job metadata |
+| `GET /exports/{id}/download` | completed MP4 only; never an arbitrary filesystem path |
 
 - **Polling, not a websocket.** A job is one long burst with six coarse
   transitions in it and the client is a panel that redraws at human speed.
@@ -410,6 +414,63 @@ terrarium-server --host 0.0.0.0 --port 8765 \
 A 40 s excerpt goes queued → running → done in ~30 s that way, writing
 `timeline.json` (55 KB), `timeline.bin` (400 × 73 × 4 = 116 800 B), `run.json`
 and `audio.wav` into the track directory.
+
+### Native Windows video export checkpoint
+
+Run the API **natively on Windows** when using video export. The Node worker
+uses Dawn/D3D12, FFmpeg uses NVENC, and the completed multi-gigabyte file stays
+on the Windows filesystem. This avoids routing rendered frames or finished
+videos through WSL. Heavy model analysis may still run in WSL as described
+above; only the much smaller analyzed track artifacts need to cross that seam.
+
+The current browser checkpoint emits **1920×1080, constant 120 fps, AV1 NVENC
+SDR-debug video with AAC-LC audio**. The workbench exposes only this path as
+`1080p / 120 fps / SDR debug`. It is not HDR even though the internal profile
+name reserves the future HDR profile. True PQ/BT.2020, P010/Main10, validated
+4K120 output, hosted/product compute, cancellation, restart recovery, disk
+quotas, and retention policy are later work.
+
+Prerequisites on Windows:
+
+- Node 22+ and the repository's pinned `webgpu` dependency;
+- FFmpeg with `av1_nvenc` and AAC support, plus a compatible NVIDIA driver;
+- the light Python/server environment from this directory; and
+- an analyzed track containing `timeline.json`, `timeline.bin`, and
+  `audio.wav` under `data/timelines/<track-id>/`.
+
+Build the native worker from PowerShell:
+
+```powershell
+cd C:\path\to\latent-music-terrarium\web
+npm ci
+npm run build:worker
+```
+
+Then start FastAPI from a native Windows PowerShell. Pass all four native paths
+explicitly so capability failures are actionable and output placement is never
+inferred from WSL or the ambient shell:
+
+```powershell
+cd C:\path\to\latent-music-terrarium\analysis
+uv run --extra server terrarium-server `
+  --host 127.0.0.1 `
+  --port 8765 `
+  --data-dir "C:\path\to\latent-music-terrarium\data\timelines" `
+  --node "C:\Program Files\nodejs\node.exe" `
+  --ffmpeg "C:\tools\ffmpeg\bin\ffmpeg.exe" `
+  --export-worker "C:\path\to\latent-music-terrarium\web\dist-worker\worker.mjs" `
+  --export-dir "C:\path\to\latent-music-terrarium\data\exports"
+```
+
+Open the Vite app normally, expand `video export`, and wait for the capability
+probe to report ready before pressing **Render video with current settings**.
+The server owns the output filename, writes a `.partial` file during encoding,
+publishes the MP4 only after success, and returns a download link. Node and
+FFmpeg are per-job child processes; neither opens another HTTP port.
+
+This checkpoint has no cancellation endpoint and no automatic cleanup policy.
+Stop the server only when no export is running, and manage completed files in
+the directory passed to `--export-dir` manually.
 
 ## Tests
 

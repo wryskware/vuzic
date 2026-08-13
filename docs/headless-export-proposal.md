@@ -1,7 +1,7 @@
 # Headless 120 fps HDR Export — Implementation Proposal
 
-**Status:** Gate 0 foundations and Phase 1 complete; Phase 2 SDR/debug worker operational
-**Date:** 2026-08-12  
+**Status:** local Windows SDR/debug checkpoint operational through the browser; HDR Gate 0 remains open
+**Date:** 2026-08-13
 **Primary profile:** 3840×2160, constant 120 fps, HDR10  
 **Secondary profile:** 1920×1080, constant 120 fps, HDR10
 
@@ -33,6 +33,23 @@ Implemented in the second pass on 2026-08-12:
   frames / 5.000 seconds, AV1 Main `yuv420p`, rendered and encoded natively on
   Windows in 7.75 seconds on the development machine.
 
+Implemented in the local-product checkpoint on 2026-08-13:
+
+- export recipe v2 and browser capture of the concrete simulation, seed/pin
+  state, modulation config and authored base vector, impulse config, palette,
+  render config, and fixed particle budget; the captured base is distinct from
+  any transient music-driven excursion visible when the button is pressed;
+- native Windows FastAPI supervision of a short-lived Node/Dawn worker and its
+  FFmpeg child, with capability probing, a private request file, bounded NDJSON
+  progress, bounded diagnostics, and atomic output publication;
+- `POST /exports`, job/export polling, completed-file metadata, and download
+  routes, backed by the server's existing single-worker executor;
+- a browser workbench control labelled **Render video with current settings**,
+  currently gated to the explicitly labelled `1080p / 120 fps / SDR debug`
+  transport, with progress and a completed download link; and
+- deterministic audio range selection and AAC-LC muxing from the analyzed
+  track's trusted `audio.wav` into the debug MP4.
+
 Two identical requests produced the same first decoded frame, the same frame
 count, and visibly matching large-scale seeded composition, but their later
 decoded pixels were not bit-identical. Particle Life is chaotic enough to
@@ -40,15 +57,17 @@ amplify minute GPU/encoder differences immediately; strict same-device pixel
 repeatability therefore remains an explicit investigation rather than a claimed
 Phase 2 property.
 
-Still outstanding before Gate 0 exits: feed rendered frames through the intended
-10-bit encoder, create the 5–10 second Main10 test file, and inspect its constant
-frame rate, HDR metadata, levels, and playback on the target display.
+Still outstanding before Gate 0 exits: perform scene-linear BT.2020/PQ
+conversion, feed P010 or another validated 10-bit transport through an AV1 or
+HEVC Main10 encoder, create the 5–10 second 4K120 test file, and inspect its
+constant frame rate, HDR metadata, levels, and playback on the target display.
 
-Audio muxing, PQ/BT.2020 conversion, P010/Main10 transport, FastAPI job
-orchestration, the browser "render video with current settings" control, and
-published compute/operations remain later phases. The browser button should
-serialize the same immutable recipe and submit it to FastAPI; it must not create
-a second renderer or depend on where the Windows worker eventually runs.
+The current file is **not HDR**, despite the future-profile identifier still
+traveling through the internal request: it is RGBA8 readback encoded as AV1 Main
+`yuv420p`, with AAC-LC audio. Proper 4K/HDR profiles, production compute and
+deployment, cancellation/process-tree handling, restart recovery, disk quotas,
+and an explicit retention policy remain later work. The current UI/API is a
+local engineering checkpoint, not a published rendering service.
 
 ## Executive decision
 
@@ -640,6 +659,10 @@ by both browser and worker entries.
 
 ### Gate 0 — prove the native platform
 
+**Checkpoint:** partially proven on native Windows/D3D12. Current project WGSL,
+offscreen render/readback, and AV1 NVENC work, but the required Main10 HDR file
+and display/metadata inspection do not yet exist. Gate 0 remains open.
+
 Before refactoring the application:
 
 - pin and load the Dawn Node package;
@@ -658,6 +681,10 @@ real time.
 
 ### Phase 1 — extract the shared runtime
 
+**Checkpoint:** complete. Browser and Node share the runtime contexts,
+simulation construction, timing inputs, recipe validation, timeline behavior,
+post-processing, and source WGSL.
+
 - Split canvas-free GPU context from browser surface.
 - Extract `buildSimBundle` and fixed advance logic from `main.ts`.
 - Inject render-frame timing into simulation/post-processing code.
@@ -669,6 +696,11 @@ real time.
 constructs the same selected simulation from a serialized browser recipe.
 
 ### Phase 2 — deterministic 1080p120 worker
+
+**Checkpoint:** the SDR/debug engineering path is operational at 1080p120 with
+AV1 NVENC, AAC-LC, progress, bounded readback/backpressure, and atomic
+publication. Same-device strict later-frame pixel repeatability is still under
+investigation and is not claimed.
 
 - Implement fixed 120 render / 120 app-clock scheduling; existing substrate
   cadence keeps Physarum/VizFX model steps at 60 Hz.
@@ -683,6 +715,11 @@ count and visually matching evolution, with no canvas or Chromium process.
 
 ### Phase 3 — FastAPI orchestration
 
+**Checkpoint:** the local Windows subset is operational: capability probe,
+create, poll, metadata, download, one server-owned executor, and private native
+request paths. Cancellation, restart recovery, quotas, and retention are not
+implemented, so this phase is not production-complete.
+
 - Add capabilities, create-export, metadata, poll, and download routes.
 - Add a single export queue and shared GPU lease with analysis.
 - Validate recipes and track content versions.
@@ -694,6 +731,10 @@ progress, and the completed file is downloadable or discoverable locally.
 
 ### Phase 4 — real HDR10 and audio
 
+**Checkpoint:** audio trimming and AAC-LC muxing are implemented for the debug
+MP4. Scene-linear BT.2020/PQ, P010, Main10 validation, HDR metadata, and both
+real output profiles remain outstanding.
+
 - Implement the scene-linear-to-BT.2020/PQ path.
 - Validate P010 and Main10 encoding.
 - Attach correct stream/container color metadata.
@@ -704,6 +745,11 @@ progress, and the completed file is downloadable or discoverable locally.
 display and with `ffprobe`/MediaInfo.
 
 ### Phase 5 — browser export UX
+
+**Checkpoint:** a local-only 1080p120 SDR-debug button captures recipe v2,
+checks capabilities, submits the job, reports progress/errors, and exposes the
+download. HDR/profile selection, cancellation, and published-compute UX remain
+outstanding.
 
 - Add the export button/profile selector.
 - Capture the complete current recipe explicitly.

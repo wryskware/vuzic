@@ -1,6 +1,7 @@
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = resolve(here, '../../data/timelines');
@@ -39,21 +40,39 @@ for (const e of entries) {
   // Malformed timelines are skipped rather than fatal: `sync-data` runs before
   // every `dev` and `build`, and a half-written analysis output must not stop
   // the dev server from starting.
-  const manifest = await readFile(join(src, e.name, 'timeline.json'), 'utf8')
-    .then(JSON.parse)
-    .catch(() => null);
-  if (manifest?.track) {
+  const manifestPath = join(src, e.name, 'timeline.json');
+  const binaryPath = join(src, e.name, 'timeline.bin');
+  const manifestBytes = await readFile(manifestPath).catch(() => null);
+  const binaryBytes = await readFile(binaryPath).catch(() => null);
+  const manifest = manifestBytes === null
+    ? null
+    : (() => {
+        try {
+          return JSON.parse(manifestBytes.toString('utf8'));
+        } catch {
+          return null;
+        }
+      })();
+  if (manifest?.track && binaryBytes !== null) {
     index.push({
       id: e.name,
       title: String(manifest.track.id ?? e.name),
       duration: Number(manifest.track.duration) || 0,
+      // Same content identity as FastAPI: exact manifest bytes followed by the
+      // exact binary timeline bytes. An export may therefore prove that the
+      // browser session and server worker will drive from identical inputs.
+      version: createHash('sha256')
+        .update(manifestBytes)
+        .update(binaryBytes)
+        .digest('hex')
+        .slice(0, 16),
       hasAudio: await stat(join(dst, e.name, 'audio.wav')).then(
         () => true,
         () => false,
       ),
     });
   } else {
-    console.warn(`sync-data: ${e.name} has no readable timeline.json; not listed`);
+    console.warn(`sync-data: ${e.name} has no readable timeline pair; not listed`);
   }
   console.log(`sync-data: ${e.name}`);
 }
