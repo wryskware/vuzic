@@ -26,3 +26,5 @@ data/**/embedding.json
 
 # local headless-export requests, decoded inspection frames, and video artifacts
 /web/exports/
+/web/.export-work/
+/data/timelines/.work/

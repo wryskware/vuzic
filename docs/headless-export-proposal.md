@@ -35,20 +35,27 @@ Implemented in the second pass on 2026-08-12:
 
 Implemented in the local-product checkpoint on 2026-08-13:
 
-- export recipe v2 and browser capture of the concrete simulation, seed/pin
+- export recipe v3 and browser capture of the concrete simulation, seed/pin
   state, modulation config and authored base vector, impulse config, palette,
   render config, and fixed particle budget; the captured base is distinct from
   any transient music-driven excursion visible when the button is pressed;
 - native Windows FastAPI supervision of a short-lived Node/Dawn worker and its
-  FFmpeg child, with capability probing, a private request file, bounded NDJSON
-  progress, bounded diagnostics, and atomic output publication;
+  FFmpeg child, with build-aware capability probing, immutable per-job
+  worker/timeline/audio snapshots, bounded NDJSON progress, bounded diagnostics,
+  and atomic output publication;
 - `POST /exports`, job/export polling, completed-file metadata, and download
   routes, backed by the server's existing single-worker executor;
 - a browser workbench control labelled **Render video with current settings**,
-  currently gated to the explicitly labelled `1080p / 120 fps / SDR debug`
-  transport, with progress and a completed download link; and
+  with explicit 1080p/4K 120 fps SDR-debug choices, progress, and a completed
+  download link; and
 - deterministic audio range selection and AAC-LC muxing from the analyzed
   track's trusted `audio.wav` into the debug MP4.
+
+The v3 4K SDR-debug smoke rendered 240 frames / 2.000 seconds at 3840×2160 in
+5.70 seconds on the development machine. FFprobe reported AV1 Main `yuv420p`
+at constant `120/1` plus 48 kHz AAC, with both streams starting at zero and
+ending at exactly 2.000 seconds. This proves the local 4K engineering path; it
+does not satisfy any HDR acceptance criterion.
 
 Two identical requests produced the same first decoded frame, the same frame
 count, and visibly matching large-scale seeded composition, but their later
@@ -363,7 +370,7 @@ At minimum the recipe captures:
 - fixed authored particle budget;
 - output profile and encoder choice.
 
-Milkdrop/VizFX auto-advance should be explicit. Version 1 may export only the
+Milkdrop/VizFX auto-advance is explicit. The current recipe exports only the
 currently selected concrete visual. If sequence export is added, the recipe must
 contain the ordered repertoire, boundary behavior, and dwell policy; it must not
 depend on mutable browser session state.
@@ -383,7 +390,7 @@ Example response:
 ```json
 {
   "available": true,
-  "profiles": ["hdr10-2160p120", "hdr10-1080p120"],
+  "profiles": ["av1-sdr-debug-2160p120", "av1-sdr-debug-1080p120"],
   "gpu": "NVIDIA GeForce RTX 5090",
   "backend": "d3d12",
   "encoders": ["hevc_nvenc", "av1_nvenc"],
@@ -409,20 +416,21 @@ Conceptual request:
 {
   "trackId": "pink-loop",
   "recipe": {
-    "version": 1,
+    "version": 3,
     "rendererBuild": "<build-id>",
-    "trackVersion": "<track-content-hash>",
+    "track": {"id": "pink-loop", "contentVersion": "<track-content-hash>"},
     "sim": "plife",
     "seed": 123456789,
     "simulation": { "...": "complete current state" },
     "modulation": { "...": "complete current state" },
     "impulses": { "...": "complete current state" },
-    "render": { "...": "complete current state" }
-  },
-  "output": {
-    "profile": "hdr10-2160p120",
-    "codec": "hevc",
-    "filename": "pink-loop-plife-123456789.mp4"
+    "render": { "...": "complete current state" },
+    "output": {
+      "profile": "av1-sdr-debug-2160p120",
+      "encoder": "av1_nvenc",
+      "paperWhiteNits": 203,
+      "masteringPeakNits": 1000
+    }
   }
 }
 ```
@@ -715,10 +723,11 @@ count and visually matching evolution, with no canvas or Chromium process.
 
 ### Phase 3 — FastAPI orchestration
 
-**Checkpoint:** the local Windows subset is operational: capability probe,
-create, poll, metadata, download, one server-owned executor, and private native
-request paths. Cancellation, restart recovery, quotas, and retention are not
-implemented, so this phase is not production-complete.
+**Checkpoint:** the local Windows subset is operational: build-aware capability
+probe, immutable queued inputs, create, poll, metadata, download, one
+server-owned executor, and private native request paths. Cancellation, restart
+recovery, quotas, and retention are not implemented, so this phase is not
+production-complete.
 
 - Add capabilities, create-export, metadata, poll, and download routes.
 - Add a single export queue and shared GPU lease with analysis.
@@ -746,10 +755,10 @@ display and with `ffprobe`/MediaInfo.
 
 ### Phase 5 — browser export UX
 
-**Checkpoint:** a local-only 1080p120 SDR-debug button captures recipe v2,
-checks capabilities, submits the job, reports progress/errors, and exposes the
-download. HDR/profile selection, cancellation, and published-compute UX remain
-outstanding.
+**Checkpoint:** a local-only 1080p/4K 120 fps SDR-debug selector captures
+recipe v3, checks capabilities, submits the job, reports progress/errors, and
+exposes the download. HDR selection, cancellation, and published-compute UX
+remain outstanding.
 
 - Add the export button/profile selector.
 - Capture the complete current recipe explicitly.

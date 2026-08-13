@@ -13,9 +13,9 @@ import { ExportClock, exportFrameCount } from './export-clock.ts';
 import { Av1DebugEncoder } from './ffmpeg-encoder.ts';
 import { FrameReadbackRing } from './frame-readback.ts';
 import { loadTimelineFromFiles } from './node-timeline-loader.ts';
+import { sdrDebugProfileDimensions } from './sdr-debug-profile.ts';
 import {
   loadExportWorkerRequest,
-  type ExportWorkerRequest,
 } from './worker-request.ts';
 
 interface ProbeOptions {
@@ -270,20 +270,6 @@ async function runProbe(options: ProbeOptions): Promise<void> {
   }
 }
 
-interface DebugProfile {
-  width: number;
-  height: number;
-}
-
-function debugProfile(request: ExportWorkerRequest): DebugProfile {
-  switch (request.output.profile) {
-    case 'hdr10-2160p120':
-      return { width: 3840, height: 2160 };
-    case 'hdr10-1080p120':
-      return { width: 1920, height: 1080 };
-  }
-}
-
 /**
  * Phase-2 engineering path: the shared renderer is real, while the final
  * presentation transport is intentionally SDR RGBA8 -> AV1 until PQ/P010 lands.
@@ -304,7 +290,7 @@ async function runRequest(requestPath: string): Promise<void> {
     );
   }
 
-  const { width, height } = debugProfile(request);
+  const { width, height } = sdrDebugProfileDimensions(request.output.profile);
   const firstOutputFrame = exportFrameCount(request.range.startSeconds);
   const clock = new ExportClock(rangeEndSeconds);
   const outputFrames = clock.frameCount - firstOutputFrame;

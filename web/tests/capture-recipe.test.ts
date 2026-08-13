@@ -5,26 +5,35 @@ import { captureBrowserExportRecipe } from '../src/export/browser-recipe.ts';
 import { defaultModulationConfig } from '../src/mapping/persist.ts';
 import { defaultImpulseConfig } from '../src/sim/impulses.ts';
 import { defaultPlifeConfig } from '../src/sim/plife/config.ts';
-import { presetFromConfig, presetToVector } from '../src/sim/plife/preset.ts';
+import {
+  applyVector,
+  presetFromConfig,
+  presetToVector,
+} from '../src/sim/plife/preset.ts';
 
 const output = {
-  profile: 'hdr10-2160p120',
+  profile: 'av1-sdr-debug-2160p120',
   encoder: 'av1_nvenc',
   paperWhiteNits: 203,
   masteringPeakNits: 1000,
 } as const;
 
-function fixture(version = 'sha256-track'): {
+function fixture(
+  version = 'sha256-track',
+  mode: 'manual' | 'modulated' = 'modulated',
+): {
   live: ReturnType<typeof defaultPlifeConfig>;
   modulation: ReturnType<typeof defaultModulationConfig>;
   impulses: ReturnType<typeof defaultImpulseConfig>;
   base: Float64Array;
+  applyTheta(theta: ArrayLike<number>): void;
   capture(): ReturnType<typeof captureBrowserExportRecipe>;
 } {
   const live = defaultPlifeConfig();
   live.forceGain = 1.75;
   live.render.grade.exposureEv = 0.625;
   const modulation = defaultModulationConfig(live, 'plife');
+  modulation.enabled = mode === 'modulated';
   modulation.extras = { stale: true };
   const impulses = defaultImpulseConfig();
   impulses.gain = 2.5;
@@ -44,7 +53,11 @@ function fixture(version = 'sha256-track'): {
     },
     modulator: {
       config: modulation,
+      mode,
       baseValues: (): Float64Array => base.slice(),
+      currentTheta: (): number[] => Array.from(
+        presetToVector(presetFromConfig(live), live.speciesCount),
+      ),
     },
     impulses: { config: impulses },
   };
@@ -53,6 +66,7 @@ function fixture(version = 'sha256-track'): {
     modulation,
     impulses,
     base,
+    applyTheta: (theta) => applyVector(live, theta),
     capture: () => {
       currentSeed = 42;
       return captureBrowserExportRecipe({
@@ -66,11 +80,39 @@ function fixture(version = 'sha256-track'): {
   };
 }
 
+test('manual capture preserves current authored theta instead of the stale seeded base', () => {
+  const f = fixture('sha256-track', 'manual');
+  const authored = f.base.slice();
+  authored[2] = authored[2] === 0.25 ? 0.75 : 0.25;
+  f.applyTheta(authored);
+
+  const recipe = f.capture();
+  assert.deepEqual(recipe.modulationBase, Array.from(authored));
+  assert.notEqual(recipe.modulationBase[2], f.base[2]);
+
+  const changedAfterCapture = authored.slice();
+  changedAfterCapture[2] = authored[2] === 0.5 ? 0.6 : 0.5;
+  f.applyTheta(changedAfterCapture);
+  assert.equal(recipe.modulationBase[2], authored[2], 'captured theta must not alias live state');
+  assert.notEqual(f.base[2], authored[2], 'capture must not mutate the seeded base');
+});
+
+test('modulated capture preserves authored base instead of the current music excursion', () => {
+  const f = fixture('sha256-track', 'modulated');
+  const excursion = f.base.slice();
+  excursion[2] = excursion[2] === 0.25 ? 0.75 : 0.25;
+  f.applyTheta(excursion);
+
+  const recipe = f.capture();
+  assert.deepEqual(recipe.modulationBase, Array.from(f.base));
+  assert.notEqual(recipe.modulationBase[2], excursion[2]);
+});
+
 test('browser capture reads current live identity, authored base, extras, and output policy', () => {
   const f = fixture();
   const recipe = f.capture();
 
-  assert.equal(recipe.version, 2);
+  assert.equal(recipe.version, 3);
   assert.deepEqual(recipe.track, { id: 'pink-loop', contentVersion: 'sha256-track' });
   assert.equal(recipe.sim, 'plife');
   assert.equal(recipe.seed, 42);

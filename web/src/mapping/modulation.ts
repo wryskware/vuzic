@@ -454,7 +454,7 @@ export interface ModulatorEvents {
 export type GroupExcursions = Record<ModGroup, number>;
 
 export class Modulator {
-  mode: ModulationMode = 'manual';
+  private currentMode: ModulationMode = 'manual';
   /** hold the current ẑ: parameters stop morphing, slew still settles */
   frozen = false;
 
@@ -575,6 +575,11 @@ export class Modulator {
 
   get currentSeed(): number {
     return this.seed;
+  }
+
+  /** Current authoring mode; callers may observe it but only setMode may change it. */
+  get mode(): ModulationMode {
+    return this.currentMode;
   }
 
   /** Modulation needs an input; without one the app is a slider box, honestly. */
@@ -698,8 +703,8 @@ export class Modulator {
    * `base` from the seed outright.
    */
   setMode(mode: ModulationMode): void {
-    if (mode === this.mode) return;
-    this.mode = mode;
+    if (mode === this.currentMode) return;
+    this.currentMode = mode;
     if (mode === 'modulated') this.adoptBase();
     // Start from where the config actually is, so switching modes never steps.
     this.slew.reset(this.target.currentVector());
@@ -994,7 +999,7 @@ export class Modulator {
     // off — the bank is an instrument panel first and an input second.
     if (this.drivers && !this.frozen) this.drivers.sample(frame.time, this.zbuf);
 
-    if (this.mode !== 'modulated' || !this.drivers) return;
+    if (this.currentMode !== 'modulated' || !this.drivers) return;
 
     // Deliberately *inside* the mode gate. In manual mode nothing here writes θ,
     // so there is no such thing as an edit to notice; and the explorer forces

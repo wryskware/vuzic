@@ -19,7 +19,7 @@ function recipe(): ExportRecipe {
     'plife',
   );
   return {
-    version: 2,
+    version: 3,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',
@@ -33,7 +33,7 @@ function recipe(): ExportRecipe {
     particleBudget: simulation.budget.cap,
     presentation: { mode: 'single', autoAdvance: false },
     output: {
-      profile: 'hdr10-1080p120',
+      profile: 'av1-sdr-debug-1080p120',
       encoder: 'hevc_nvenc',
       paperWhiteNits: 203,
       masteringPeakNits: 1000,
@@ -51,15 +51,20 @@ test('recipe canonical serialization round-trips the complete concrete state', (
 });
 
 test('unsupported recipe versions and mutable sequence behavior are rejected', () => {
-  const unsupported = { ...recipe(), version: 1 };
-  assert.throws(() => validateExportRecipe(unsupported), /unsupported version 1/);
+  for (const version of [1, 2]) {
+    const unsupported = { ...recipe(), version };
+    assert.throws(
+      () => validateExportRecipe(unsupported),
+      new RegExp(`unsupported version ${version}`),
+    );
+  }
 
   const sequence = recipe() as unknown as Record<string, unknown>;
   sequence['presentation'] = { mode: 'single', autoAdvance: true };
   assert.throws(() => validateExportRecipe(sequence), /autoAdvance.*must be false/);
 });
 
-test('v2 requires a finite explicit authored modulation base', () => {
+test('v3 requires a finite explicit authored modulation base', () => {
   const missing = recipe() as unknown as Record<string, unknown>;
   delete missing['modulationBase'];
   assert.throws(() => validateExportRecipe(missing), /modulationBase.*required/);
@@ -116,6 +121,20 @@ test('output choices are bounded enums, not an encoder argument surface', () => 
   const value = recipe() as unknown as { output: Record<string, unknown> };
   value.output['encoder'] = '- arbitrary ffmpeg args';
   assert.throws(() => validateExportRecipe(value), /output\.encoder.*unsupported/);
+});
+
+test('only honestly labelled AV1 SDR debug profiles are accepted', () => {
+  for (const profile of ['av1-sdr-debug-1080p120', 'av1-sdr-debug-2160p120']) {
+    const value = recipe() as unknown as { output: Record<string, unknown> };
+    value.output['profile'] = profile;
+    assert.doesNotThrow(() => validateExportRecipe(value));
+  }
+
+  for (const misleading of ['hdr10-1080p120', 'hdr10-2160p120']) {
+    const value = recipe() as unknown as { output: Record<string, unknown> };
+    value.output['profile'] = misleading;
+    assert.throws(() => validateExportRecipe(value), /output\.profile.*unsupported/);
+  }
 });
 
 test('HDR luminance policy is explicit, bounded, and internally ordered', () => {

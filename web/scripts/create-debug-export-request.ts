@@ -12,7 +12,12 @@ import {
   presetFromConfig,
   presetToVector,
 } from '../src/sim/plife/preset.ts';
-import type { ExportRecipe } from '../src/runtime/recipe.ts';
+import {
+  EXPORT_PROFILES,
+  EXPORT_RECIPE_VERSION,
+  type ExportProfile,
+  type ExportRecipe,
+} from '../src/runtime/recipe.ts';
 
 function option(name: string, fallback: string): string {
   const index = process.argv.indexOf(name);
@@ -28,6 +33,14 @@ function finiteOption(name: string, fallback: number, min: number): number {
   return value;
 }
 
+function profileOption(): ExportProfile {
+  const value = option('--profile', 'av1-sdr-debug-1080p120');
+  if (!EXPORT_PROFILES.includes(value as ExportProfile)) {
+    throw new Error(`--profile must be one of ${EXPORT_PROFILES.join(', ')}`);
+  }
+  return value as ExportProfile;
+}
+
 const repoRoot = resolve(import.meta.dirname, '../..');
 const trackRoot = resolve(option('--track-root', resolve(repoRoot, 'data/timelines/pink-loop')));
 const requestPath = resolve(option('--request', resolve(repoRoot, 'web/exports/debug-request.json')));
@@ -38,6 +51,7 @@ const ffmpegExecutable = resolve(ffmpegValue);
 const startSeconds = finiteOption('--start', 0, 0);
 const durationSeconds = finiteOption('--duration', 5, Number.MIN_VALUE);
 const seed = Math.floor(finiteOption('--seed', 0x5eed_120, 0));
+const profile = profileOption();
 
 const fullSimulation = defaultPlifeConfig();
 fullSimulation.budget.adaptive = false;
@@ -52,7 +66,7 @@ const seededBase = baseVector(seed, defaults, slots, new Float64Array(slots.leng
 seedMatrixBase(seed, fullSimulation, seededBase);
 
 const recipe: ExportRecipe = {
-  version: 2,
+  version: EXPORT_RECIPE_VERSION,
   rendererBuild: 'phase2-native-worker',
   track: { id: 'pink-loop', contentVersion: 'local-engineering' },
   sim: 'plife',
@@ -66,7 +80,7 @@ const recipe: ExportRecipe = {
   particleBudget: simulation.budget.cap,
   presentation: { mode: 'single', autoAdvance: false },
   output: {
-    profile: 'hdr10-1080p120',
+    profile,
     encoder: 'av1_nvenc',
     paperWhiteNits: 203,
     masteringPeakNits: 1000,

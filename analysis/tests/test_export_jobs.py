@@ -99,6 +99,10 @@ def test_probe_parses_only_the_worker_ndjson_protocol(tmp_path, monkeypatch):
     assert result["gpu"] == "Test GPU"
     assert result["backend"] == "d3d12"
     assert result["transport"] == "sdr-rgba8-av1-debug"
+    assert result["profiles"] == [
+        "av1-sdr-debug-2160p120",
+        "av1-sdr-debug-1080p120",
+    ]
 
 
 def test_protocol_rejects_human_text_on_stdout():

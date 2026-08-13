@@ -18,9 +18,12 @@ import type { VizFxConfig } from '../sim/vizfx/config.ts';
 import { isVizFxId } from '../sim/vizfx/ids.ts';
 import { EVENT_KINDS } from '../timeline/types.ts';
 
-export const EXPORT_RECIPE_VERSION = 2 as const;
+export const EXPORT_RECIPE_VERSION = 3 as const;
 
-export const EXPORT_PROFILES = ['hdr10-2160p120', 'hdr10-1080p120'] as const;
+export const EXPORT_PROFILES = [
+  'av1-sdr-debug-2160p120',
+  'av1-sdr-debug-1080p120',
+] as const;
 export type ExportProfile = (typeof EXPORT_PROFILES)[number];
 
 export const EXPORT_ENCODERS = ['hevc_nvenc', 'av1_nvenc'] as const;
@@ -39,7 +42,7 @@ export type SimulationBaseConfig =
 /** ModulationConfig also shares render in the live app; the recipe does not. */
 export type RecipeModulationConfig = Omit<ModulationConfig, 'render'>;
 
-export interface ExportRecipeV2 {
+export interface ExportRecipeV3 {
   version: typeof EXPORT_RECIPE_VERSION;
   rendererBuild: string;
   track: {
@@ -58,7 +61,7 @@ export interface ExportRecipeV2 {
   render: RenderConfig;
   /** Authored fixed export cap. Preview adaptive-quality state is not consulted. */
   particleBudget: number;
-  /** V2 exports one concrete visual and never reads browser auto-advance state. */
+  /** V3 exports one concrete visual and never reads browser auto-advance state. */
   presentation: {
     mode: 'single';
     autoAdvance: false;
@@ -73,7 +76,7 @@ export interface ExportRecipeV2 {
   };
 }
 
-export type ExportRecipe = ExportRecipeV2;
+export type ExportRecipe = ExportRecipeV3;
 
 const TOP_LEVEL_KEYS = [
   'version',
@@ -509,9 +512,9 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
 
   const presentation = object(recipe['presentation'], '$.presentation');
   keysExactly(presentation, ['mode', 'autoAdvance'], '$.presentation');
-  if (presentation['mode'] !== 'single') fail('$.presentation.mode', 'must be "single" in v2');
+  if (presentation['mode'] !== 'single') fail('$.presentation.mode', 'must be "single" in v3');
   if (presentation['autoAdvance'] !== false) {
-    fail('$.presentation.autoAdvance', 'must be false in the single-visual v2 recipe');
+    fail('$.presentation.autoAdvance', 'must be false in the single-visual v3 recipe');
   }
 
   const output = object(recipe['output'], '$.output');

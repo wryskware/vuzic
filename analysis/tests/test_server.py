@@ -12,6 +12,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -57,7 +58,7 @@ def export_settings(tmp_path):
 
 def export_recipe(track_id, track_version, renderer_build):
     return {
-        "version": 2,
+        "version": 3,
         "rendererBuild": renderer_build,
         "track": {"id": track_id, "contentVersion": track_version},
         "sim": "plife",
@@ -71,7 +72,7 @@ def export_recipe(track_id, track_version, renderer_build):
         "particleBudget": 1000,
         "presentation": {"mode": "single", "autoAdvance": False},
         "output": {
-            "profile": "hdr10-1080p120",
+            "profile": "av1-sdr-debug-1080p120",
             "encoder": "av1_nvenc",
             "paperWhiteNits": 203,
             "masteringPeakNits": 1000,
@@ -240,16 +241,17 @@ def test_cors_allows_a_vite_dev_origin(client):
     assert "access-control-allow-origin" not in res.headers
 
 
-def test_export_capabilities_are_probed_once(monkeypatch, tmp_path):
+def test_export_capabilities_are_cached_until_the_worker_build_changes(monkeypatch, tmp_path):
     write_track(tmp_path, "fixture-track")
     settings = export_settings(tmp_path)
+    initial_build = settings.renderer_build()
     calls = []
 
     def probe(actual):
         calls.append(actual)
         return {
             "available": True,
-            "profiles": ["hdr10-1080p120"],
+            "profiles": ["av1-sdr-debug-1080p120"],
             "encoders": ["av1_nvenc"],
             "rendererBuild": actual.renderer_build(),
             "transport": "sdr-rgba8-av1-debug",
@@ -260,9 +262,13 @@ def test_export_capabilities_are_probed_once(monkeypatch, tmp_path):
     with TestClient(create_app(tmp_path, export_settings=settings)) as export_client:
         first = export_client.get("/exports/capabilities")
         second = export_client.get("/exports/capabilities")
-    assert first.status_code == second.status_code == 200
-    assert first.json()["rendererBuild"] == settings.renderer_build()
-    assert calls == [settings]
+        settings.worker_path.write_text("// rebuilt fixture worker", encoding="utf-8")
+        third = export_client.get("/exports/capabilities")
+    assert first.status_code == second.status_code == third.status_code == 200
+    assert first.json()["rendererBuild"] == initial_build
+    assert third.json()["rendererBuild"] == settings.renderer_build()
+    assert first.json()["rendererBuild"] != third.json()["rendererBuild"]
+    assert calls == [settings, settings]
 
 
 def test_export_job_runs_with_server_owned_paths_and_downloads(monkeypatch, tmp_path):
@@ -275,7 +281,7 @@ def test_export_job_runs_with_server_owned_paths_and_downloads(monkeypatch, tmp_
         "probe_export_capabilities",
         lambda _settings: {
             "available": True,
-            "profiles": ["hdr10-1080p120"],
+            "profiles": ["av1-sdr-debug-1080p120"],
             "encoders": ["av1_nvenc"],
             "rendererBuild": renderer_build,
             "transport": "sdr-rgba8-av1-debug",
@@ -287,7 +293,15 @@ def test_export_job_runs_with_server_owned_paths_and_downloads(monkeypatch, tmp_
 
     def run_worker(actual_settings, request_path, diagnostic_path, on_message):
         request = json.loads(request_path.read_text(encoding="utf-8"))
-        requests.append((actual_settings, request, diagnostic_path))
+        requests.append(
+            {
+                "settings": actual_settings,
+                "request": request,
+                "diagnostic": diagnostic_path,
+                "worker": actual_settings.worker_path.read_text(encoding="utf-8"),
+                "audio": Path(request["audioPath"]).read_bytes(),
+            }
+        )
         on_message({"type": "ready", "adapter": "Fixture GPU", "transport": "fixture"})
         on_message({"type": "progress", "stage": "render", "frame": 18, "frames": 36})
         output = tmp_path / "exports" / request["output"]["path"].split("\\")[-1]
@@ -331,11 +345,24 @@ def test_export_job_runs_with_server_owned_paths_and_downloads(monkeypatch, tmp_
     assert download.content == b"fixture-mp4"
     assert completed["audio"] is True
     assert completed["duration"] == pytest.approx(0.3)
-    actual_settings, request, diagnostic_path = requests[0]
-    assert actual_settings == settings
+    observed = requests[0]
+    actual_settings = observed["settings"]
+    request = observed["request"]
+    diagnostic_path = observed["diagnostic"]
+    assert actual_settings.worker_path.parent.parent == settings.web_dir / ".export-work"
+    assert actual_settings.worker_path.name == "worker.mjs"
+    assert observed["worker"] == "// fixture worker"
+    assert actual_settings.repo_root == settings.repo_root
+    assert actual_settings.ffmpeg_executable == settings.ffmpeg_executable
     assert request["runtime"]["ffmpegExecutable"] == str(settings.ffmpeg_executable)
-    assert request["audioPath"] == str((tmp_path / "fixture-track" / "audio.wav").resolve())
+    assert Path(request["audioPath"]).parent == diagnostic_path.parent
+    assert observed["audio"] == WAV_HEAD + b"\x00" * 32
+    assert Path(request["timeline"]["jsonPath"]).parent == diagnostic_path.parent
+    assert Path(request["timeline"]["binaryPath"]).parent == diagnostic_path.parent
     assert diagnostic_path.parent.parent == tmp_path / ".work"
+    assert not actual_settings.worker_path.exists()
+    assert not Path(request["audioPath"]).exists()
+    assert not Path(request["timeline"]["jsonPath"]).exists()
 
 
 def test_export_rejects_stale_track_or_renderer(monkeypatch, tmp_path):
@@ -347,7 +374,7 @@ def test_export_rejects_stale_track_or_renderer(monkeypatch, tmp_path):
         "probe_export_capabilities",
         lambda _settings: {
             "available": True,
-            "profiles": ["hdr10-1080p120"],
+            "profiles": ["av1-sdr-debug-1080p120"],
             "encoders": ["av1_nvenc"],
             "rendererBuild": renderer_build,
             "reason": "",

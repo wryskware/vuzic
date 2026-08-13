@@ -178,7 +178,7 @@ def probe_export_capabilities(settings: ExportSettings) -> dict[str, Any]:
     ]
     return {
         "available": "av1_nvenc" in encoders,
-        "profiles": ["hdr10-2160p120", "hdr10-1080p120"],
+        "profiles": ["av1-sdr-debug-2160p120", "av1-sdr-debug-1080p120"],
         "gpu": str(ready.get("adapter") or ""),
         "backend": str(ready.get("backend") or ""),
         "encoders": encoders,

@@ -72,7 +72,7 @@ function parseCapabilities(value: unknown): ExportCapabilities {
     available: row['available'] === true,
     profiles: strings(row['profiles']).filter(
       (profile): profile is ExportProfile =>
-        profile === 'hdr10-2160p120' || profile === 'hdr10-1080p120',
+        profile === 'av1-sdr-debug-2160p120' || profile === 'av1-sdr-debug-1080p120',
     ),
     encoders: strings(row['encoders']),
     rendererBuild: text(row['rendererBuild']),

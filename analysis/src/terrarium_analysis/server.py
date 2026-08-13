@@ -40,7 +40,7 @@ import tempfile
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -215,6 +215,13 @@ class Store:
     cache: dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]] = field(default_factory=dict)
 
 
+def timeline_content_version(manifest_path: Path, binary_path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(manifest_path.read_bytes())
+    h.update(binary_path.read_bytes())
+    return h.hexdigest()[:16]
+
+
 def track_entry(store: Store, d: Path) -> dict[str, Any] | None:
     """One `/tracks` row, or None if the directory is not a finished track.
 
@@ -245,9 +252,6 @@ def track_entry(store: Store, d: Path) -> dict[str, Any] | None:
         log.warning("track %s: unreadable timeline.json, skipping", d.name)
         return None
 
-    h = hashlib.sha256()
-    h.update(manifest_path.read_bytes())
-    h.update(bin_path.read_bytes())
     audio = d / "audio.wav"
 
     entry = {
@@ -260,7 +264,7 @@ def track_entry(store: Store, d: Path) -> dict[str, Any] | None:
         "tempo": float(manifest.get("tempo") or 0.0),
         "events": len(manifest.get("events") or ()),
         "hasAudio": audio.is_file(),
-        "version": h.hexdigest()[:16],
+        "version": timeline_content_version(manifest_path, bin_path),
     }
     store.cache[d.name] = (fingerprint, entry)
     return entry
@@ -317,7 +321,7 @@ def analyze_job(store: Store, job: Job, src: Path, work_root: Path) -> None:
 
 
 MAX_EXPORT_RECIPE_BYTES = 8 * 1024 * 1024
-EXPORT_PROFILES = {"hdr10-2160p120", "hdr10-1080p120"}
+EXPORT_PROFILES = {"av1-sdr-debug-2160p120", "av1-sdr-debug-1080p120"}
 
 
 def _number(value: Any, name: str, minimum: float, maximum: float) -> float:
@@ -358,8 +362,8 @@ def validate_export_submission(
         raise HTTPException(422, f"recipe is not finite JSON: {exc}") from exc
     if len(encoded) > MAX_EXPORT_RECIPE_BYTES:
         raise HTTPException(413, f"recipe exceeds {MAX_EXPORT_RECIPE_BYTES} bytes")
-    if recipe.get("version") != 2:
-        raise HTTPException(422, "recipe version 2 is required")
+    if recipe.get("version") != 3:
+        raise HTTPException(422, "recipe version 3 is required")
     if recipe.get("rendererBuild") != renderer_build:
         raise HTTPException(409, "renderer build changed; refresh the app and capture again")
     identity = recipe.get("track")
@@ -398,17 +402,40 @@ def validate_export_submission(
     return recipe, start, duration
 
 
+def snapshot_export_inputs(
+    directory: Path,
+    settings: ExportSettings,
+    private: Path,
+    worker_private: Path,
+    expected_track_version: str,
+    expected_renderer_build: str,
+) -> tuple[Path, Path, Path, ExportSettings]:
+    """Freeze every mutable file a queued native job will later consume."""
+
+    manifest = private / "timeline.json"
+    binary = private / "timeline.bin"
+    audio = private / "audio.wav"
+    worker_private.mkdir(parents=True, exist_ok=False)
+    worker = worker_private / "worker.mjs"
+    shutil.copyfile(directory / "timeline.json", manifest)
+    shutil.copyfile(directory / "timeline.bin", binary)
+    if timeline_content_version(manifest, binary) != expected_track_version:
+        raise ValueError("track content changed while the export was queued")
+    shutil.copyfile(directory / "audio.wav", audio)
+    shutil.copyfile(settings.worker_path, worker)
+    job_settings = replace(settings, worker_path=worker)
+    if job_settings.renderer_build() != expected_renderer_build:
+        raise ValueError("renderer build changed while the export was queued")
+    return manifest, binary, audio, job_settings
+
+
 def export_job(
-    store: Store,
+    settings: ExportSettings,
     job: Job,
     request_path: Path,
     diagnostic_path: Path,
     output_path: Path,
 ) -> None:
-    settings = store.export_settings
-    if settings is None:
-        job.status, job.error = "error", "export runtime is not configured"
-        return
 
     def on_message(message: dict[str, Any]) -> None:
         kind = message.get("type")
@@ -424,6 +451,8 @@ def export_job(
         elif kind == "error":
             job.message = str(message.get("message") or "worker failed")[:200]
 
+    succeeded = False
+    terminal_error = ""
     try:
         job.status, job.stage, job.message = "running", "startup", "starting native worker"
         result = run_export_worker(settings, request_path, diagnostic_path, on_message)
@@ -445,12 +474,26 @@ def export_job(
                 "downloadUrl": f"/exports/{job.export_id}/download",
             }
         )
-        job.status, job.stage, job.progress = "done", "done", 1.0
         job.message = f"wrote {job.result['filename']}"
+        succeeded = True
     except Exception as exc:  # noqa: BLE001 — one failed export must not stop the server
         log.exception("export job %s failed", job.id)
-        job.status, job.stage = "error", "error"
-        job.error = f"{type(exc).__name__}: {exc}"
+        terminal_error = f"{type(exc).__name__}: {exc}"
+    finally:
+        # The bounded worker log is the only retained private diagnostic. Track,
+        # audio, worker, and request snapshots can be large and are never public.
+        for name in ("request.json", "timeline.json", "timeline.bin", "audio.wav"):
+            (request_path.parent / name).unlink(missing_ok=True)
+        settings.worker_path.unlink(missing_ok=True)
+        try:
+            settings.worker_path.parent.rmdir()
+            settings.worker_path.parent.parent.rmdir()
+        except OSError:
+            pass
+    if succeeded:
+        job.status, job.stage, job.progress = "done", "done", 1.0
+    else:
+        job.status, job.stage, job.error = "error", "error", terminal_error
 
 
 def create_app(
@@ -490,8 +533,10 @@ def create_app(
 
     def capabilities_sync() -> dict[str, Any]:
         with store.export_capabilities_lock:
-            if store.export_capabilities is None:
-                assert store.export_settings is not None
+            assert store.export_settings is not None
+            current_build = store.export_settings.renderer_build()
+            cached_build = str((store.export_capabilities or {}).get("rendererBuild") or "")
+            if store.export_capabilities is None or cached_build != current_build:
                 store.export_capabilities = probe_export_capabilities(store.export_settings)
             return dict(store.export_capabilities)
 
@@ -591,8 +636,27 @@ def create_app(
 
         private = work_root / f"export-{job_id}"
         private.mkdir(parents=False, exist_ok=False)
+        worker_private = settings.web_dir / ".export-work" / f"export-{job_id}"
         request_path = private / "request.json"
         diagnostic_path = private / "worker.log"
+        try:
+            manifest, binary, audio_snapshot, job_settings = await run_in_threadpool(
+                snapshot_export_inputs,
+                directory,
+                settings,
+                private,
+                worker_private,
+                str(entry["version"]),
+                str(capabilities["rendererBuild"]),
+            )
+        except ValueError as exc:
+            shutil.rmtree(private, ignore_errors=True)
+            shutil.rmtree(worker_private, ignore_errors=True)
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            shutil.rmtree(private, ignore_errors=True)
+            shutil.rmtree(worker_private, ignore_errors=True)
+            raise HTTPException(500, f"could not snapshot export inputs: {exc}") from exc
         request = {
             "version": 1,
             "recipe": recipe,
@@ -601,19 +665,30 @@ def create_app(
                 "workingDirectory": str(settings.repo_root),
             },
             "timeline": {
-                "jsonPath": str((directory / "timeline.json").resolve()),
-                "binaryPath": str((directory / "timeline.bin").resolve()),
+                "jsonPath": str(manifest),
+                "binaryPath": str(binary),
             },
-            "audioPath": str(audio.resolve()),
+            "audioPath": str(audio_snapshot),
             "output": {
                 "path": str(output_path),
                 "profile": recipe["output"]["profile"],
             },
             "range": {"startSeconds": start, "durationSeconds": duration},
         }
-        with request_path.open("x", encoding="utf-8") as stream:
-            json.dump(request, stream, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-            stream.write("\n")
+        try:
+            with request_path.open("x", encoding="utf-8") as stream:
+                json.dump(
+                    request,
+                    stream,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+                stream.write("\n")
+        except (OSError, TypeError, ValueError) as exc:
+            shutil.rmtree(private, ignore_errors=True)
+            shutil.rmtree(worker_private, ignore_errors=True)
+            raise HTTPException(500, f"could not write export request: {exc}") from exc
 
         job = Job(
             id=job_id,
@@ -634,7 +709,7 @@ def create_app(
         store.exports[export_id] = job
         store.pool.submit(
             export_job,
-            store,
+            job_settings,
             job,
             request_path,
             diagnostic_path,

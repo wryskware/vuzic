@@ -18,7 +18,7 @@ interface BrowserCaptureSim {
 
 export interface BrowserRecipeSource {
   sim: BrowserCaptureSim;
-  modulator: Pick<Modulator, 'config' | 'baseValues'>;
+  modulator: Pick<Modulator, 'config' | 'mode' | 'baseValues' | 'currentTheta'>;
   impulses: Pick<ImpulseEngine, 'config'>;
 }
 
@@ -37,6 +37,13 @@ export function captureBrowserExportRecipe(options: BrowserExportRecipeOptions):
   if (track.version === '') {
     throw new Error('selected track has no content version; reload after syncing timeline data');
   }
+  // Manual sliders are absolute, so the live theta is the authored state even
+  // though the modulator's seeded base has not followed those edits. In
+  // modulated mode theta is a transient music excursion and the authored base
+  // remains the deterministic centre the worker must restore at time zero.
+  const modulationBase = source.modulator.mode === 'manual'
+    ? source.modulator.currentTheta()
+    : source.modulator.baseValues();
   return captureExportRecipe({
     rendererBuild,
     track: { id: track.id, contentVersion: track.version },
@@ -45,7 +52,7 @@ export function captureBrowserExportRecipe(options: BrowserExportRecipeOptions):
     seedPinned: (options.currentPinState ?? isSeedPinned)(source.sim.currentSeed),
     simulation: source.sim.config,
     modulation: source.modulator.config as ModulationConfig,
-    modulationBase: source.modulator.baseValues(),
+    modulationBase,
     impulses: source.impulses.config as ImpulseConfig,
     serializeExtras: () => source.sim.serializeExtras?.(),
     output: options.output,

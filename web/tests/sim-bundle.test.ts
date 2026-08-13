@@ -100,7 +100,7 @@ function plifeRecipe(): ExportRecipe {
   const modulationWithRender = structuredClone(authored.modulator.config);
   const { render: _render, ...modulation } = modulationWithRender;
   return {
-    version: 2,
+    version: 3,
     rendererBuild: 'test',
     track: { id: 'test', contentVersion: 'test-v1' },
     sim: 'plife',
@@ -114,7 +114,7 @@ function plifeRecipe(): ExportRecipe {
     particleBudget: simulation.budget.cap,
     presentation: { mode: 'single', autoAdvance: false },
     output: {
-      profile: 'hdr10-1080p120',
+      profile: 'av1-sdr-debug-1080p120',
       encoder: 'av1_nvenc',
       paperWhiteNits: 203,
       masteringPeakNits: 1000,

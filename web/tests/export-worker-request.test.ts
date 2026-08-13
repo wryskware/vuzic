@@ -25,7 +25,7 @@ function recipe(): ExportRecipe {
     'plife',
   );
   return {
-    version: 2,
+    version: 3,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',
@@ -39,7 +39,7 @@ function recipe(): ExportRecipe {
     particleBudget: simulation.budget.cap,
     presentation: { mode: 'single', autoAdvance: false },
     output: {
-      profile: 'hdr10-1080p120',
+      profile: 'av1-sdr-debug-1080p120',
       encoder: 'av1_nvenc',
       paperWhiteNits: 203,
       masteringPeakNits: 1000,
@@ -63,7 +63,7 @@ function request(): ExportWorkerRequest {
     audioPath: join(root, 'track.wav'),
     output: {
       path: join(root, 'render.mp4'),
-      profile: 'hdr10-1080p120',
+      profile: 'av1-sdr-debug-1080p120',
     },
     range: { startSeconds: 4, durationSeconds: 10 },
   };
@@ -95,7 +95,7 @@ test('worker request requires server-resolved paths and matching bounded output'
   );
 
   const mismatch = request();
-  mismatch.recipe.output.profile = 'hdr10-2160p120';
+  mismatch.recipe.output.profile = 'av1-sdr-debug-2160p120';
   assert.throws(() => validateExportWorkerRequest(mismatch), /output\.profile.*must match/);
 
   const tooLong = request();

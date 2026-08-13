@@ -4,9 +4,10 @@ import { test } from 'node:test';
 import { createLocalExportClient, type ExportJob } from '../src/export/client.ts';
 import type { ExportRecipe } from '../src/runtime/recipe.ts';
 import {
-  DEBUG_EXPORT_LABEL,
-  DEBUG_EXPORT_OUTPUT,
+  DEFAULT_SDR_DEBUG_PROFILE,
   EXPORT_BUTTON_LABEL,
+  SDR_DEBUG_PROFILES,
+  debugExportOutput,
   debugExportAvailable,
   exportProgressLabel,
 } from '../src/ui/export-panel.ts';
@@ -35,13 +36,13 @@ function job(status: ExportJob['status'], progress: number): ExportJob {
 
 test('local export client probes capabilities and posts only trackId plus recipe', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
-  const recipe = { version: 2, rendererBuild: 'build-1' } as ExportRecipe;
+  const recipe = { version: 3, rendererBuild: 'build-1' } as ExportRecipe;
   const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
     requests.push({ url: String(url), ...(init === undefined ? {} : { init }) });
     if (String(url).endsWith('/exports/capabilities')) {
       return json({
         available: true,
-        profiles: ['hdr10-1080p120'],
+        profiles: ['av1-sdr-debug-1080p120', 'av1-sdr-debug-2160p120'],
         encoders: ['av1_nvenc'],
         rendererBuild: 'build-1',
         gpu: 'Fixture GPU',
@@ -57,6 +58,10 @@ test('local export client probes capabilities and posts only trackId plus recipe
   const capabilities = await client.capabilities();
   assert.equal(capabilities.transport, 'sdr-rgba8-av1-debug');
   assert.equal(capabilities.rendererBuild, 'build-1');
+  assert.deepEqual(capabilities.profiles, [
+    'av1-sdr-debug-1080p120',
+    'av1-sdr-debug-2160p120',
+  ]);
   await client.start('pink-loop', recipe);
 
   assert.equal(requests[0]?.url, 'http://localhost:8765/exports/capabilities');
@@ -97,18 +102,32 @@ test('server error detail is surfaced instead of a generic failed fetch', async 
   await assert.rejects(client.capabilities(), /renderer build changed/);
 });
 
-test('the UI advertises only the honest, currently supported SDR debug path', () => {
+test('the UI defaults to recommended 1080p and offers honest 1080p and 4K SDR choices', () => {
   assert.equal(EXPORT_BUTTON_LABEL, 'Render video with current settings');
-  assert.equal(DEBUG_EXPORT_LABEL, '1080p / 120 fps / SDR debug');
-  assert.deepEqual(DEBUG_EXPORT_OUTPUT, {
-    profile: 'hdr10-1080p120',
+  assert.equal(DEFAULT_SDR_DEBUG_PROFILE, 'av1-sdr-debug-1080p120');
+  assert.deepEqual(SDR_DEBUG_PROFILES, [
+    {
+      profile: 'av1-sdr-debug-1080p120',
+      label: '1080p / 120 fps / SDR debug (recommended)',
+    },
+    {
+      profile: 'av1-sdr-debug-2160p120',
+      label: '4K / 120 fps / SDR debug',
+    },
+  ]);
+  assert.deepEqual(debugExportOutput('av1-sdr-debug-1080p120'), {
+    profile: 'av1-sdr-debug-1080p120',
     encoder: 'av1_nvenc',
     paperWhiteNits: 203,
     masteringPeakNits: 1000,
   });
+  assert.equal(
+    debugExportOutput('av1-sdr-debug-2160p120').profile,
+    'av1-sdr-debug-2160p120',
+  );
   const base = {
     available: true,
-    profiles: ['hdr10-1080p120'] as const,
+    profiles: ['av1-sdr-debug-1080p120'] as const,
     encoders: ['av1_nvenc'],
     rendererBuild: 'build-1',
     gpu: '',
@@ -117,6 +136,17 @@ test('the UI advertises only the honest, currently supported SDR debug path', ()
     reason: '',
   };
   assert.equal(debugExportAvailable({ ...base, profiles: [...base.profiles] }), true);
+  assert.equal(
+    debugExportAvailable(
+      { ...base, profiles: ['av1-sdr-debug-1080p120', 'av1-sdr-debug-2160p120'] },
+      'av1-sdr-debug-2160p120',
+    ),
+    true,
+  );
+  assert.equal(
+    debugExportAvailable({ ...base, profiles: [...base.profiles] }, 'av1-sdr-debug-2160p120'),
+    false,
+  );
   assert.equal(debugExportAvailable({ ...base, profiles: [], encoders: [] }), false);
   assert.equal(debugExportAvailable({ ...base, transport: 'hdr10-p010' }), false);
   assert.equal(exportProgressLabel(job('running', 0.376)), 'render 38%');

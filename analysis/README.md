@@ -374,7 +374,7 @@ fetches it from the server.
 | `GET /tracks` | `{tracks: [{id, title, duration, frames, tempo, events, hasAudio, version}]}` |
 | `GET /tracks/{id}/{file}` | `timeline.json`, `timeline.bin`, `audio.wav`, `run.json` — nothing else |
 | `GET /exports/capabilities` | native Windows worker/GPU/AV1 availability and renderer build id |
-| `POST /exports` | immutable recipe v2 for an analyzed `trackId` → queued export job |
+| `POST /exports` | immutable recipe v3 for an analyzed `trackId` → queued export job |
 | `GET /exports/{id}` | export job metadata |
 | `GET /exports/{id}/download` | completed MP4 only; never an arbitrary filesystem path |
 
@@ -423,12 +423,12 @@ on the Windows filesystem. This avoids routing rendered frames or finished
 videos through WSL. Heavy model analysis may still run in WSL as described
 above; only the much smaller analyzed track artifacts need to cross that seam.
 
-The current browser checkpoint emits **1920×1080, constant 120 fps, AV1 NVENC
-SDR-debug video with AAC-LC audio**. The workbench exposes only this path as
-`1080p / 120 fps / SDR debug`. It is not HDR even though the internal profile
-name reserves the future HDR profile. True PQ/BT.2020, P010/Main10, validated
-4K120 output, hosted/product compute, cancellation, restart recovery, disk
-quotas, and retention policy are later work.
+The current browser checkpoint emits **constant 120 fps AV1 NVENC SDR-debug
+video with AAC-LC audio** at either 1920×1080 or 3840×2160. The workbench
+labels both choices explicitly and defaults to the more practical 1080p path.
+Neither is HDR. True PQ/BT.2020, P010/Main10, hosted/product compute,
+cancellation, restart recovery, disk quotas, and retention policy are later
+work.
 
 Prerequisites on Windows:
 
@@ -466,7 +466,10 @@ Open the Vite app normally, expand `video export`, and wait for the capability
 probe to report ready before pressing **Render video with current settings**.
 The server owns the output filename, writes a `.partial` file during encoding,
 publishes the MP4 only after success, and returns a download link. Node and
-FFmpeg are per-job child processes; neither opens another HTTP port.
+FFmpeg are per-job child processes; neither opens another HTTP port. Each queued
+job snapshots its renderer bundle, timeline, and WAV so later source changes
+cannot alter what it renders; those potentially large private snapshots are
+removed at the terminal job state, while the bounded worker log is retained.
 
 This checkpoint has no cancellation endpoint and no automatic cleanup policy.
 Stop the server only when no export is running, and manage completed files in
