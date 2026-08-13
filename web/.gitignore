@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-worker/
 
 # synced from ../data by `npm run sync-data`
 public/timelines/

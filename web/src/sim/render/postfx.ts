@@ -30,7 +30,8 @@
  *   storage buffer that the compositor reads one frame later; a readback would
  *   be a queue stall for a number that is allowed to be one frame stale.
  */
-import type { GpuContext } from '../../gpu/context';
+import type { GpuRuntimeContext } from '../../gpu/runtime-context';
+import type { RenderFrame } from '../types';
 import { MAX_BLOOM_LEVELS, tonemapIndex, type RenderConfig } from './config';
 
 import postCommonWgsl from './shaders/post-common.wgsl?raw';
@@ -59,7 +60,7 @@ export class PostFx {
   /** Set by the owner each frame; θ owns gamma, PostFx only applies it. */
   gamma = 2.2;
 
-  private ctx: GpuContext | null = null;
+  private ctx: GpuRuntimeContext | null = null;
   private cfg: RenderConfig;
 
   private sampler!: GPUSampler;
@@ -92,7 +93,6 @@ export class PostFx {
   private levels: Level[] = [];
   private parity = 0;
 
-  private lastFrameAt = 0;
   private passes = 0;
 
   /**
@@ -147,7 +147,7 @@ export class PostFx {
     return this.sampler;
   }
 
-  init(ctx: GpuContext): void {
+  init(ctx: GpuRuntimeContext): void {
     this.ctx = ctx;
     const { device } = ctx;
 
@@ -344,12 +344,9 @@ export class PostFx {
    * the way out, so `hdrTargetView` is a fresh surface next frame and
    * `previousHdrView` is the one just graded.
    */
-  run(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+  run(encoder: GPUCommandEncoder, targetView: GPUTextureView, frame: RenderFrame): void {
     if (!this.ctx || this.levels.length === 0) return;
-    const now = performance.now();
-    const dt = this.lastFrameAt === 0 ? 1 / 60 : Math.min((now - this.lastFrameAt) / 1000, 0.25);
-    this.lastFrameAt = now;
-    this.writeParams(dt);
+    this.writeParams(Math.min(frame.deltaSeconds, 0.25));
 
     const cur = this.parity;
     let passes = 0;
@@ -504,7 +501,7 @@ export class PostFx {
   }
 
   private chainBind(view: GPUTextureView, label: string): GPUBindGroup {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     return device.createBindGroup({
       label,
       layout: this.chainLayout,
@@ -517,7 +514,7 @@ export class PostFx {
   }
 
   private writeParams(dt: number): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     const g = this.cfg.grade;
     const b = this.cfg.bloom;
     const p = this.paramsData;

@@ -1,5 +1,16 @@
-import type { GpuContext } from '../gpu/context';
+import type { GpuRuntimeContext } from '../gpu/runtime-context';
 import type { FeaturesFrame } from '../timeline/sampler';
+
+/**
+ * One presentation-frame sample, supplied by the host rather than read from a
+ * wall clock inside the renderer. Browser hosts use measured rAF timing; an
+ * offline host can instead provide an exact rational cadence.
+ */
+export interface RenderFrame {
+  frameIndex: number;
+  timeSeconds: number;
+  deltaSeconds: number;
+}
 
 /**
  * The seam the simulation slots into. The main loop owns the audio clock, the sampler and
@@ -12,9 +23,9 @@ import type { FeaturesFrame } from '../timeline/sampler';
  */
 export interface Sim {
   readonly name: string;
-  init(ctx: GpuContext): Promise<void>;
+  init(ctx: GpuRuntimeContext): Promise<void>;
   tick(frame: FeaturesFrame, simTick: number): void;
-  render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void;
+  render(encoder: GPUCommandEncoder, targetView: GPUTextureView, frame: RenderFrame): void;
   /**
    * The sim-specific middle of the app's status line — grid, population, seed,
    * whatever this substrate's readout is. It lives here rather than in main
@@ -32,7 +43,7 @@ export class NullSim implements Sim {
   private stems = new Float32Array(4);
   private stemOffset = 0;
 
-  async init(_ctx: GpuContext): Promise<void> {
+  async init(_ctx: GpuRuntimeContext): Promise<void> {
     void _ctx;
   }
 
@@ -47,7 +58,8 @@ export class NullSim implements Sim {
     }
   }
 
-  render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+  render(encoder: GPUCommandEncoder, targetView: GPUTextureView, _frame: RenderFrame): void {
+    void _frame;
     const energy = ((this.stems[0] ?? 0) + (this.stems[1] ?? 0) + (this.stems[2] ?? 0) + (this.stems[3] ?? 0)) / 4;
     const pass = encoder.beginRenderPass({
       colorAttachments: [

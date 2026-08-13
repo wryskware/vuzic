@@ -62,14 +62,14 @@
  * a much sharper one — halving the pool quarters the work rather than halving
  * it.
  */
-import type { GpuContext } from '../../gpu/context';
+import type { GpuRuntimeContext } from '../../gpu/runtime-context';
 import type { ModTarget, ThetaRegistry } from '../../mapping/target';
 import { SECONDS_PER_TICK } from '../../timing';
 import type { FeaturesFrame } from '../../timeline/sampler';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
 import { paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
-import type { Sim } from '../types';
+import type { RenderFrame, Sim } from '../types';
 import { advanceStepCadence } from '../step-cadence';
 import {
   BUDGET_FPS_RANGE,
@@ -391,7 +391,7 @@ export class PlifeSim implements Sim, ModTarget {
   /** The phase-7 render chain. Owns the HDR surfaces, bloom, grading, auto-exposure. */
   readonly post: PostFx;
 
-  private ctx: GpuContext | null = null;
+  private ctx: GpuRuntimeContext | null = null;
   private ready = false;
   private seed: number;
 
@@ -671,14 +671,7 @@ export class PlifeSim implements Sim, ModTarget {
   private readonly splashData = new Float32Array(MAX_SPLASHES * FLOATS_PER_SPLASH);
   private splashCount = 0;
 
-  /**
-   * `performance.now()` at the last `render`, and the frame length that follows
-   * from it expressed in 60 Hz frames. The feedback lane is the only thing that
-   * reads them — see the note in `render` — and they are fields rather than
-   * locals because `writeGlobals` is called from the substep path too and has to
-   * publish the same corrected numbers there.
-   */
-  private lastRenderAt = 0;
+  /** Render-frame length expressed in 60 Hz frames for the feedback lane. */
   private renderDtFrames = 1;
 
   private parity = 0;
@@ -1184,7 +1177,7 @@ export class PlifeSim implements Sim, ModTarget {
 
   // ── init ───────────────────────────────────────────────────────────────────
 
-  async init(ctx: GpuContext): Promise<void> {
+  async init(ctx: GpuRuntimeContext): Promise<void> {
     this.ctx = ctx;
     const { device } = ctx;
     const k = this.config.speciesCount;
@@ -1993,7 +1986,7 @@ export class PlifeSim implements Sim, ModTarget {
    * what this writes, and a submit boundary is the least ambiguous way to say so.
    */
   private runFarField(): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     // Order matters: `uploadSpecies` is what recomputes `targetAlive`, and the
     // per-species mean density the coefficients divide by comes from it.
     this.uploadSpecies();
@@ -2050,7 +2043,7 @@ export class PlifeSim implements Sim, ModTarget {
    * blur of the raw splat.
    */
   private writeBlurParams(): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     const s1 = this.farSigma1;
     const s2 = this.farSigma;
     const sr = Math.sqrt(Math.max(s2 * s2 - s1 * s1, 1e-12));
@@ -2156,7 +2149,7 @@ export class PlifeSim implements Sim, ModTarget {
         }
       }
     }
-    (this.ctx as GpuContext).device.queue.writeBuffer(
+    (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(
       this.interactionBuf,
       base * 4,
       d,
@@ -2262,7 +2255,7 @@ export class PlifeSim implements Sim, ModTarget {
     }
     this.splashCount = n;
     if (n > 0) {
-      (this.ctx as GpuContext).device.queue.writeBuffer(
+      (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(
         this.splashBuf,
         0,
         this.splashData,
@@ -2273,7 +2266,7 @@ export class PlifeSim implements Sim, ModTarget {
   }
 
   private runStep(pcgTick: number): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     this.lastPcgTick = pcgTick;
     // uploadSpecies first: it is what computes `activeTotal`, which writeGlobals
     // then publishes. (Physarum writes globals first; it has no such dependency.)
@@ -2344,7 +2337,11 @@ export class PlifeSim implements Sim, ModTarget {
     this.parity = 1 - this.parity;
   }
 
-  render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+  render(
+    encoder: GPUCommandEncoder,
+    targetView: GPUTextureView,
+    frame: RenderFrame,
+  ): void {
     if (!this.ready || !this.ctx) return;
 
     // Post surfaces follow the canvas, not the world: a resize re-allocates them
@@ -2365,16 +2362,11 @@ export class PlifeSim implements Sim, ModTarget {
     // The 0.25 s clamp is for a tab that was backgrounded: a two-second gap
     // would otherwise raise 0.88 to the 120th power and clear the echo outright,
     // which is a black flash on the first frame back.
-    const now = performance.now();
-    // Floored at 1e-3 s, not 0: performance.now() is coarsened and two renders
+    // Floored at 1e-3 s, not 0: browser timestamps can be coarsened and two renders
     // can share a timestamp, making the exponent 0 — and pow(x, 0) is 1 for
     // every x, which would switch a disabled or heavily-faded echo fully on
     // for that frame. The floor is a no-op at any real frame rate.
-    this.renderDtFrames =
-      this.lastRenderAt === 0
-        ? 1
-        : Math.min(Math.max((now - this.lastRenderAt) / 1000, 1e-3), 0.25) * 60;
-    this.lastRenderAt = now;
+    this.renderDtFrames = Math.min(Math.max(frame.deltaSeconds, 1e-3), 0.25) * 60;
 
     // Both render passes read Globals (exposure, feedback) and the species block
     // (colour, size, stretch), and a frame can be drawn with zero substeps. This
@@ -2411,12 +2403,12 @@ export class PlifeSim implements Sim, ModTarget {
     draw.draw(4, this.totalParticles);
     draw.end();
 
-    this.post.run(encoder, targetView);
+    this.post.run(encoder, targetView, frame);
   }
 
   /** Two bind groups, one per PostFx parity, differing only in the feedback source. */
   private rebuildFadeBinds(): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     this.fadeBinds = [0, 1].map((parity) =>
       device.createBindGroup({
         label: `plife.fade.parity${parity}`,
@@ -2484,7 +2476,7 @@ export class PlifeSim implements Sim, ModTarget {
   }
 
   private writeGlobals(pcgTick: number): void {
-    const ctx = this.ctx as GpuContext;
+    const ctx = this.ctx as GpuRuntimeContext;
     const u = this.globalsU32;
     const f = this.globalsF32;
     const cfg = this.config;
@@ -2548,7 +2540,7 @@ export class PlifeSim implements Sim, ModTarget {
   }
 
   private uploadSpecies(): void {
-    const ctx = this.ctx as GpuContext;
+    const ctx = this.ctx as GpuRuntimeContext;
     if (this.paletteDirty) this.refreshPalette();
     const d = this.speciesData;
     const list = this.config.species;

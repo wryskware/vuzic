@@ -1,4 +1,4 @@
-import type { GpuContext } from '../../gpu/context';
+import type { GpuRuntimeContext } from '../../gpu/runtime-context';
 import type { ModTarget, ThetaRegistry } from '../../mapping/target';
 import {
   applyVector,
@@ -15,7 +15,7 @@ import { LEGACY_TICK_DIVISOR } from '../../timing';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
 import { hexToLinear, paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
-import type { Sim } from '../types';
+import type { RenderFrame, Sim } from '../types';
 import { advanceStepCadence } from '../step-cadence';
 import {
   defaultConfig,
@@ -95,7 +95,7 @@ export class PhysarumSim implements Sim, ModTarget {
    */
   onSeedChange: ((seed: number) => void) | null = null;
 
-  private ctx: GpuContext | null = null;
+  private ctx: GpuRuntimeContext | null = null;
   private ready = false;
   private seed: number;
   /** null = no usable stems channel; stem drive stays off and the stems read as 0 */
@@ -178,14 +178,7 @@ export class PhysarumSim implements Sim, ModTarget {
   private matrixData!: Float32Array<ArrayBuffer>;
   private readonly splashData = new Float32Array(MAX_SPLASHES * FLOATS_PER_SPLASH);
 
-  /**
-   * `performance.now()` at the last `render`, and the frame length that follows
-   * from it expressed in 60 Hz frames. The feedback lane is the only thing that
-   * reads them — see the note in `render` — and they are fields rather than
-   * locals because `writeGlobals` also runs from the substep path and has to
-   * publish the same corrected numbers there.
-   */
-  private lastRenderAt = 0;
+  /** Render-frame length expressed in 60 Hz frames for the feedback lane. */
   private renderDtFrames = 1;
 
   private stepAccumulator = 0;
@@ -481,7 +474,7 @@ export class PhysarumSim implements Sim, ModTarget {
     this.pendingSingleStep = true;
   }
 
-  async init(ctx: GpuContext): Promise<void> {
+  async init(ctx: GpuRuntimeContext): Promise<void> {
     this.ctx = ctx;
     const { device } = ctx;
     const k = this.config.speciesCount;
@@ -1036,7 +1029,7 @@ export class PhysarumSim implements Sim, ModTarget {
     }
     this.splashCount = n;
     if (n > 0) {
-      (this.ctx as GpuContext).device.queue.writeBuffer(
+      (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(
         this.splashBuf,
         0,
         this.splashData,
@@ -1047,7 +1040,7 @@ export class PhysarumSim implements Sim, ModTarget {
   }
 
   private runStep(pcgTick: number): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     this.lastPcgTick = pcgTick;
     this.writeGlobals(pcgTick);
     this.uploadSpecies();
@@ -1090,7 +1083,11 @@ export class PhysarumSim implements Sim, ModTarget {
     device.queue.submit([encoder.finish()]);
   }
 
-  render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+  render(
+    encoder: GPUCommandEncoder,
+    targetView: GPUTextureView,
+    frame: RenderFrame,
+  ): void {
     if (!this.ready || !this.ctx) return;
 
     // Post surfaces follow the canvas, not the sim grid: a resize re-allocates
@@ -1113,18 +1110,13 @@ export class PhysarumSim implements Sim, ModTarget {
     // would otherwise raise the amount to the 120th power and clear the echo
     // outright, which is a black flash on the first frame back.
     //
-    // The 1e-3 s floor is not cosmetic. `performance.now()` is coarsened by some
-    // browsers, so two renders can report the same timestamp; that would make
+    // The 1e-3 s floor is not cosmetic. Browser timestamps can be coarsened, so
+    // two renders can report the same timestamp; that would make
     // the exponent 0, and `Math.pow(0, 0)` is **1**, which with physarum's
     // shipped `amount = 0` would switch the feedback lane fully on for one
     // frame. A frame is never zero seconds long, so the floor costs nothing and
     // keeps `pow(0, dtFrames)` at 0 for every reachable input.
-    const now = performance.now();
-    this.renderDtFrames =
-      this.lastRenderAt === 0
-        ? 1
-        : Math.min(Math.max((now - this.lastRenderAt) / 1000, 1e-3), 0.25) * 60;
-    this.lastRenderAt = now;
+    this.renderDtFrames = Math.min(Math.max(frame.deltaSeconds, 1e-3), 0.25) * 60;
 
     // This is the LAST Globals write before the composite pass, which is what
     // lets the substep path publish an uncorrected `renderDtFrames` harmlessly —
@@ -1148,7 +1140,7 @@ export class PhysarumSim implements Sim, ModTarget {
     pass.draw(3);
     pass.end();
 
-    this.post.run(encoder, targetView);
+    this.post.run(encoder, targetView, frame);
   }
 
   /**
@@ -1156,7 +1148,7 @@ export class PhysarumSim implements Sim, ModTarget {
    * surface is bound as the feedback source.
    */
   private rebuildCompositeBinds(): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     this.compositeBinds = [0, 1].map((parity) =>
       device.createBindGroup({
         label: `physarum.composite.parity${parity}`,
@@ -1209,7 +1201,7 @@ export class PhysarumSim implements Sim, ModTarget {
   }
 
   private writeGlobals(pcgTick: number): void {
-    const ctx = this.ctx as GpuContext;
+    const ctx = this.ctx as GpuRuntimeContext;
     if (this.paletteDirty) this.refreshPalette();
     const u = this.globalsU32;
     const f = this.globalsF32;
@@ -1270,7 +1262,7 @@ export class PhysarumSim implements Sim, ModTarget {
   }
 
   private uploadSpecies(): void {
-    const ctx = this.ctx as GpuContext;
+    const ctx = this.ctx as GpuRuntimeContext;
     if (this.paletteDirty) this.refreshPalette();
     const d = this.speciesData;
     const list = this.config.species;
@@ -1398,7 +1390,7 @@ export class PhysarumSim implements Sim, ModTarget {
     ctx.device.queue.writeBuffer(this.speciesBuf, 0, d);
   }
 
-  private chooseGrid(ctx: GpuContext): { w: number; h: number } {
+  private chooseGrid(ctx: GpuRuntimeContext): { w: number; h: number } {
     const k = this.config.speciesCount;
     const cfg = this.config;
     let w = Math.max(1, ctx.width) * cfg.gridScale;

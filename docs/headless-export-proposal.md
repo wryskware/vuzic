@@ -1,9 +1,25 @@
 # Headless 120 fps HDR Export — Implementation Proposal
 
-**Status:** proposed; feasibility study only, no implementation yet  
+**Status:** implementation started; Gate 0 probe and Phase 1 foundations in progress
 **Date:** 2026-08-12  
 **Primary profile:** 3840×2160, constant 120 fps, HDR10  
 **Secondary profile:** 1920×1080, constant 120 fps, HDR10
+
+Implemented in the first pass on 2026-08-12:
+
+- native Dawn/D3D12 worker bundle and structured Gate 0 probe;
+- compilation of a current project WGSL shader, offscreen `rgba16float`
+  rendering, and ring-buffered 4K readback;
+- FFmpeg/NVENC capability detection;
+- canvas-free GPU runtime context plus browser surface adapter;
+- explicit host-supplied render-frame timing;
+- shared simulation/modulation/impulse bundle construction;
+- versioned, bounded export recipe validation and deterministic 120 Hz export
+  scheduling primitives.
+
+Still outstanding before Gate 0 exits: feed rendered frames through the intended
+10-bit encoder, create the 5–10 second Main10 test file, and inspect its constant
+frame rate, HDR metadata, levels, and playback on the target display.
 
 ## Executive decision
 
@@ -130,17 +146,20 @@ The preview canvas is not capped at 60 fps. It renders at the variable rate of
 `requestAnimationFrame`, and its displayed FPS is the actual observed render
 rate.
 
-The core simulation integration is independently fixed at 60 Hz:
+The app clock is independently fixed at 120 Hz (implemented after this proposal
+was first drafted):
 
-- `SECONDS_PER_TICK = 1 / 60` in `main.ts`;
+- `TICK_HZ = 120` and `SECONDS_PER_TICK = 1 / 120` in `web/src/timing.ts`;
 - the audio clock drains zero, one, or several fixed ticks per browser frame;
-- Particle Life uses a 1/60-second tick/substep;
+- Particle Life uses a true 1/120-second tick/substep;
+- Physarum and VizFX preserve their authored 60-step-per-second behavior by
+  consuming one model step every two app ticks;
 - render feedback and auto-exposure currently use variable render-frame time.
 
-At a 120 Hz preview, approximately every other rendered frame contains the same
-integrated particle state, while render-domain feedback and grading still run
-on each frame. At a lower preview rate, multiple simulation ticks may run before
-one render.
+At a 120 Hz preview, Particle Life can produce a distinct integrated state for
+every rendered frame. Physarum and VizFX preserve their existing 60 Hz model
+cadence, while render-domain feedback and grading still run on every frame. At a
+lower preview rate, multiple app ticks may run before one render.
 
 ### Export parity mode
 
@@ -148,21 +167,23 @@ The first exporter must preserve that relationship:
 
 ```text
 output cadence:       120 frames/second
-simulation cadence:    60 ticks/second
+app-clock cadence:     120 ticks/second
 render delta:          1/120 second
-simulation delta:      1/60 second
+app tick delta:         1/120 second
 ```
 
 For output frame `n`:
 
 ```text
 frameTime     = n / 120
-targetSimTick = floor(n * 60 / 120)
+targetAppTick = floor(n * 120 / 120) = n
 ```
 
-The worker advances every missing simulation tick in order, then renders one
-frame. Integer counters or rational arithmetic must be used; accumulating a
-floating-point `1/120` for an entire track is unnecessary and invites drift.
+The worker advances every missing app tick in order, then renders one frame.
+Particle Life integrates on each tick; the existing substrate cadence gate keeps
+Physarum and VizFX at 60 model steps/second. Integer counters or rational
+arithmetic must be used; accumulating a floating-point `1/120` for an entire
+track is unnecessary and invites drift.
 
 The output frame count is:
 
@@ -174,12 +195,12 @@ This produces a frame beginning at every 120 Hz sample time before the end of
 the audio. The muxer uses the audio as the authoritative duration and trims the
 container cleanly at the end.
 
-### Optional 120 Hz physics mode
+### 120 Hz Particle Life correction
 
-A true 120 Hz Particle Life integrator can be investigated later, but it is a
-different artistic mode, not a quality switch. Changing physics `dt` changes
-motion, population smoothing, impulses, seeded events, and potentially other
-per-tick mechanisms. It must not silently replace parity mode.
+The later, settled 120 Hz app-clock change deliberately made Particle Life a
+true 120 Hz integrator while compensating Physarum and VizFX back to their
+authored 60 Hz step cadence. Export parity means reproducing that current runtime
+behavior; it must not revive the proposal's original 60 Hz Particle Life state.
 
 ### Explicit render time
 
@@ -620,7 +641,8 @@ constructs the same selected simulation from a serialized browser recipe.
 
 ### Phase 2 — deterministic 1080p120 worker
 
-- Implement fixed 120 render / 60 simulation scheduling.
+- Implement fixed 120 render / 120 app-clock scheduling; existing substrate
+  cadence keeps Physarum/VizFX model steps at 60 Hz.
 - Render from time zero through a short selected range.
 - Disable adaptive preview quality behavior.
 - Add staging-buffer readback, progress, backpressure, and failure cleanup.
@@ -688,7 +710,8 @@ surface and does nothing for renderer synchronization.
 
 - Output reports constant 120/1 fps, not variable frame rate or nominal 120 with
   irregular timestamps.
-- Simulation integrates at 60 ticks/second in parity mode.
+- The app clock advances at 120 ticks/second in parity mode; Particle Life
+  integrates at 120 Hz and Physarum/VizFX retain 60 model steps/second.
 - Frame count is derived deterministically from audio duration.
 - Audio starts at time zero and remains perceptually synchronized at early,
   middle, and final track landmarks.

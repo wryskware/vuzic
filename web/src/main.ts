@@ -4,8 +4,12 @@ import { DebugOverlay } from './debug/overlay';
 import { ExplorerLog, type ExplorerAction } from './explore/log';
 import { ExplorerRig, TILE_COUNT } from './explore/rig';
 import { ExplorerSearch, type CandidateSet, type ExplorerSubspace } from './explore/search';
-import { initGpu, renderUnsupportedPage, type GpuContext } from './gpu/context';
-import { buildDriverBank, MAX_CONTINUOUS_TICK_GAP, Modulator } from './mapping/modulation';
+import {
+  initGpu,
+  renderUnsupportedPage,
+  type BrowserGpuContext,
+} from './gpu/browser-context';
+import { buildDriverBank, MAX_CONTINUOUS_TICK_GAP } from './mapping/modulation';
 import {
   defaultModulationConfig,
   downloadText,
@@ -14,15 +18,13 @@ import {
 } from './mapping/persist';
 import type { ModTarget } from './mapping/target';
 import { TuningLog } from './mapping/tuninglog';
-import { ImpulseEngine } from './sim/impulses';
-import { defaultConfig } from './sim/physarum/config';
 import { PhysarumSim } from './sim/physarum/physarum';
-import { defaultPlifeConfig } from './sim/plife/config';
 import { PlifeSim } from './sim/plife/plife';
 import { resolveSeed } from './sim/seed';
-import type { Sim } from './sim/types';
-import { VIZFX_VISUALS } from './sim/vizfx/visuals';
+import type { RenderFrame, Sim } from './sim/types';
+import { VIZFX_IDS } from './sim/vizfx/ids';
 import { VizFxSim } from './sim/vizfx/vizfx';
+import { buildSimBundle, type SimBundle } from './runtime/sim-bundle';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
 import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
 import { loadTimeline } from './timeline/loader';
@@ -47,7 +49,6 @@ const DEFAULT_SIM = 'physarum';
  * and the picker's option list), so the derivation costs no type safety that the
  * old literal tuple was actually providing.
  */
-const VIZFX_IDS: readonly string[] = VIZFX_VISUALS.map((v) => v.id);
 const SIMS: readonly string[] = ['physarum', 'plife', ...VIZFX_IDS];
 /**
  * How long a milkdrop preset is guaranteed before a section boundary may replace
@@ -290,24 +291,13 @@ async function main(): Promise<void> {
   }
 
   /**
-   * A substrate and the two lanes whose *shape* comes from it. Exactly three
-   * things: everything else in this file is either timeline-shaped (sampler,
-   * clock, drivers, overlay) or device-shaped (the GPU context), and both survive
-   * a substrate change untouched.
-   */
-  interface SimBundle {
-    sim: PhysarumSim | PlifeSim | VizFxSim;
-    impulses: ImpulseEngine;
-    modulator: Modulator;
-  }
-
-  /**
-   * The one construction path. Startup calls it; `switchSim` calls it.
+   * Browser policy around the shared construction path. Startup calls it;
+   * `switchSim` calls it.
    *
    * That it is *one* function is the whole point rather than a tidiness
-   * preference. The order below is load-bearing in three separate places (the
-   * accent channels before the first tick, `applyBase` before `setMode`,
-   * `onSeedChange` before anything can reseed), and every one of those is the kind
+   * preference. The order inside the shared builder is load-bearing in three
+   * places (the accent channels before the first tick, `applyBase` before
+   * `setMode`, `onSeedChange` before anything can reseed), and every one is the kind
    * of constraint that a second, hand-kept-in-step copy silently loses six months
    * later. If a live swap had been written as its own sequence it would have been
    * a slowly diverging duplicate of this; instead the only thing the swap owns is
@@ -318,76 +308,28 @@ async function main(): Promise<void> {
    * means "this browser cannot run the app", during a swap it means "keep the sim
    * you already have" — so it stays at each call site where that choice is made.
    */
-  const buildSimBundle = (id: string, forSeed: number): SimBundle => {
-    // Typed as the union rather than as `Sim`: everything downstream talks to
-    // either `Sim` or `ModTarget`, which every substrate satisfies, and the union
-    // is only needed for the handful of substrate-specific call sites (the accent
-    // channels, the panel factory, the frame-rate governor) that are guarded by
-    // an instanceof.
-    const visual = VIZFX_VISUALS.find((v) => v.id === id);
-    const sim: PhysarumSim | PlifeSim | VizFxSim =
-      id === 'plife'
-        ? new PlifeSim(forSeed, defaultPlifeConfig())
-        : visual
-          ? new VizFxSim(visual, forSeed)
-          : new PhysarumSim(forSeed, defaultConfig(4));
-    // All three substrates read the stems channel directly, for different things:
-    // physarum drives deposit with it, plife drives population, nebula drives
-    // per-layer presence. None of them is the Modulator's stem-follow lane, which
-    // owns brightness and is wired separately.
-    sim.setStemChannel(sampler.getChannel('stems'));
-    if (sim instanceof PlifeSim) {
-      // Novelty → accent population. Deliberately a direct wire rather than a
-      // seeded projection: the projections give the accents character, this is
-      // what makes "the chorus arrived" legible on every seed.
-      sim.setAccentChannels(sampler.getChannel('novelty16'), sampler.getChannel('actChorus'));
-    }
-
-    // The impulse lane. It exists whether or not the timeline carries events: with
-    // none, every multiplier stays at 1 and the workbench's test-fire buttons are
-    // still the way to tune the responses. Sized to *this* substrate's species
-    // count, which is exactly why a swap cannot carry the old engine across.
-    const impulses = new ImpulseEngine(
-      forSeed,
-      sim.config.speciesCount,
-      sampler.events,
-      SECONDS_PER_TICK,
-    );
-    sim.setImpulses(impulses.state);
-
-    // `sim.simId` and not the requested id: it is the autosave slot's name, and
-    // taking it from the object that was actually constructed is what keeps an
-    // unrecognised `?sim=` reading physarum's mapping rather than opening an empty
-    // slot named after the typo.
-    const stored = loadModulationLocal(sim.simId);
-    const modConfig =
-      stored && modulationFits(stored, sim.config.speciesCount, sim.simId)
-        ? stored
-        : defaultModulationConfig(sim.config, sim.simId);
-    const modulator = new Modulator(sim, sampler, drivers, modConfig, forSeed);
-    // Before `setMode`, and that order is load-bearing. Turning modulation on
-    // adopts whatever θ the config currently holds as the base of every modulated
-    // slot (the VST rule: modulation breathes around the value you own), so the
-    // seeded personality has to be *in* the config by then or the first act of the
-    // app would be to adopt the shipped defaults and throw the seed's personality
-    // away. Stamping it here rather than waiting for `sim.init`'s onSeedChange also
-    // covers the WebGPU-unavailable path, where that callback never runs.
-    modulator.applyBase();
-    modulator.setMode(modConfig.enabled && modulator.available ? 'modulated' : 'manual');
+  const buildBrowserSimBundle = (id: string, forSeed: number): SimBundle => {
+    const bundle = buildSimBundle({
+      id,
+      seed: forSeed,
+      sampler,
+      drivers,
+      secondsPerTick: SECONDS_PER_TICK,
+      // `sim.simId` and not the requested id: it is the autosave slot's name,
+      // and taking it from the constructed object keeps an unrecognised id on
+      // physarum's mapping instead of opening an empty slot named after a typo.
+      resolveModulationConfig: (candidate) => {
+        const stored = loadModulationLocal(candidate.simId);
+        return stored && modulationFits(stored, candidate.config.speciesCount, candidate.simId)
+          ? stored
+          : defaultModulationConfig(candidate.config, candidate.simId);
+      },
+    });
     console.info(
-      `modulation: ${sim.simId} · ${modulator.sourceLabel} → ${modulator.modulatedCount} parameters, ` +
+      `modulation: ${bundle.sim.simId} · ${bundle.modulator.sourceLabel} → ${bundle.modulator.modulatedCount} parameters, ` +
         `seed ${forSeed}${pinned ? ' (pinned)' : ''}`,
     );
-
-    // One seed, three consumers. Hotspot placement, projection wiring and the
-    // seeded personality all re-key from here, so a reseed, a reroll and a snapshot
-    // restore each move all three together without any caller remembering to.
-    sim.onSeedChange = (s) => {
-      impulses.setSeed(s);
-      modulator.setSeed(s);
-    };
-
-    return { sim, impulses, modulator };
+    return bundle;
   };
 
   // Resolve which sim to build before building it, so a second substrate slots
@@ -400,7 +342,7 @@ async function main(): Promise<void> {
   // `let` and not `const`, because the substrate picker replaces all three at
   // once (`switchSim`). Every closure below reads them rather than capturing
   // them, which is what makes the swap invisible to the frame loop.
-  let { sim, impulses, modulator } = buildSimBundle(wantedSim, seed);
+  let { sim, impulses, modulator } = buildBrowserSimBundle(wantedSim, seed);
 
   // ── milkdrop mode ──────────────────────────────────────────────────────────
   //
@@ -452,11 +394,11 @@ async function main(): Promise<void> {
 
   /** The next entry in repertoire order, wrapping. Equal to `id` when there is one. */
   const nextVisualAfter = (id: string): string => {
-    const i = VIZFX_IDS.indexOf(id);
+    const i = (VIZFX_IDS as readonly string[]).indexOf(id);
     return VIZFX_IDS[(i + 1) % VIZFX_IDS.length] ?? id;
   };
 
-  let gpu: GpuContext | null = null;
+  let gpu: BrowserGpuContext | null = null;
   let panel: PanelHandle | null = null;
 
   // ── explorer mode: nine live worlds, one θ hill climb ──────────────────────
@@ -1024,7 +966,7 @@ async function main(): Promise<void> {
       explorerRig = null;
       explorerLog = null;
 
-      next = buildSimBundle(id, sim.currentSeed);
+      next = buildBrowserSimBundle(id, sim.currentSeed);
       await next.sim.init(gpu);
       // Within the vizfx family the look is one preference, not one per visual:
       // exposure, the grade and the adapted gain all carry across the swap, so a
@@ -1369,10 +1311,17 @@ async function main(): Promise<void> {
     sim.tick(features, stepIndex);
   };
 
-  const frame = (): void => {
-    const now = performance.now();
+  const frame = (now: DOMHighResTimeStamp): void => {
     const wallDelta = Math.min((now - lastNow) / 1000, 0.25);
     lastNow = now;
+    // Render consumers share one host-owned clock sample. The first-frame value
+    // preserves their historical 60 Hz seed; subsequent frames retain measured,
+    // variable-rate rAF timing (including the existing 0.25 s background clamp).
+    const renderFrame: RenderFrame = {
+      frameIndex: frameCount,
+      timeSeconds: now / 1000,
+      deltaSeconds: frameCount === 0 ? 1 / 60 : wallDelta,
+    };
 
     // The frame-rate lane. Same clamped `wallDelta` the free-run pump uses, so a
     // backgrounded tab's two-second gap is one 0.25 s sample rather than a
@@ -1421,9 +1370,9 @@ async function main(): Promise<void> {
         // catches a DPR change and a CSS-driven resize, and it is a no-op when
         // the canvas has not moved.
         explorerRig.layout(gpu.width, gpu.height);
-        explorerRig.render(encoder, view);
+        explorerRig.render(encoder, view, renderFrame);
       } else {
-        sim.render(encoder, view);
+        sim.render(encoder, view, renderFrame);
       }
       gpu.device.queue.submit([encoder.finish()]);
     }

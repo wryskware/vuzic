@@ -22,13 +22,10 @@
  * already renders to whatever texture view it is handed (main.ts is the only
  * place that touches the swapchain), and it already reads `ctx.width/height`
  * afresh every frame to size its post surfaces. So a tile runs on a *virtual*
- * `GpuContext`: the real device, format, adapter and canvas, with `width` and
- * `height` replaced by the tile's own pixel size and `resize()` neutered. The
+ * `GpuRuntimeContext`: the real device, format and adapter, with `width` and
+ * `height` replaced by the tile's own pixel size. The
  * rig owns those two numbers; a canvas resize updates them and each sim's own
  * `post.ensureSize` does the reallocation on its next frame.
- *
- * Calling the *real* `ctx.resize()` from a tile would be a bug — it would resize
- * the shared canvas — hence the empty override rather than a pass-through.
  *
  * One consequence worth stating: both substrates fix their world at `init` time
  * (physarum snaps a grid, plife snaps a world aspect) and never rescale it,
@@ -84,12 +81,13 @@
  *     `setCandidates` would otherwise raise — it cannot disturb the candidate θ
  *     that was applied before it either, because nothing it writes is in θ.
  */
-import type { GpuContext } from '../gpu/context.ts';
+import type { BrowserGpuContext } from '../gpu/browser-context.ts';
+import type { GpuRuntimeContext } from '../gpu/runtime-context.ts';
 import type { ModTarget } from '../mapping/target.ts';
 import { hash3 } from '../sim/impulses.ts';
 import type { Palette } from '../sim/palette.ts';
 import { mergeRenderConfig } from '../sim/render/config.ts';
-import type { Sim } from '../sim/types.ts';
+import type { RenderFrame, Sim } from '../sim/types.ts';
 import type { FeaturesFrame } from '../timeline/sampler.ts';
 import { CANDIDATE_COUNT, type CandidateSet } from './search.ts';
 
@@ -150,11 +148,11 @@ interface TileRect {
 interface TileEntry {
   sim: Sim & ModTarget;
   /** the virtual context this tile's sim reads its size from; mutated on layout */
-  ctx: GpuContext;
+  ctx: GpuRuntimeContext;
 }
 
 export interface ExplorerRigOptions {
-  gpu: GpuContext;
+  gpu: BrowserGpuContext;
   /**
    * Builds one tile's simulation — same substrate as the live sim, same channel
    * wiring, not yet `init`ed. A factory rather than a class reference because
@@ -174,7 +172,7 @@ export interface ExplorerRigOptions {
 }
 
 export class ExplorerRig {
-  private readonly gpu: GpuContext;
+  private readonly gpu: BrowserGpuContext;
   private readonly createTile: () => Sim & ModTarget;
   private readonly tickEvery: number;
   private readonly gutterCss: number;
@@ -315,14 +313,18 @@ export class ExplorerRig {
   }
 
   /** Nine sim renders into nine layers, then one composite pass onto the canvas. */
-  render(encoder: GPUCommandEncoder, canvasView: GPUTextureView): void {
+  render(
+    encoder: GPUCommandEncoder,
+    canvasView: GPUTextureView,
+    frame: RenderFrame,
+  ): void {
     if (!this.opened || !this.pipeline || !this.bindGroup) return;
 
     for (let i = 0; i < TILE_COUNT; i++) {
       const tile = this.tiles[i];
       const view = this.layerViews[i];
       if (!tile || !view) continue;
-      tile.sim.render(encoder, view);
+      tile.sim.render(encoder, view, frame);
     }
 
     const pass = encoder.beginRenderPass({
@@ -428,17 +430,17 @@ export class ExplorerRig {
   }
 
   /**
-   * A tile's `GpuContext`: the real device and canvas, the tile's own size, and
-   * a `resize` that does nothing. See the header — a pass-through here would
-   * resize the shared canvas from inside a tile.
+   * A tile's canvas-free GPU context: the real device and capabilities with the
+   * tile's own dimensions. The browser surface remains owned by the rig.
    */
-  private makeTileContext(): GpuContext {
-    const tile: GpuContext = {
-      ...this.gpu,
+  private makeTileContext(): GpuRuntimeContext {
+    const tile: GpuRuntimeContext = {
+      adapter: this.gpu.adapter,
+      device: this.gpu.device,
+      format: this.gpu.format,
+      float32Filterable: this.gpu.float32Filterable,
       width: this.tileW,
       height: this.tileH,
-      resize(): void {},
-      destroy(): void {},
     };
     return tile;
   }

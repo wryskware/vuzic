@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "npm run sync-data && vite",
-    "build": "npm run sync-data && tsc --noEmit && vite build",
+    "build": "npm run sync-data && tsc --noEmit && vite build && npm run build:worker",
+    "build:worker": "vite build --config vite.export.config.ts",
+    "probe:worker": "npm run build:worker && node dist-worker/worker.mjs --probe",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
@@ -13,11 +15,13 @@
   },
   "devDependencies": {
     "@tweakpane/core": "^2.0.5",
+    "@types/node": "22.20.1",
     "@webgpu/types": "^0.1.64",
     "typescript": "^5.9.2",
     "vite": "^7.1.1"
   },
   "dependencies": {
-    "tweakpane": "^4.0.5"
+    "tweakpane": "^4.0.5",
+    "webgpu": "0.4.0"
   }
 }

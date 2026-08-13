@@ -63,7 +63,7 @@
  * this substrate's cost is a constant times the pixel count. If it is ever slow,
  * the window is too big, and that is a fact about the window.
  */
-import type { GpuContext } from '../../gpu/context.ts';
+import type { GpuRuntimeContext } from '../../gpu/runtime-context.ts';
 import type { ModTarget, ThetaRegistry } from '../../mapping/target.ts';
 import type { FeaturesFrame } from '../../timeline/sampler.ts';
 import { LEGACY_SUBSTRATE_HZ, LEGACY_TICK_DIVISOR } from '../../timing.ts';
@@ -71,7 +71,7 @@ import { hash3, MAX_SPLASHES, pcg, type ImpulseState } from '../impulses.ts';
 import { paletteLinear } from '../palette.ts';
 import { mergeRenderConfig } from '../render/config.ts';
 import { HDR_FORMAT, PostFx } from '../render/postfx.ts';
-import type { Sim } from '../types.ts';
+import type { RenderFrame, Sim } from '../types.ts';
 import { advanceStepCadence } from '../step-cadence.ts';
 import {
   defaultEnergy,
@@ -198,7 +198,7 @@ export class VizFxSim implements Sim, ModTarget {
   /** Notified on every seed change — a reseed, and equally a snapshot restore. */
   onSeedChange: ((seed: number) => void) | null = null;
 
-  private ctx: GpuContext | null = null;
+  private ctx: GpuRuntimeContext | null = null;
   private ready = false;
   private seed: number;
 
@@ -539,7 +539,7 @@ export class VizFxSim implements Sim, ModTarget {
 
   // ── init ───────────────────────────────────────────────────────────────────
 
-  async init(ctx: GpuContext): Promise<void> {
+  async init(ctx: GpuRuntimeContext): Promise<void> {
     this.ctx = ctx;
     const { device } = ctx;
     const k = this.config.speciesCount;
@@ -1046,7 +1046,7 @@ export class VizFxSim implements Sim, ModTarget {
   }
 
   private runStep(): void {
-    const { device } = this.ctx as GpuContext;
+    const { device } = this.ctx as GpuRuntimeContext;
     this.steps++;
     this.writeGlobals(0, 0);
 
@@ -1155,7 +1155,7 @@ export class VizFxSim implements Sim, ModTarget {
 
   private uploadTheta(): void {
     effectiveTheta(this.visual, this.config.params, this.config.macros, this.effTheta);
-    (this.ctx as GpuContext).device.queue.writeBuffer(this.thetaBuf, 0, this.effTheta);
+    (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(this.thetaBuf, 0, this.effTheta);
   }
 
   /**
@@ -1185,11 +1185,11 @@ export class VizFxSim implements Sim, ModTarget {
       this.layerData[o + 6] = 0;
       this.layerData[o + 7] = 0;
     }
-    (this.ctx as GpuContext).device.queue.writeBuffer(this.layerBuf, 0, this.layerData);
+    (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(this.layerBuf, 0, this.layerData);
   }
 
   private uploadEmitters(): void {
-    (this.ctx as GpuContext).device.queue.writeBuffer(this.emitterBuf, 0, this.emitterData);
+    (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(this.emitterBuf, 0, this.emitterData);
   }
 
   /**
@@ -1234,7 +1234,7 @@ export class VizFxSim implements Sim, ModTarget {
       this.splashData[o + 11] = 0;
     }
     this.splashCount = n;
-    (this.ctx as GpuContext).device.queue.writeBuffer(
+    (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(
       this.splashBuf,
       0,
       this.splashData,
@@ -1265,12 +1265,16 @@ export class VizFxSim implements Sim, ModTarget {
     f[13] = injectAmount;
     u[14] = injectKey >>> 0;
     u[15] = 0;
-    (this.ctx as GpuContext).device.queue.writeBuffer(this.globalsBuf, 0, this.globalsBytes);
+    (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(this.globalsBuf, 0, this.globalsBytes);
   }
 
   // ── per-frame ──────────────────────────────────────────────────────────────
 
-  render(encoder: GPUCommandEncoder, targetView: GPUTextureView): void {
+  render(
+    encoder: GPUCommandEncoder,
+    targetView: GPUTextureView,
+    frame: RenderFrame,
+  ): void {
     const ctx = this.ctx;
     if (!this.ready || !ctx) return;
 
@@ -1306,7 +1310,7 @@ export class VizFxSim implements Sim, ModTarget {
     pass.draw(3);
     pass.end();
 
-    this.post.run(encoder, targetView);
+    this.post.run(encoder, targetView, frame);
   }
 
   dispose(): void {

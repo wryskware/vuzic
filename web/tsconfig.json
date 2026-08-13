@@ -7,7 +7,7 @@
     // The mapping layer's modules import each other with explicit .ts extensions
     // so `node --test` can load them straight from source with no build step.
     "allowImportingTsExtensions": true,
-    "types": ["vite/client", "@webgpu/types"],
+    "types": ["vite/client", "@webgpu/types", "node"],
 
     "strict": true,
     "noImplicitOverride": true,

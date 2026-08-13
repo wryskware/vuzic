@@ -1,12 +1,10 @@
 /**
- * The vizfx repertoire, in one place.
+ * The vizfx implementation registry.
  *
- * Adding a visual to the app is adding a line here — `main.ts` derives the
- * `?sim=` whitelist, the substrate constructor and the picker's options from
- * this list, so a new warp/draw pair plus a θ table registers itself. Nothing
- * else may restate the set: a second copy would be a second place to forget,
- * and the one bug that pattern produces (a visual that runs but cannot be
- * selected, or vice versa) is invisible until someone reaches for it.
+ * `ids.ts` owns identity and order without importing WGSL, so recipes and the
+ * API can validate names in Node. This module binds each ID to its actual visual
+ * implementation; the typed record and runtime identity check make either half
+ * impossible to omit or mis-key silently.
  *
  * Order matters twice: it is the order the preset picker lists, and it is the
  * cycle order when a section-boundary transition advances the repertoire.
@@ -15,6 +13,7 @@
  * shared slot would apply one visual's saved vector to another's registry.
  */
 import type { VizFxVisual } from './slots.ts';
+import { VIZFX_IDS, type VizFxId } from './ids.ts';
 import { NEBULA } from './nebula/nebula.ts';
 import { TUNNEL } from './tunnel/tunnel.ts';
 import { KALEIDO } from './kaleido/kaleido.ts';
@@ -34,4 +33,15 @@ import { PLASMA } from './plasma/plasma.ts';
  * flowing field. Grouping the two radial visuals together instead would make one
  * section change out of three read as "nothing happened".
  */
-export const VIZFX_VISUALS: readonly VizFxVisual[] = [NEBULA, TUNNEL, KALEIDO, PLASMA];
+const VISUALS_BY_ID: Readonly<Record<VizFxId, VizFxVisual>> = {
+  nebula: NEBULA,
+  tunnel: TUNNEL,
+  kaleido: KALEIDO,
+  plasma: PLASMA,
+};
+
+export const VIZFX_VISUALS: readonly VizFxVisual[] = VIZFX_IDS.map((id) => {
+  const visual = VISUALS_BY_ID[id];
+  if (visual.id !== id) throw new Error(`VizFX registry mismatch: ${id} resolved to ${visual.id}`);
+  return visual;
+});
