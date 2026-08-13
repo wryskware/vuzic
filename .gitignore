@@ -23,3 +23,6 @@ venv/
 # regenerable large embeddings
 data/**/embedding.bin
 data/**/embedding.json
+
+# local headless-export requests, decoded inspection frames, and video artifacts
+/web/exports/

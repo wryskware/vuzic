@@ -74,6 +74,14 @@ test('identity, concrete config, and modulation discriminator must agree', () =>
   const unknown = recipe() as unknown as Record<string, unknown>;
   unknown['sim'] = 'not-a-real-visual';
   assert.throws(() => validateExportRecipe(unknown), /sim.*unsupported/);
+
+  const paletteMismatch = recipe();
+  paletteMismatch.modulation.palette = structuredClone(paletteMismatch.modulation.palette);
+  paletteMismatch.modulation.palette.colors[0] = '#123456';
+  assert.throws(
+    () => validateExportRecipe(paletteMismatch),
+    /modulation\.palette.*must match.*simulation\.palette/,
+  );
 });
 
 test('malformed and unbounded primitives are rejected instead of coerced', () => {

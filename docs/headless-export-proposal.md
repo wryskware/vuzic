@@ -1,6 +1,6 @@
 # Headless 120 fps HDR Export — Implementation Proposal
 
-**Status:** implementation started; Gate 0 probe and Phase 1 foundations in progress
+**Status:** Gate 0 foundations and Phase 1 complete; Phase 2 SDR/debug worker operational
 **Date:** 2026-08-12  
 **Primary profile:** 3840×2160, constant 120 fps, HDR10  
 **Secondary profile:** 1920×1080, constant 120 fps, HDR10
@@ -17,9 +17,38 @@ Implemented in the first pass on 2026-08-12:
 - versioned, bounded export recipe validation and deterministic 120 Hz export
   scheduling primitives.
 
+Implemented in the second pass on 2026-08-12:
+
+- strict, bounded `--request <absolute-request.json>` worker protocol with
+  server-owned native paths and no FFmpeg argument surface;
+- one shared timeline validator behind browser fetch and Node filesystem
+  transports;
+- recipe-driven construction of the complete concrete simulation, modulation,
+  impulse, palette, and render state without reading browser persistence;
+- start-from-zero deterministic range scheduling, native offscreen rendering,
+  a bounded three-slot staging/readback ring, encoder backpressure, structured
+  progress, failure cleanup, `.partial` output, and atomic publication;
+- an explicitly temporary RGBA8 → AV1 NVENC SDR/debug transport; and
+- a real `pink-loop` Particle Life artifact: 1920×1080, constant 120 fps, 600
+  frames / 5.000 seconds, AV1 Main `yuv420p`, rendered and encoded natively on
+  Windows in 7.75 seconds on the development machine.
+
+Two identical requests produced the same first decoded frame, the same frame
+count, and visibly matching large-scale seeded composition, but their later
+decoded pixels were not bit-identical. Particle Life is chaotic enough to
+amplify minute GPU/encoder differences immediately; strict same-device pixel
+repeatability therefore remains an explicit investigation rather than a claimed
+Phase 2 property.
+
 Still outstanding before Gate 0 exits: feed rendered frames through the intended
 10-bit encoder, create the 5–10 second Main10 test file, and inspect its constant
 frame rate, HDR metadata, levels, and playback on the target display.
+
+Audio muxing, PQ/BT.2020 conversion, P010/Main10 transport, FastAPI job
+orchestration, the browser "render video with current settings" control, and
+published compute/operations remain later phases. The browser button should
+serialize the same immutable recipe and submit it to FastAPI; it must not create
+a second renderer or depend on where the Windows worker eventually runs.
 
 ## Executive decision
 

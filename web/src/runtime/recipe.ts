@@ -298,6 +298,15 @@ function validatePalette(value: unknown, speciesCount: number, path: string): vo
   finiteNumber(palette['brightness'], `${path}.brightness`, 0, 100);
 }
 
+function palettesEqual(a: unknown, b: unknown): boolean {
+  const left = a as { colors: unknown[]; saturation: number; brightness: number };
+  const right = b as { colors: unknown[]; saturation: number; brightness: number };
+  return left.saturation === right.saturation &&
+    left.brightness === right.brightness &&
+    left.colors.length === right.colors.length &&
+    left.colors.every((color, index) => color === right.colors[index]);
+}
+
 function validateSpecies(value: unknown, speciesCount: number, path: string): void {
   if (!Array.isArray(value) || value.length !== speciesCount) {
     fail(path, `must contain exactly ${speciesCount} species`);
@@ -392,7 +401,12 @@ const MODULATION_KEYS = [
 
 const MODULATION_REQUIRED_KEYS = MODULATION_KEYS.filter((key) => key !== 'extras');
 
-function validateModulation(value: unknown, sim: string, speciesCount: number): void {
+function validateModulation(
+  value: unknown,
+  sim: string,
+  speciesCount: number,
+  simulationPalette: unknown,
+): void {
   const modulation = object(value, '$.modulation');
   keysRequired(modulation, MODULATION_KEYS, MODULATION_REQUIRED_KEYS, '$.modulation');
   if (Object.hasOwn(modulation, 'render')) fail('$.modulation.render', 'belongs at $.render');
@@ -404,6 +418,9 @@ function validateModulation(value: unknown, sim: string, speciesCount: number): 
     fail('$.modulation.speciesCount', 'must match $.simulation.speciesCount');
   }
   validatePalette(modulation['palette'], speciesCount, '$.modulation.palette');
+  if (!palettesEqual(modulation['palette'], simulationPalette)) {
+    fail('$.modulation.palette', 'must match $.simulation.palette');
+  }
   boolean(modulation['enabled'], '$.modulation.enabled');
   finiteNumber(modulation['depth'], '$.modulation.depth', 0, 100);
 
@@ -466,7 +483,8 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
     MAX_RECIPE_PARTICLE_BUDGET,
   );
   const speciesCount = validateSimulation(recipe['simulation'], sim, particleBudget);
-  validateModulation(recipe['modulation'], sim, speciesCount);
+  const simulation = object(recipe['simulation'], '$.simulation');
+  validateModulation(recipe['modulation'], sim, speciesCount, simulation['palette']);
 
   validateImpulse(recipe['impulses'], '$.impulses');
   validateRender(recipe['render'], '$.render');

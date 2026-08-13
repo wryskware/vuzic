@@ -2,9 +2,21 @@ import { execFile } from 'node:child_process';
 
 import postCommonWgsl from '../sim/render/shaders/post-common.wgsl?raw';
 import exposureWgsl from '../sim/render/shaders/exposure.wgsl?raw';
+import { buildDriverBank } from '../mapping/modulation.ts';
+import { buildSimBundleFromRecipe, type SimBundle } from '../runtime/sim-bundle.ts';
+import { SECONDS_PER_TICK } from '../timing.ts';
+import { TimelineSampler } from '../timeline/sampler.ts';
 import gate0Wgsl from './shaders/gate0.wgsl?raw';
 
 import { createDawnContext, type DawnRuntimeContext } from './dawn-context.ts';
+import { ExportClock, exportFrameCount } from './export-clock.ts';
+import { Av1DebugEncoder } from './ffmpeg-encoder.ts';
+import { FrameReadbackRing } from './frame-readback.ts';
+import { loadTimelineFromFiles } from './node-timeline-loader.ts';
+import {
+  loadExportWorkerRequest,
+  type ExportWorkerRequest,
+} from './worker-request.ts';
 
 interface ProbeOptions {
   width: number;
@@ -27,6 +39,15 @@ interface FfmpegCapabilities {
 const emit = (message: Record<string, unknown>): void => {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 };
+
+// stdout is a machine protocol. Shared runtime diagnostics were written for a
+// browser console, so route every non-error console lane to stderr in this host.
+const stderrDiagnostic = console.error.bind(console);
+console.log = stderrDiagnostic;
+console.info = stderrDiagnostic;
+console.debug = stderrDiagnostic;
+
+let activeStage = 'startup';
 
 function execFileText(executable: string, args: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -131,6 +152,7 @@ async function checksumReadback(buffer: GPUBuffer): Promise<number> {
 }
 
 async function runProbe(options: ProbeOptions): Promise<void> {
+  activeStage = 'gate0-probe';
   let ctx: DawnRuntimeContext | null = null;
   const startedAt = performance.now();
   try {
@@ -248,18 +270,175 @@ async function runProbe(options: ProbeOptions): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  if (!args.includes('--probe')) {
+interface DebugProfile {
+  width: number;
+  height: number;
+}
+
+function debugProfile(request: ExportWorkerRequest): DebugProfile {
+  switch (request.output.profile) {
+    case 'hdr10-2160p120':
+      return { width: 3840, height: 2160 };
+    case 'hdr10-1080p120':
+      return { width: 1920, height: 1080 };
+  }
+}
+
+/**
+ * Phase-2 engineering path: the shared renderer is real, while the final
+ * presentation transport is intentionally SDR RGBA8 -> AV1 until PQ/P010 lands.
+ */
+async function runRequest(requestPath: string): Promise<void> {
+  activeStage = 'request';
+  const request = await loadExportWorkerRequest(requestPath);
+  if (request.recipe.output.encoder !== 'av1_nvenc') {
+    throw new Error('the Phase-2 SDR/debug worker supports recipe encoder av1_nvenc only');
+  }
+
+  const timeline = await loadTimelineFromFiles(request.timeline);
+  const rangeEndSeconds = request.range.startSeconds + request.range.durationSeconds;
+  if (rangeEndSeconds > timeline.manifest.track.duration + 1e-9) {
     throw new Error(
-      'This milestone supports --probe only; request-file rendering is added after shared runtime extraction',
+      `requested range ends at ${rangeEndSeconds}s, beyond the ` +
+        `${timeline.manifest.track.duration}s timeline`,
     );
   }
-  await runProbe(parseProbeOptions(args));
+
+  const { width, height } = debugProfile(request);
+  const firstOutputFrame = exportFrameCount(request.range.startSeconds);
+  const clock = new ExportClock(rangeEndSeconds);
+  const outputFrames = clock.frameCount - firstOutputFrame;
+  if (outputFrames < 1) throw new Error('requested range contains no 120 Hz output frames');
+
+  let ctx: DawnRuntimeContext | null = null;
+  let bundle: SimBundle | null = null;
+  let target: GPUTexture | null = null;
+  let readback: FrameReadbackRing | null = null;
+  let encoder: Av1DebugEncoder | null = null;
+  const startedAt = performance.now();
+
+  try {
+    activeStage = 'gpu-init';
+    ctx = await createDawnContext({ width, height, format: 'rgba8unorm' });
+    const sampler = new TimelineSampler(timeline, SECONDS_PER_TICK);
+    bundle = buildSimBundleFromRecipe({
+      recipe: request.recipe,
+      sampler,
+      drivers: buildDriverBank(timeline),
+      secondsPerTick: SECONDS_PER_TICK,
+    });
+    await bundle.sim.init(ctx);
+
+    target = ctx.device.createTexture({
+      label: 'export.sdr-debug-target',
+      size: { width, height },
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    const targetView = target.createView();
+    readback = new FrameReadbackRing(ctx.device, {
+      width,
+      height,
+      bytesPerPixel: 4,
+      ringSize: 3,
+      label: 'export.sdr-debug-readback',
+    });
+    encoder = await Av1DebugEncoder.start({
+      ffmpegExecutable: request.runtime.ffmpegExecutable,
+      workingDirectory: request.runtime.workingDirectory,
+      outputPath: request.output.path,
+      width,
+      height,
+    });
+
+    emit({
+      type: 'ready',
+      adapter: ctx.adapterName,
+      backend: ctx.backend,
+      profile: request.output.profile,
+      transport: 'sdr-rgba8-av1-debug',
+      width,
+      height,
+      frames: outputFrames,
+    });
+
+    activeStage = 'render';
+    let stepIndex = 0;
+    while (!clock.done) {
+      const frame = clock.advanceThenRender(
+        (tick) => {
+          stepIndex++;
+          const features = sampler.sampleAt(tick);
+          bundle?.modulator.update(features, SECONDS_PER_TICK);
+          bundle?.impulses.update(tick, SECONDS_PER_TICK);
+          bundle?.sim.tick(features, stepIndex);
+        },
+        (renderFrame) => {
+          const command = ctx?.device.createCommandEncoder({
+            label: `export.render.frame.${renderFrame.frameIndex}`,
+          });
+          if (!command || !bundle || !ctx) throw new Error('render resources were disposed early');
+          bundle.sim.render(command, targetView, renderFrame);
+          ctx.device.queue.submit([command.finish()]);
+        },
+      );
+      if (!frame) break;
+      if (frame.frameIndex < firstOutputFrame) continue;
+
+      const completed = await readback.enqueue(target, frame.frameIndex - firstOutputFrame);
+      if (completed) await encoder.writeFrame(completed.data);
+      const rendered = frame.frameIndex - firstOutputFrame + 1;
+      if (rendered === outputFrames || rendered % 30 === 0) {
+        emit({ type: 'progress', stage: 'render', frame: rendered, frames: outputFrames });
+      }
+    }
+
+    activeStage = 'encode';
+    for (const completed of await readback.flush()) {
+      await encoder.writeFrame(completed.data);
+    }
+    if (encoder.framesWritten !== outputFrames) {
+      throw new Error(
+        `encoder received ${encoder.framesWritten} frames; expected ${outputFrames}`,
+      );
+    }
+    await encoder.finish();
+
+    const elapsedSeconds = (performance.now() - startedAt) / 1000;
+    activeStage = 'complete';
+    emit({
+      type: 'result',
+      path: request.output.path,
+      profile: request.output.profile,
+      transport: 'sdr-rgba8-av1-debug',
+      width,
+      height,
+      fps: 120,
+      frames: outputFrames,
+      elapsedSeconds,
+    });
+  } finally {
+    if (encoder && encoder.state !== 'complete') await encoder.abort();
+    await readback?.dispose();
+    target?.destroy();
+    bundle?.sim.dispose();
+    ctx?.dispose();
+  }
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const requestPath = optionValue(args, '--request');
+  const probe = args.includes('--probe');
+  if (probe === (requestPath !== undefined)) {
+    throw new Error('provide exactly one of --probe or --request <absolute-request.json>');
+  }
+  if (probe) await runProbe(parseProbeOptions(args));
+  else await runRequest(requestPath as string);
 }
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  emit({ type: 'error', stage: 'gate0-probe', message });
+  emit({ type: 'error', stage: activeStage, message });
   process.exitCode = 1;
 });

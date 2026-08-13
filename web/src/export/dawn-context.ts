@@ -6,6 +6,8 @@ export interface DawnContextOptions {
   width: number;
   height: number;
   backend?: string;
+  /** Caller-owned final target format; simulations keep their internal HDR surfaces. */
+  format?: GPUTextureFormat;
 }
 
 export interface DawnRuntimeContext extends GpuRuntimeContext {
@@ -45,7 +47,7 @@ export async function createDawnContext(options: DawnContextOptions): Promise<Da
     device,
     width: Math.max(1, Math.floor(options.width)),
     height: Math.max(1, Math.floor(options.height)),
-    format: 'rgba16float',
+    format: options.format ?? 'rgba16float',
     float32Filterable,
     adapterName,
     backend,
