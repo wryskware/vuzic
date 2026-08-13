@@ -1,4 +1,4 @@
-import type { ExportRecipe, ExportProfile } from '../runtime/recipe.ts';
+import { EXPORT_PROFILES, type ExportRecipe, type ExportProfile } from '../runtime/recipe.ts';
 import { SERVER_BASE } from '../timeline/catalog.ts';
 
 export interface ExportCapabilities {
@@ -40,6 +40,15 @@ export interface ExportJob {
   audio?: boolean;
   transport?: string;
   downloadUrl?: string;
+  /** Present on completed HDR10 exports; absent on the SDR debug profiles. */
+  dynamicRange?: string;
+  pixelFormat?: string;
+  colorPrimaries?: string;
+  colorTransfer?: string;
+  colorMatrix?: string;
+  colorRange?: string;
+  paperWhiteNits?: number;
+  masteringPeakNits?: number;
 }
 
 export interface LocalExportClient {
@@ -80,9 +89,8 @@ function parseCapabilities(value: unknown): ExportCapabilities {
   const row = object(value, 'export capabilities');
   return {
     available: row['available'] === true,
-    profiles: strings(row['profiles']).filter(
-      (profile): profile is ExportProfile =>
-        profile === 'av1-sdr-debug-2160p120' || profile === 'av1-sdr-debug-1080p120',
+    profiles: strings(row['profiles']).filter((profile): profile is ExportProfile =>
+      EXPORT_PROFILES.includes(profile as ExportProfile),
     ),
     encoders: strings(row['encoders']),
     rendererBuild: text(row['rendererBuild']),
@@ -115,10 +123,30 @@ function parseJob(value: unknown): ExportJob {
     progress,
     exportId: text(row['exportId']),
   };
-  for (const key of ['filename', 'codec', 'transport', 'downloadUrl'] as const) {
+  for (const key of [
+    'filename',
+    'codec',
+    'transport',
+    'downloadUrl',
+    'dynamicRange',
+    'pixelFormat',
+    'colorPrimaries',
+    'colorTransfer',
+    'colorMatrix',
+    'colorRange',
+  ] as const) {
     if (typeof row[key] === 'string') job[key] = row[key];
   }
-  for (const key of ['byteSize', 'duration', 'width', 'height', 'frameRate', 'frames'] as const) {
+  for (const key of [
+    'byteSize',
+    'duration',
+    'width',
+    'height',
+    'frameRate',
+    'frames',
+    'paperWhiteNits',
+    'masteringPeakNits',
+  ] as const) {
     if (typeof row[key] === 'number' && Number.isFinite(row[key])) job[key] = row[key];
   }
   if (typeof row['audio'] === 'boolean') job.audio = row['audio'];

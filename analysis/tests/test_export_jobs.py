@@ -12,6 +12,9 @@ import pytest
 
 from terrarium_analysis.export_jobs import (
     CANCELLED_WORKER_EXIT_CODE,
+    HDR10_TRANSPORT,
+    SDR_DEBUG_TRANSPORT,
+    advertised_profiles,
     MAX_DIAGNOSTIC_BYTES,
     CancellationHandle,
     ExportCancelled,
@@ -346,3 +349,94 @@ def test_a_cancel_racing_the_spawn_still_kills_the_tree(tmp_path):
     assert isinstance(outcome.get("error"), ExportCancelled), outcome
     if heartbeat.exists():
         assert_tree_is_dead(heartbeat)
+
+
+def _probe_stdout(encoders: list[str], ten_bit: list[str]) -> str:
+    return "\n".join(
+        (
+            json.dumps(
+                {
+                    "type": "ready",
+                    "adapter": "Test GPU",
+                    "backend": "d3d12",
+                    "encoders": encoders,
+                    "tenBitEncoders": ten_bit,
+                }
+            ),
+            json.dumps({"type": "result", "stage": "gate0-probe"}),
+        )
+    )
+
+
+def test_hdr_profiles_are_advertised_only_with_a_ten_bit_encoder():
+    both = ["hevc_nvenc", "av1_nvenc"]
+    assert advertised_profiles(both, ["hevc_nvenc"]) == [
+        "hevc-hdr10-2160p120",
+        "hevc-hdr10-1080p120",
+        "av1-sdr-debug-2160p120",
+        "av1-sdr-debug-1080p120",
+    ]
+    # The encoder exists but this FFmpeg build cannot feed it P010: the HDR
+    # profiles must not be offered, because the failure would otherwise land
+    # several minutes into a render rather than on the capability call.
+    assert advertised_profiles(both, []) == [
+        "av1-sdr-debug-2160p120",
+        "av1-sdr-debug-1080p120",
+    ]
+    # HEVC only, 10-bit capable: HDR is offered and the SDR debug path is not.
+    assert advertised_profiles(["hevc_nvenc"], ["hevc_nvenc"]) == [
+        "hevc-hdr10-2160p120",
+        "hevc-hdr10-1080p120",
+    ]
+    assert advertised_profiles([], []) == []
+
+
+def test_probe_gates_hdr_profiles_on_the_workers_ten_bit_report(tmp_path, monkeypatch):
+    cfg = settings(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, _probe_stdout(["hevc_nvenc", "av1_nvenc"], ["hevc_nvenc"]), ""
+        ),
+    )
+    result = probe_export_capabilities(cfg)
+    assert result["available"] is True
+    assert result["reason"] == ""
+    assert result["tenBitEncoders"] == ["hevc_nvenc"]
+    assert "hevc-hdr10-2160p120" in result["profiles"]
+    assert result["hdrTransport"] == HDR10_TRANSPORT
+    # The SDR transport string keeps its old meaning for older browser builds.
+    assert result["transport"] == SDR_DEBUG_TRANSPORT
+
+
+def test_probe_reports_a_reason_when_no_profile_can_be_served(tmp_path, monkeypatch):
+    cfg = settings(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, _probe_stdout([], []), ""
+        ),
+    )
+    result = probe_export_capabilities(cfg)
+    assert result["available"] is False
+    assert result["profiles"] == []
+    assert "NVENC" in result["reason"]
+
+
+def test_a_ten_bit_claim_for_an_absent_encoder_is_discarded(tmp_path, monkeypatch):
+    cfg = settings(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, _probe_stdout(["av1_nvenc"], ["hevc_nvenc"]), ""
+        ),
+    )
+    result = probe_export_capabilities(cfg)
+    assert result["tenBitEncoders"] == []
+    assert result["profiles"] == [
+        "av1-sdr-debug-2160p120",
+        "av1-sdr-debug-1080p120",
+    ]

@@ -5,6 +5,13 @@
  * a Node worker, and eventually the API validator can all consume the same
  * versioned contract.
  */
+import {
+  MAX_MASTERING_PEAK_NITS,
+  MAX_PAPER_WHITE_NITS,
+  MIN_MASTERING_PEAK_NITS,
+  MIN_PAPER_WHITE_NITS,
+} from '../export/hdr.ts';
+import { requiredEncoder } from '../export/profiles.ts';
 import { MODULATION_VERSION, type ModulationConfig } from '../mapping/types.ts';
 import type { PhysarumConfig } from '../sim/physarum/config.ts';
 import type { PlifeConfig } from '../sim/plife/config.ts';
@@ -20,7 +27,14 @@ import { EVENT_KINDS } from '../timeline/types.ts';
 
 export const EXPORT_RECIPE_VERSION = 3 as const;
 
+/**
+ * Additive within recipe v3: a v3 recipe naming an SDR debug profile means
+ * exactly what it always did, so no existing capture, request, or sidecar is
+ * invalidated by the HDR profiles joining the list.
+ */
 export const EXPORT_PROFILES = [
+  'hevc-hdr10-2160p120',
+  'hevc-hdr10-1080p120',
   'av1-sdr-debug-2160p120',
   'av1-sdr-debug-1080p120',
 ] as const;
@@ -525,17 +539,22 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
   );
   if (!EXPORT_PROFILES.includes(output['profile'] as never)) fail('$.output.profile', 'is unsupported');
   if (!EXPORT_ENCODERS.includes(output['encoder'] as never)) fail('$.output.encoder', 'is unsupported');
+  // The codec is a property of the profile, not an independent browser choice:
+  // an HDR10 profile is only meaningful through its Main10 encoder.
+  if (output['encoder'] !== requiredEncoder(output['profile'] as ExportProfile)) {
+    fail('$.output.encoder', 'does not match the encoder required by $.output.profile');
+  }
   const paperWhiteNits = finiteNumber(
     output['paperWhiteNits'],
     '$.output.paperWhiteNits',
-    80,
-    1000,
+    MIN_PAPER_WHITE_NITS,
+    MAX_PAPER_WHITE_NITS,
   );
   const masteringPeakNits = finiteNumber(
     output['masteringPeakNits'],
     '$.output.masteringPeakNits',
-    100,
-    10_000,
+    MIN_MASTERING_PEAK_NITS,
+    MAX_MASTERING_PEAK_NITS,
   );
   if (masteringPeakNits < paperWhiteNits) {
     fail('$.output.masteringPeakNits', 'must be at least $.output.paperWhiteNits');

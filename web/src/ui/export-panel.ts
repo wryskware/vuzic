@@ -1,31 +1,68 @@
 import type { ButtonApi, FolderApi } from 'tweakpane';
 
 import type { ExportCapabilities, ExportJob } from '../export/client.ts';
+import { DEFAULT_MASTERING_PEAK_NITS, DEFAULT_PAPER_WHITE_NITS } from '../export/hdr.ts';
+import {
+  SDR_DEBUG_TRANSPORT,
+  isHdrExportProfile,
+  requiredEncoder,
+} from '../export/profiles.ts';
 import type { ExportSession, ExportSessionState } from '../export/session.ts';
 import type { ExportRecipe } from '../runtime/recipe.ts';
 import type { PanelContainer } from './panel.ts';
 
 export const EXPORT_BUTTON_LABEL = 'Render video with current settings';
 export const EXPORT_CANCEL_LABEL = 'Cancel render';
-export const SDR_DEBUG_PROFILES = [
+
+/**
+ * Profiles offered in the panel, in the order they are offered.
+ *
+ * The HDR entries are the real PQ path and say so; the SDR entries remain
+ * labelled "debug" because they still are. Every one of them is capability-gated
+ * against what the local renderer actually advertises, so an entry the server
+ * cannot serve leaves the button disabled with a reason rather than failing a
+ * render minutes in.
+ */
+export const EXPORT_PROFILE_CHOICES = [
+  {
+    profile: 'hevc-hdr10-1080p120',
+    label: '1080p / 120 fps / HDR10 (HEVC Main10, PQ)',
+  },
+  {
+    profile: 'hevc-hdr10-2160p120',
+    label: '4K / 120 fps / HDR10 (HEVC Main10, PQ)',
+  },
   {
     profile: 'av1-sdr-debug-1080p120',
-    label: '1080p / 120 fps / SDR debug (recommended)',
+    label: '1080p / 120 fps / SDR debug',
   },
   {
     profile: 'av1-sdr-debug-2160p120',
     label: '4K / 120 fps / SDR debug',
   },
 ] as const satisfies readonly { profile: ExportRecipe['output']['profile']; label: string }[];
-export type SdrDebugProfile = (typeof SDR_DEBUG_PROFILES)[number]['profile'];
+
+/** Kept under the old name for the SDR-only callers and tests that predate HDR. */
+export const SDR_DEBUG_PROFILES = EXPORT_PROFILE_CHOICES.filter(
+  (choice) => !isHdrExportProfile(choice.profile),
+);
+export type SdrDebugProfile = ExportRecipe['output']['profile'];
+export const DEFAULT_EXPORT_PROFILE: SdrDebugProfile = 'hevc-hdr10-1080p120';
 export const DEFAULT_SDR_DEBUG_PROFILE: SdrDebugProfile = 'av1-sdr-debug-1080p120';
 
+/**
+ * The output section of a recipe for one profile.
+ *
+ * Paper white and mastering peak travel in the recipe rather than in the worker
+ * so they can be art-directed later without a new schema; they are ignored by
+ * the SDR path and are the whole HDR luminance policy for the HDR one.
+ */
 export function debugExportOutput(profile: SdrDebugProfile): ExportRecipe['output'] {
   return {
     profile,
-    encoder: 'av1_nvenc',
-    paperWhiteNits: 203,
-    masteringPeakNits: 1000,
+    encoder: requiredEncoder(profile),
+    paperWhiteNits: DEFAULT_PAPER_WHITE_NITS,
+    masteringPeakNits: DEFAULT_MASTERING_PEAK_NITS,
   };
 }
 
@@ -46,15 +83,35 @@ interface UiState {
   status: string;
 }
 
+/**
+ * Whether the local renderer can serve one profile.
+ *
+ * The server only lists a profile once its whole path exists — encoder, 10-bit
+ * support, built worker — so membership in `profiles` is the authority. The SDR
+ * profiles additionally check the transport string they were shipped with, which
+ * is what keeps an older server from being asked for a transport it never had.
+ */
+export function exportProfileAvailable(
+  capabilities: ExportCapabilities,
+  profile: SdrDebugProfile,
+): boolean {
+  if (
+    !capabilities.available ||
+    !capabilities.profiles.includes(profile) ||
+    capabilities.rendererBuild.length === 0
+  ) {
+    return false;
+  }
+  if (!capabilities.encoders.includes(requiredEncoder(profile))) return false;
+  if (isHdrExportProfile(profile)) return true;
+  return capabilities.transport === SDR_DEBUG_TRANSPORT;
+}
+
 export function debugExportAvailable(
   capabilities: ExportCapabilities,
   profile: SdrDebugProfile = DEFAULT_SDR_DEBUG_PROFILE,
 ): boolean {
-  return capabilities.available &&
-    capabilities.profiles.includes(profile) &&
-    capabilities.encoders.includes('av1_nvenc') &&
-    capabilities.transport === 'sdr-rgba8-av1-debug' &&
-    capabilities.rendererBuild.length > 0;
+  return exportProfileAvailable(capabilities, profile);
 }
 
 export function exportProgressLabel(job: ExportJob): string {
@@ -122,12 +179,14 @@ export function createExportFolder(
 ): ExportPanelHandle {
   const folder = container.addFolder({ title: 'video export', expanded: false }) as FolderApi;
   const ui: UiState = {
-    profile: DEFAULT_SDR_DEBUG_PROFILE,
+    profile: DEFAULT_EXPORT_PROFILE,
     status: 'checking local renderer…',
   };
   const profile = folder.addBinding(ui, 'profile', {
     label: 'output',
-    options: Object.fromEntries(SDR_DEBUG_PROFILES.map((choice) => [choice.label, choice.profile])),
+    options: Object.fromEntries(
+      EXPORT_PROFILE_CHOICES.map((choice) => [choice.label, choice.profile]),
+    ),
   });
   const status = folder.addBinding(ui, 'status', { readonly: true, label: 'status' });
   const render = folder.addButton({ title: EXPORT_BUTTON_LABEL }) as ButtonApi;
@@ -162,8 +221,9 @@ export function createExportFolder(
     if (probeFailed) return 'local export server unavailable';
     if (!capabilities) return 'checking local renderer…';
     if (!capabilities.available) return capabilities.reason || 'local export unavailable';
-    if (!debugExportAvailable(capabilities, ui.profile)) {
-      const label = SDR_DEBUG_PROFILES.find((choice) => choice.profile === ui.profile)?.label ?? ui.profile;
+    if (!exportProfileAvailable(capabilities, ui.profile)) {
+      const label =
+        EXPORT_PROFILE_CHOICES.find((choice) => choice.profile === ui.profile)?.label ?? ui.profile;
       return `${label} is unavailable on the local renderer`;
     }
     return `ready${capabilities.gpu ? ` · ${capabilities.gpu}` : ''}`;
@@ -172,7 +232,7 @@ export function createExportFolder(
   /** The one place the widgets are written, from capabilities + replayed state. */
   const paint = (): void => {
     if (disposed) return;
-    const ready = capabilities !== null && debugExportAvailable(capabilities, ui.profile);
+    const ready = capabilities !== null && exportProfileAvailable(capabilities, ui.profile);
     render.disabled = session.busy || !ready;
     profile.disabled = session.busy;
     // Hidden when there is nothing to cancel; disabled while a cancel is
@@ -202,7 +262,7 @@ export function createExportFolder(
   });
 
   render.on('click', () => {
-    if (!capabilities || !debugExportAvailable(capabilities, ui.profile)) return;
+    if (!capabilities || !exportProfileAvailable(capabilities, ui.profile)) return;
     const rendererBuild = capabilities.rendererBuild;
     const output = debugExportOutput(ui.profile);
     // The session runs the capture inside its own duplicate guard, so a click

@@ -244,3 +244,137 @@ export class FrameReadbackRing {
     }
   }
 }
+
+export interface PackedReadbackRingOptions {
+  /** Exact tightly packed frame size produced by the GPU packing pass. */
+  readonly byteLength: number;
+  readonly ringSize?: number;
+  readonly label?: string;
+}
+
+/**
+ * The same bounded readback discipline as `FrameReadbackRing`, for frames a
+ * compute pass has already packed into encoder-ready bytes.
+ *
+ * There is no row padding to strip here: `copyBufferToBuffer` has none of
+ * `copyTextureToBuffer`'s 256-byte row alignment rule, which is half the reason
+ * the HDR path packs on the GPU. The source buffer may be reused for the next
+ * frame as soon as the copy is submitted, because the copy is ordered inside the
+ * same queue as the pass that wrote it.
+ */
+export class PackedFrameReadbackRing {
+  readonly byteLength: number;
+  readonly ringSize: number;
+
+  private readonly device: GPUDevice;
+  private readonly slots: ReadbackSlot[];
+  private nextSlot = 0;
+  private operationInProgress = false;
+  private disposed = false;
+
+  constructor(device: GPUDevice, options: PackedReadbackRingOptions) {
+    this.device = device;
+    this.byteLength = positiveSafeInteger(options.byteLength, 'byteLength');
+    if (this.byteLength % 4 !== 0) throw new RangeError('byteLength must be a multiple of 4');
+    this.ringSize = positiveSafeInteger(options.ringSize ?? 3, 'ringSize');
+    const label = options.label ?? 'export.packed-readback';
+    this.slots = Array.from({ length: this.ringSize }, (_, index) => ({
+      buffer: device.createBuffer({
+        label: `${label}.${index}`,
+        size: this.byteLength,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      }),
+      pending: null,
+    }));
+  }
+
+  get pendingCount(): number {
+    return this.slots.reduce((count, slot) => count + (slot.pending ? 1 : 0), 0);
+  }
+
+  async enqueue(source: GPUBuffer, frameIndex: number): Promise<ReadbackFrame | null> {
+    this.beginOperation();
+    try {
+      if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) {
+        throw new RangeError('frameIndex must be a non-negative safe integer');
+      }
+      const slot = this.slots[this.nextSlot];
+      if (!slot) throw new Error('readback ring unexpectedly has no slot');
+
+      let completed: ReadbackFrame | null = null;
+      if (slot.pending) {
+        const pending = slot.pending;
+        slot.pending = null;
+        completed = await pending;
+      }
+
+      const encoder = this.device.createCommandEncoder({
+        label: `export.packed-readback.frame.${frameIndex}`,
+      });
+      encoder.copyBufferToBuffer(source, 0, slot.buffer, 0, this.byteLength);
+      this.device.queue.submit([encoder.finish()]);
+
+      const pending = this.readSlot(slot.buffer, frameIndex);
+      void pending.catch(() => undefined);
+      slot.pending = pending;
+      this.nextSlot = (this.nextSlot + 1) % this.slots.length;
+      return completed;
+    } catch (error: unknown) {
+      await this.dispose();
+      throw error;
+    } finally {
+      this.operationInProgress = false;
+    }
+  }
+
+  async flush(): Promise<ReadbackFrame[]> {
+    this.beginOperation();
+    try {
+      const frames: ReadbackFrame[] = [];
+      for (const slot of this.slots) {
+        if (!slot.pending) continue;
+        const pending = slot.pending;
+        slot.pending = null;
+        frames.push(await pending);
+      }
+      frames.sort((left, right) => left.frameIndex - right.frameIndex);
+      return frames;
+    } catch (error: unknown) {
+      await this.dispose();
+      throw error;
+    } finally {
+      this.operationInProgress = false;
+    }
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    const pending = this.slots.flatMap((slot) => (slot.pending ? [slot.pending] : []));
+    for (const slot of this.slots) {
+      slot.pending = null;
+      slot.buffer.destroy();
+    }
+    await Promise.allSettled(pending);
+  }
+
+  private beginOperation(): void {
+    if (this.disposed) throw new Error('packed readback ring is disposed');
+    if (this.operationInProgress) {
+      throw new Error('frame readback operations must be awaited sequentially');
+    }
+    this.operationInProgress = true;
+  }
+
+  private async readSlot(buffer: GPUBuffer, frameIndex: number): Promise<ReadbackFrame> {
+    let mapped = false;
+    try {
+      await buffer.mapAsync(GPUMapMode.READ, 0, this.byteLength);
+      mapped = true;
+      const bytes = new Uint8Array(buffer.getMappedRange(0, this.byteLength));
+      return { frameIndex, data: new Uint8Array(bytes) };
+    } finally {
+      if (mapped) buffer.unmap();
+    }
+  }
+}

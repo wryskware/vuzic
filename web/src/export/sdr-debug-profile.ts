@@ -1,4 +1,5 @@
 import type { ExportProfile } from '../runtime/recipe.ts';
+import { exportProfileSpec } from './profiles.ts';
 
 export interface SdrDebugProfileDimensions {
   readonly width: number;
@@ -6,12 +7,13 @@ export interface SdrDebugProfileDimensions {
   readonly fps: 120;
 }
 
-/** Exact native render dimensions for the temporary AV1 SDR engineering profiles. */
+/**
+ * Exact native render dimensions for an export profile.
+ *
+ * Kept under its original name because the SDR engineering path still calls it;
+ * the table it reads now covers every profile, HDR included.
+ */
 export function sdrDebugProfileDimensions(profile: ExportProfile): SdrDebugProfileDimensions {
-  switch (profile) {
-    case 'av1-sdr-debug-2160p120':
-      return { width: 3840, height: 2160, fps: 120 };
-    case 'av1-sdr-debug-1080p120':
-      return { width: 1920, height: 1080, fps: 120 };
-  }
+  const spec = exportProfileSpec(profile);
+  return { width: spec.width, height: spec.height, fps: spec.fps };
 }

@@ -36,6 +36,39 @@ KILL_TIMEOUT_SECONDS = 10.0
 #: this side was never set — an operator killing the tree by hand, say.
 CANCELLED_WORKER_EXIT_CODE = 130
 
+#: Frame transports the worker implements.  Mirrors `web/src/export/profiles.ts`.
+SDR_DEBUG_TRANSPORT = "sdr-rgba8-av1-debug"
+HDR10_TRANSPORT = "hdr10-p010-compute"
+
+#: profile id -> (encoder, dynamic range, transport).  The one Python-side copy
+#: of the table TypeScript owns; the worker validates the recipe again anyway,
+#: and this exists so capabilities and submission can be answered without
+#: starting Node.
+EXPORT_PROFILE_TABLE: dict[str, tuple[str, str, str]] = {
+    "hevc-hdr10-2160p120": ("hevc_nvenc", "hdr10", HDR10_TRANSPORT),
+    "hevc-hdr10-1080p120": ("hevc_nvenc", "hdr10", HDR10_TRANSPORT),
+    "av1-sdr-debug-2160p120": ("av1_nvenc", "sdr", SDR_DEBUG_TRANSPORT),
+    "av1-sdr-debug-1080p120": ("av1_nvenc", "sdr", SDR_DEBUG_TRANSPORT),
+}
+
+
+def advertised_profiles(encoders: list[str], ten_bit_encoders: list[str]) -> list[str]:
+    """Profiles whose *entire* path the probe just proved.
+
+    An HDR profile needs its encoder to exist **and** to accept 10-bit 4:2:0
+    input; advertising one whose encoder cannot take P010 would turn a
+    capability question into a failure several minutes into a render.
+    """
+
+    offered: list[str] = []
+    for profile, (encoder, dynamic_range, _transport) in EXPORT_PROFILE_TABLE.items():
+        if encoder not in encoders:
+            continue
+        if dynamic_range == "hdr10" and encoder not in ten_bit_encoders:
+            continue
+        offered.append(profile)
+    return offered
+
 
 class ExportProcessError(RuntimeError):
     """A worker could not start, violated its protocol, or exited unsuccessfully."""
@@ -325,15 +358,31 @@ def probe_export_capabilities(settings: ExportSettings) -> dict[str, Any]:
         for encoder in ready.get("encoders", [])
         if encoder in ("hevc_nvenc", "av1_nvenc")
     ]
+    ten_bit = [
+        encoder
+        for encoder in ready.get("tenBitEncoders", [])
+        if encoder in encoders
+    ]
+    profiles = advertised_profiles(encoders, ten_bit)
+    if profiles:
+        reason = ""
+    elif not encoders:
+        reason = "no NVENC encoder is available"
+    else:
+        reason = "no encoder on this build accepts 10-bit or AV1 output"
     return {
-        "available": "av1_nvenc" in encoders,
-        "profiles": ["av1-sdr-debug-2160p120", "av1-sdr-debug-1080p120"],
+        "available": bool(profiles),
+        "profiles": profiles,
         "gpu": str(ready.get("adapter") or ""),
         "backend": str(ready.get("backend") or ""),
         "encoders": encoders,
+        "tenBitEncoders": ten_bit,
         "rendererBuild": settings.renderer_build(),
-        "transport": "sdr-rgba8-av1-debug",
-        "reason": "" if "av1_nvenc" in encoders else "AV1 NVENC is unavailable",
+        # Unchanged meaning: the SDR debug transport this worker still speaks.
+        # HDR profiles are gated by membership in `profiles` instead.
+        "transport": SDR_DEBUG_TRANSPORT,
+        "hdrTransport": HDR10_TRANSPORT,
+        "reason": reason,
     }
 
 

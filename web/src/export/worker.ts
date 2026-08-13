@@ -3,6 +3,8 @@ import { rm } from 'node:fs/promises';
 
 import postCommonWgsl from '../sim/render/shaders/post-common.wgsl?raw';
 import exposureWgsl from '../sim/render/shaders/exposure.wgsl?raw';
+import gradeHdrWgsl from '../sim/render/shaders/grade-hdr.wgsl?raw';
+import hdrPackWgsl from './shaders/hdr-pack.wgsl?raw';
 import { buildDriverBank } from '../mapping/modulation.ts';
 import { buildSimBundleFromRecipe, type SimBundle } from '../runtime/sim-bundle.ts';
 import { SECONDS_PER_TICK } from '../timing.ts';
@@ -11,10 +13,16 @@ import gate0Wgsl from './shaders/gate0.wgsl?raw';
 
 import { createDawnContext, type DawnRuntimeContext } from './dawn-context.ts';
 import { ExportClock, exportFrameCount } from './export-clock.ts';
-import { Av1DebugEncoder, partialOutputPath } from './ffmpeg-encoder.ts';
-import { FrameReadbackRing } from './frame-readback.ts';
+import {
+  Av1DebugEncoder,
+  Hdr10Encoder,
+  partialOutputPath,
+  type FfmpegFrameEncoder,
+} from './ffmpeg-encoder.ts';
+import { FrameReadbackRing, PackedFrameReadbackRing } from './frame-readback.ts';
+import { Hdr10FramePacker } from './hdr-output.ts';
 import { loadTimelineFromFiles } from './node-timeline-loader.ts';
-import { sdrDebugProfileDimensions } from './sdr-debug-profile.ts';
+import { exportProfileSpec } from './profiles.ts';
 import {
   loadExportWorkerRequest,
 } from './worker-request.ts';
@@ -35,6 +43,8 @@ interface ReadbackSlot {
 interface FfmpegCapabilities {
   version: string;
   encoders: string[];
+  /** Encoders this build can actually feed 10-bit 4:2:0; the HDR gate. */
+  tenBitEncoders: string[];
 }
 
 const emit = (message: Record<string, unknown>): void => {
@@ -137,9 +147,23 @@ async function probeFfmpeg(): Promise<FfmpegCapabilities> {
   if (!encoders.includes('hevc_nvenc')) {
     throw new Error('FFmpeg does not expose the required hevc_nvenc encoder');
   }
+  // Advertising an HDR profile the encoder cannot accept would turn a capability
+  // question into a failure minutes into a render, so ask before offering:
+  // hevc_nvenc must take P010 input and expose the Main10 profile.
+  const tenBitEncoders: string[] = [];
+  for (const name of encoders) {
+    const help = await execFileText('ffmpeg', ['-hide_banner', '-h', `encoder=${name}`]).catch(
+      () => '',
+    );
+    const pixelFormats = /Supported pixel formats:([^\n]*)/.exec(help)?.[1] ?? '';
+    const tenBitInput = /\bp010le\b/.test(pixelFormats);
+    const tenBitProfile = name === 'av1_nvenc' || /\bmain10\b/.test(help);
+    if (tenBitInput && tenBitProfile) tenBitEncoders.push(name);
+  }
   return {
     version: versionText.split(/\r?\n/, 1)[0] ?? 'unknown FFmpeg',
     encoders,
+    tenBitEncoders,
   };
 }
 
@@ -195,6 +219,35 @@ async function compileCurrentProjectShader(device: GPUDevice): Promise<void> {
   });
   const validationError = await device.popErrorScope();
   if (validationError) throw validationError;
+
+  // The HDR output path is a capability, so its shaders are proven at probe time
+  // rather than several minutes into a 4K render.
+  await compileOrThrow(device, 'gate0.hdr-grade', `${postCommonWgsl}\n${gradeHdrWgsl}`);
+  const packModule = await compileOrThrow(device, 'gate0.hdr-pack', hdrPackWgsl);
+  device.pushErrorScope('validation');
+  device.createComputePipeline({
+    label: 'gate0.hdr-pack',
+    layout: 'auto',
+    compute: { module: packModule, entryPoint: 'pack' },
+  });
+  const packError = await device.popErrorScope();
+  if (packError) throw packError;
+}
+
+async function compileOrThrow(
+  device: GPUDevice,
+  label: string,
+  code: string,
+): Promise<GPUShaderModule> {
+  const module = device.createShaderModule({ label, code });
+  const info = await module.getCompilationInfo();
+  const errors = info.messages.filter((message) => message.type === 'error');
+  if (errors.length > 0) {
+    throw new Error(
+      `${label} failed to compile: ${errors.map((message) => message.message).join('; ')}`,
+    );
+  }
+  return module;
 }
 
 async function checksumReadback(buffer: GPUBuffer): Promise<number> {
@@ -225,6 +278,7 @@ async function runProbe(options: ProbeOptions): Promise<void> {
       float32Filterable: ctx.float32Filterable,
       ffmpeg: ffmpeg.version,
       encoders: ffmpeg.encoders,
+      tenBitEncoders: ffmpeg.tenBitEncoders,
     });
 
     const { device, width, height } = ctx;
@@ -331,15 +385,28 @@ async function runProbe(options: ProbeOptions): Promise<void> {
 }
 
 /**
- * Phase-2 engineering path: the shared renderer is real, while the final
- * presentation transport is intentionally SDR RGBA8 -> AV1 until PQ/P010 lands.
+ * Render one request.
+ *
+ * Two transports live here and they diverge at exactly one place: what the
+ * simulation's final grade writes into, and therefore what reaches FFmpeg.
+ *
+ * - `sdr-rgba8-av1-debug` renders the 8-bit display grade into `rgba8unorm` and
+ *   reads whole RGBA frames back. Temporary, honest, unchanged.
+ * - `hdr10-p010-compute` renders the scene-linear BT.2020/PQ grade into
+ *   `rgba16float` and converts on the GPU, so what crosses PCIe is the 10-bit
+ *   4:2:0 the encoder wants — 24.9 MB per 4K frame rather than 66.4 MB.
  */
 async function runRequest(requestPath: string): Promise<void> {
   activeStage = 'request';
   const request = await loadExportWorkerRequest(requestPath);
-  if (request.recipe.output.encoder !== 'av1_nvenc') {
-    throw new Error('the Phase-2 SDR/debug worker supports recipe encoder av1_nvenc only');
+  const profile = exportProfileSpec(request.output.profile);
+  if (request.recipe.output.encoder !== profile.encoder) {
+    throw new Error(
+      `profile ${profile.id} requires encoder ${profile.encoder}, ` +
+        `not ${request.recipe.output.encoder}`,
+    );
   }
+  const hdr = profile.dynamicRange === 'hdr10';
 
   const timeline = await loadTimelineFromFiles(request.timeline);
   const rangeEndSeconds = request.range.startSeconds + request.range.durationSeconds;
@@ -350,7 +417,7 @@ async function runRequest(requestPath: string): Promise<void> {
     );
   }
 
-  const { width, height } = sdrDebugProfileDimensions(request.output.profile);
+  const { width, height } = profile;
   const firstOutputFrame = exportFrameCount(request.range.startSeconds);
   const clock = new ExportClock(rangeEndSeconds);
   const outputFrames = clock.frameCount - firstOutputFrame;
@@ -360,7 +427,9 @@ async function runRequest(requestPath: string): Promise<void> {
   let bundle: SimBundle | null = null;
   let target: GPUTexture | null = null;
   let readback: FrameReadbackRing | null = null;
-  let encoder: Av1DebugEncoder | null = null;
+  let packedReadback: PackedFrameReadbackRing | null = null;
+  let packer: Hdr10FramePacker | null = null;
+  let encoder: FfmpegFrameEncoder | null = null;
   const startedAt = performance.now();
   // Registered before the GPU exists: a cancel during device creation still has
   // to leave no `.partial` behind, and `rm --force` on an absent path is free.
@@ -371,7 +440,26 @@ async function runRequest(requestPath: string): Promise<void> {
 
   try {
     activeStage = 'gpu-init';
-    ctx = await createDawnContext({ width, height, format: 'rgba8unorm' });
+    ctx = await createDawnContext({
+      width,
+      height,
+      format: hdr ? 'rgba16float' : 'rgba8unorm',
+      ...(hdr
+        ? {
+            hdrOutput: {
+              paperWhiteNits: request.recipe.output.paperWhiteNits,
+              masteringPeakNits: request.recipe.output.masteringPeakNits,
+            },
+          }
+        : {}),
+    });
+    // Checked, not assumed: if the HDR policy failed to reach the context the
+    // post chain would quietly build the 8-bit SDR grade, the packing pass would
+    // read gamma-encoded display values as if they were luminance, and the job
+    // would publish a correctly tagged HDR file containing an SDR image.
+    if (hdr && !ctx.hdrOutput) {
+      throw new Error('HDR profile requested but the GPU context carries no HDR output policy');
+    }
     const sampler = new TimelineSampler(timeline, SECONDS_PER_TICK);
     bundle = buildSimBundleFromRecipe({
       recipe: request.recipe,
@@ -382,40 +470,74 @@ async function runRequest(requestPath: string): Promise<void> {
     await bundle.sim.init(ctx);
 
     target = ctx.device.createTexture({
-      label: 'export.sdr-debug-target',
+      label: hdr ? 'export.hdr10-target' : 'export.sdr-debug-target',
       size: { width, height },
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      format: hdr ? 'rgba16float' : 'rgba8unorm',
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        // The HDR path never copies the texture: a compute pass reads it and
+        // writes the encoder-ready bytes, so only the packed buffer is read back.
+        (hdr ? GPUTextureUsage.TEXTURE_BINDING : GPUTextureUsage.COPY_SRC),
     });
     const targetView = target.createView();
-    readback = new FrameReadbackRing(ctx.device, {
-      width,
-      height,
-      bytesPerPixel: 4,
-      ringSize: 3,
-      label: 'export.sdr-debug-readback',
-    });
-    encoder = await Av1DebugEncoder.start({
-      ffmpegExecutable: request.runtime.ffmpegExecutable,
-      workingDirectory: request.runtime.workingDirectory,
-      outputPath: request.output.path,
-      width,
-      height,
-      ...(request.audioPath === undefined
+
+    const audioArgs =
+      request.audioPath === undefined
         ? {}
         : {
             audioPath: request.audioPath,
             startSeconds: request.range.startSeconds,
             durationSeconds: request.range.durationSeconds,
-          }),
-    });
+          };
+
+    if (hdr) {
+      packer = new Hdr10FramePacker(ctx.device, { width, height });
+      packedReadback = new PackedFrameReadbackRing(ctx.device, {
+        byteLength: packer.byteLength,
+        ringSize: 3,
+        label: 'export.hdr10-readback',
+      });
+      encoder = await Hdr10Encoder.start({
+        ffmpegExecutable: request.runtime.ffmpegExecutable,
+        workingDirectory: request.runtime.workingDirectory,
+        outputPath: request.output.path,
+        width,
+        height,
+        masteringPeakNits: request.recipe.output.masteringPeakNits,
+        ...audioArgs,
+      });
+    } else {
+      readback = new FrameReadbackRing(ctx.device, {
+        width,
+        height,
+        bytesPerPixel: 4,
+        ringSize: 3,
+        label: 'export.sdr-debug-readback',
+      });
+      encoder = await Av1DebugEncoder.start({
+        ffmpegExecutable: request.runtime.ffmpegExecutable,
+        workingDirectory: request.runtime.workingDirectory,
+        outputPath: request.output.path,
+        width,
+        height,
+        ...audioArgs,
+      });
+    }
 
     emit({
       type: 'ready',
       adapter: ctx.adapterName,
       backend: ctx.backend,
       profile: request.output.profile,
-      transport: 'sdr-rgba8-av1-debug',
+      transport: profile.transport,
+      encoder: profile.encoder,
+      dynamicRange: profile.dynamicRange,
+      ...(hdr
+        ? {
+            paperWhiteNits: request.recipe.output.paperWhiteNits,
+            masteringPeakNits: request.recipe.output.masteringPeakNits,
+          }
+        : {}),
       audio: request.audioPath !== undefined,
       width,
       height,
@@ -439,13 +561,20 @@ async function runRequest(requestPath: string): Promise<void> {
           });
           if (!command || !bundle || !ctx) throw new Error('render resources were disposed early');
           bundle.sim.render(command, targetView, renderFrame);
+          // Same submission as the grade that produced the pixels: the packing
+          // pass reads the target as a texture, so no extra synchronisation and
+          // no intermediate copy is involved.
+          packer?.pack(command, targetView);
           ctx.device.queue.submit([command.finish()]);
         },
       );
       if (!frame) break;
       if (frame.frameIndex < firstOutputFrame) continue;
 
-      const completed = await readback.enqueue(target, frame.frameIndex - firstOutputFrame);
+      const outputIndex = frame.frameIndex - firstOutputFrame;
+      const completed = packedReadback
+        ? await packedReadback.enqueue((packer as Hdr10FramePacker).packedBuffer, outputIndex)
+        : await (readback as FrameReadbackRing).enqueue(target, outputIndex);
       if (completed) await encoder.writeFrame(completed.data);
       const rendered = frame.frameIndex - firstOutputFrame + 1;
       if (rendered === outputFrames || rendered % 30 === 0) {
@@ -454,7 +583,10 @@ async function runRequest(requestPath: string): Promise<void> {
     }
 
     activeStage = 'encode';
-    for (const completed of await readback.flush()) {
+    const trailing = packedReadback
+      ? await packedReadback.flush()
+      : await (readback as FrameReadbackRing).flush();
+    for (const completed of trailing) {
       await encoder.writeFrame(completed.data);
     }
     if (encoder.framesWritten !== outputFrames) {
@@ -470,7 +602,20 @@ async function runRequest(requestPath: string): Promise<void> {
       type: 'result',
       path: request.output.path,
       profile: request.output.profile,
-      transport: 'sdr-rgba8-av1-debug',
+      transport: profile.transport,
+      codec: profile.encoder === 'hevc_nvenc' ? 'hevc' : 'av1',
+      dynamicRange: profile.dynamicRange,
+      pixelFormat: hdr ? 'p010le' : 'yuv420p',
+      ...(hdr
+        ? {
+            colorPrimaries: 'bt2020',
+            colorTransfer: 'smpte2084',
+            colorMatrix: 'bt2020nc',
+            colorRange: 'tv',
+            paperWhiteNits: request.recipe.output.paperWhiteNits,
+            masteringPeakNits: request.recipe.output.masteringPeakNits,
+          }
+        : {}),
       audio: request.audioPath !== undefined,
       width,
       height,
@@ -482,6 +627,8 @@ async function runRequest(requestPath: string): Promise<void> {
     releaseCleanup();
     if (encoder && encoder.state !== 'complete') await encoder.abort();
     await readback?.dispose();
+    await packedReadback?.dispose();
+    packer?.dispose();
     target?.destroy();
     bundle?.sim.dispose();
     ctx?.dispose();

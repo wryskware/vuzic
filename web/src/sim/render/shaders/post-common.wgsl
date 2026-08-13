@@ -1,7 +1,7 @@
 // Prepended to every post-processing module. Declares no bindings; each module
 // owns its own @group layout, exactly like the sim's common.wgsl.
 
-/** Mirrors PostFx's params buffer. 20 f32 = 80 bytes, a multiple of 16. */
+/** Mirrors PostFx's params buffer. 24 f32 = 96 bytes, a multiple of 16. */
 struct Post {
   viewport: vec2f,
   threshold: f32,
@@ -26,6 +26,12 @@ struct Post {
   autoMax: f32,
   dt: f32,
   pad0: f32,
+
+  // Zero in every browser preview; only the HDR10 export grade reads these.
+  hdrPaperWhite: f32,
+  hdrPeak: f32,
+  hdrHeadroom: f32,
+  pad1: f32,
 }
 
 struct PostVSOut {

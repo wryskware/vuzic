@@ -34,7 +34,7 @@ function recipe(): ExportRecipe {
     presentation: { mode: 'single', autoAdvance: false },
     output: {
       profile: 'av1-sdr-debug-1080p120',
-      encoder: 'hevc_nvenc',
+      encoder: 'av1_nvenc',
       paperWhiteNits: 203,
       masteringPeakNits: 1000,
     },
@@ -123,18 +123,36 @@ test('output choices are bounded enums, not an encoder argument surface', () => 
   assert.throws(() => validateExportRecipe(value), /output\.encoder.*unsupported/);
 });
 
-test('only honestly labelled AV1 SDR debug profiles are accepted', () => {
+test('only profiles whose id matches their real transport are accepted', () => {
   for (const profile of ['av1-sdr-debug-1080p120', 'av1-sdr-debug-2160p120']) {
     const value = recipe() as unknown as { output: Record<string, unknown> };
     value.output['profile'] = profile;
     assert.doesNotThrow(() => validateExportRecipe(value));
   }
 
-  for (const misleading of ['hdr10-1080p120', 'hdr10-2160p120']) {
+  // The HDR10 profiles are real, and they are the only ones allowed to say so.
+  for (const profile of ['hevc-hdr10-1080p120', 'hevc-hdr10-2160p120']) {
     const value = recipe() as unknown as { output: Record<string, unknown> };
-    value.output['profile'] = misleading;
+    value.output['profile'] = profile;
+    value.output['encoder'] = 'hevc_nvenc';
+    assert.doesNotThrow(() => validateExportRecipe(value));
+  }
+
+  for (const invented of ['hdr10-1080p120', 'hdr10-2160p120', 'av1-hdr10-1080p120']) {
+    const value = recipe() as unknown as { output: Record<string, unknown> };
+    value.output['profile'] = invented;
     assert.throws(() => validateExportRecipe(value), /output\.profile.*unsupported/);
   }
+});
+
+test('a profile cannot be paired with an encoder that cannot produce it', () => {
+  const sdrWithHevc = recipe() as unknown as { output: Record<string, unknown> };
+  sdrWithHevc.output['encoder'] = 'hevc_nvenc';
+  assert.throws(() => validateExportRecipe(sdrWithHevc), /output\.encoder.*does not match/);
+
+  const hdrWithAv1 = recipe() as unknown as { output: Record<string, unknown> };
+  hdrWithAv1.output['profile'] = 'hevc-hdr10-2160p120';
+  assert.throws(() => validateExportRecipe(hdrWithAv1), /output\.encoder.*does not match/);
 });
 
 test('HDR luminance policy is explicit, bounded, and internally ordered', () => {

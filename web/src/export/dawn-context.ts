@@ -1,6 +1,6 @@
 import { create, globals } from 'webgpu';
 
-import type { GpuRuntimeContext } from '../gpu/runtime-context.ts';
+import type { GpuHdrOutput, GpuRuntimeContext } from '../gpu/runtime-context.ts';
 
 export interface DawnContextOptions {
   width: number;
@@ -8,6 +8,14 @@ export interface DawnContextOptions {
   backend?: string;
   /** Caller-owned final target format; simulations keep their internal HDR surfaces. */
   format?: GPUTextureFormat;
+  /**
+   * Absolute-luminance policy for an HDR10 export. Supplying it is what makes
+   * the shared post chain emit the scene-linear BT.2020/PQ grade instead of the
+   * 8-bit display grade, so it must reach the context object itself — a host
+   * that sets it and a context that drops it would produce an HDR-tagged SDR
+   * file, which is the one outcome this whole path exists to avoid.
+   */
+  hdrOutput?: GpuHdrOutput;
 }
 
 export interface DawnRuntimeContext extends GpuRuntimeContext {
@@ -48,6 +56,7 @@ export async function createDawnContext(options: DawnContextOptions): Promise<Da
     width: Math.max(1, Math.floor(options.width)),
     height: Math.max(1, Math.floor(options.height)),
     format: options.format ?? 'rgba16float',
+    ...(options.hdrOutput ? { hdrOutput: options.hdrOutput } : {}),
     float32Filterable,
     adapterName,
     backend,

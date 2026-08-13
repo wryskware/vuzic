@@ -20,6 +20,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="install the `server` extra")
 pytest.importorskip("httpx", reason="fastapi's TestClient needs httpx")
 
+from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import terrarium_analysis.server as server_module  # noqa: E402
@@ -622,3 +623,162 @@ def test_export_rejects_stale_track_or_renderer(monkeypatch, tmp_path):
         assert export_client.post(
             "/exports", json={"trackId": "fixture-track", "recipe": stale_build}
         ).status_code == 409
+
+
+def hdr_recipe(track_id, track_version, renderer_build, **output):
+    recipe = export_recipe(track_id, track_version, renderer_build)
+    recipe["output"] = {
+        "profile": "hevc-hdr10-1080p120",
+        "encoder": "hevc_nvenc",
+        "paperWhiteNits": 203,
+        "masteringPeakNits": 1000,
+        **output,
+    }
+    return recipe
+
+
+def test_export_submission_binds_each_profile_to_its_encoder(tmp_path):
+    track = {"id": "t", "version": "v1", "duration": 10.0}
+    body = lambda recipe: {"trackId": "t", "recipe": recipe, "range": None}
+
+    ok = hdr_recipe("t", "v1", "build")
+    recipe, start, duration = server_module.validate_export_submission(
+        body(ok), track, "build", ["hevc-hdr10-1080p120"]
+    )
+    assert recipe["output"]["profile"] == "hevc-hdr10-1080p120"
+    assert (start, duration) == (0.0, 10.0)
+
+    wrong_encoder = hdr_recipe("t", "v1", "build", encoder="av1_nvenc")
+    with pytest.raises(HTTPException) as exc:
+        server_module.validate_export_submission(
+            body(wrong_encoder), track, "build", ["hevc-hdr10-1080p120"]
+        )
+    assert exc.value.status_code == 422
+    assert "requires encoder hevc_nvenc" in exc.value.detail
+
+
+def test_export_submission_refuses_a_profile_this_renderer_cannot_serve(tmp_path):
+    track = {"id": "t", "version": "v1", "duration": 10.0}
+    recipe = hdr_recipe("t", "v1", "build")
+    with pytest.raises(HTTPException) as exc:
+        server_module.validate_export_submission(
+            {"trackId": "t", "recipe": recipe, "range": None},
+            track,
+            "build",
+            ["av1-sdr-debug-1080p120"],
+        )
+    assert exc.value.status_code == 422
+    assert "not available on this renderer" in exc.value.detail
+
+    # An invented "hdr" name is refused by the schema before capabilities apply.
+    invented = hdr_recipe("t", "v1", "build", profile="av1-hdr10-1080p120")
+    with pytest.raises(HTTPException) as exc:
+        server_module.validate_export_submission(
+            {"trackId": "t", "recipe": invented, "range": None}, track, "build", None
+        )
+    assert "unsupported export profile" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "output, message",
+    [
+        ({"paperWhiteNits": 10}, "paperWhiteNits"),
+        ({"paperWhiteNits": 2000}, "paperWhiteNits"),
+        ({"masteringPeakNits": 50}, "masteringPeakNits"),
+        ({"masteringPeakNits": 50000}, "masteringPeakNits"),
+        ({"paperWhiteNits": 600, "masteringPeakNits": 500}, "at least paperWhiteNits"),
+        ({"paperWhiteNits": "bright"}, "paperWhiteNits"),
+    ],
+)
+def test_hdr_luminance_policy_is_schema_bounded_server_side(output, message):
+    track = {"id": "t", "version": "v1", "duration": 10.0}
+    recipe = hdr_recipe("t", "v1", "build", **output)
+    with pytest.raises(HTTPException) as exc:
+        server_module.validate_export_submission(
+            {"trackId": "t", "recipe": recipe, "range": None},
+            track,
+            "build",
+            ["hevc-hdr10-1080p120"],
+        )
+    assert exc.value.status_code == 422
+    assert message in exc.value.detail
+
+
+def test_completed_hdr_export_reports_the_colour_metadata_the_worker_wrote(
+    monkeypatch, tmp_path
+):
+    write_track(tmp_path, "fixture-track", duration=0.3)
+    settings = export_settings(tmp_path)
+    renderer_build = settings.renderer_build()
+
+    monkeypatch.setattr(
+        server_module,
+        "probe_export_capabilities",
+        lambda _settings: {
+            "available": True,
+            "profiles": ["hevc-hdr10-1080p120"],
+            "encoders": ["hevc_nvenc"],
+            "tenBitEncoders": ["hevc_nvenc"],
+            "rendererBuild": renderer_build,
+            "transport": "sdr-rgba8-av1-debug",
+            "reason": "",
+        },
+    )
+
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        assert request["output"]["profile"] == "hevc-hdr10-1080p120"
+        output = tmp_path / "exports" / request["output"]["path"].split("\\")[-1]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"fixture-hdr-mp4")
+        return {
+            "type": "result",
+            "frames": 36,
+            "width": 1920,
+            "height": 1080,
+            "audio": True,
+            "codec": "hevc",
+            "transport": "hdr10-p010-compute",
+            "dynamicRange": "hdr10",
+            "pixelFormat": "p010le",
+            "colorPrimaries": "bt2020",
+            "colorTransfer": "smpte2084",
+            "colorMatrix": "bt2020nc",
+            "colorRange": "tv",
+            "paperWhiteNits": 203,
+            "masteringPeakNits": 1000,
+        }
+
+    monkeypatch.setattr(server_module, "run_export_worker", run_worker)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as export_client:
+        track = export_client.get("/tracks").json()["tracks"][0]
+        response = export_client.post(
+            "/exports",
+            json={
+                "trackId": "fixture-track",
+                "recipe": hdr_recipe("fixture-track", track["version"], renderer_build),
+                "range": {"startSeconds": 0, "durationSeconds": 0.3},
+            },
+        )
+        assert response.status_code == 200, response.text
+        queued = response.json()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            completed = export_client.get(f"/jobs/{queued['jobId']}").json()
+            if completed["status"] in {"done", "error"}:
+                break
+            time.sleep(0.01)
+
+    assert completed["status"] == "done", completed
+    assert completed["codec"] == "hevc"
+    assert completed["dynamicRange"] == "hdr10"
+    assert completed["pixelFormat"] == "p010le"
+    assert completed["colorPrimaries"] == "bt2020"
+    assert completed["colorTransfer"] == "smpte2084"
+    assert completed["colorMatrix"] == "bt2020nc"
+    assert completed["colorRange"] == "tv"
+    assert completed["paperWhiteNits"] == 203
+    assert completed["masteringPeakNits"] == 1000
+    assert completed["transport"] == "hdr10-p010-compute"
+    # No content light level is reported anywhere: it is not measured.
+    assert "maxCll" not in completed and "maxFall" not in completed

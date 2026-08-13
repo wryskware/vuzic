@@ -37,10 +37,11 @@ import { MAX_BLOOM_LEVELS, tonemapIndex, type RenderConfig } from './config';
 import postCommonWgsl from './shaders/post-common.wgsl?raw';
 import bloomWgsl from './shaders/bloom.wgsl?raw';
 import gradeWgsl from './shaders/grade.wgsl?raw';
+import gradeHdrWgsl from './shaders/grade-hdr.wgsl?raw';
 import exposureWgsl from './shaders/exposure.wgsl?raw';
 
 /** f32 slots in the params uniform; must match `Post` in post-common.wgsl. */
-const PARAM_WORDS = 20;
+const PARAM_WORDS = 24;
 /** bytes in the auto-exposure state buffer: gain, mean, init, pad */
 const AUTO_BYTES = 16;
 
@@ -213,7 +214,11 @@ export class PostFx {
     const src = (body: string): GPUShaderModule =>
       device.createShaderModule({ code: `${postCommonWgsl}\n${body}` });
     const bloomModule = src(bloomWgsl);
-    const gradeModule = src(gradeWgsl);
+    // The HDR10 export host replaces the final pass outright rather than
+    // post-processing the SDR grade's output: the display transform, the
+    // primaries and the transfer function are all different, and the SDR pass
+    // has already thrown away everything above diffuse white by the time it ends.
+    const gradeModule = src(ctx.hdrOutput ? gradeHdrWgsl : gradeWgsl);
 
     const chainPipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [this.chainLayout],
@@ -245,7 +250,7 @@ export class PostFx {
     });
 
     this.gradePipeline = device.createRenderPipeline({
-      label: 'postfx.grade',
+      label: ctx.hdrOutput ? 'postfx.grade.hdr10' : 'postfx.grade',
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.gradeLayout] }),
       vertex: { module: gradeModule, entryPoint: 'vsMain' },
       fragment: { module: gradeModule, entryPoint: 'fsMain', targets: [{ format: ctx.format }] },
@@ -540,6 +545,13 @@ export class PostFx {
     p[17] = Math.max(g.autoMaxGain, g.autoMinGain);
     p[18] = dt;
     p[19] = 0;
+    // Zero for every SDR host. grade.wgsl never reads these words; grade-hdr.wgsl
+    // reads nothing else to decide what absolute luminance a graded 1.0 means.
+    const hdr = this.ctx?.hdrOutput;
+    p[20] = hdr ? hdr.paperWhiteNits : 0;
+    p[21] = hdr ? hdr.masteringPeakNits : 0;
+    p[22] = hdr ? Math.max(hdr.masteringPeakNits / hdr.paperWhiteNits, 1) : 1;
+    p[23] = 0;
     device.queue.writeBuffer(this.paramsBuf, 0, p);
   }
 

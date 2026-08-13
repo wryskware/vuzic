@@ -42,6 +42,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -51,6 +52,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .context import STAGE_NAMES, Config
 from .export_jobs import (
+    EXPORT_PROFILE_TABLE,
     CancellationHandle,
     ExportCancelled,
     ExportProcessError,
@@ -343,7 +345,15 @@ def analyze_job(store: Store, job: Job, src: Path, work_root: Path) -> None:
 
 
 MAX_EXPORT_RECIPE_BYTES = 8 * 1024 * 1024
-EXPORT_PROFILES = {"av1-sdr-debug-2160p120", "av1-sdr-debug-1080p120"}
+EXPORT_PROFILES = set(EXPORT_PROFILE_TABLE)
+
+#: Absolute-luminance bounds, matching `web/src/export/hdr.ts`.  Python is the
+#: security boundary for these two, so it enforces them even though TypeScript
+#: validates the same recipe twice more downstream.
+MIN_PAPER_WHITE_NITS = 80.0
+MAX_PAPER_WHITE_NITS = 1000.0
+MIN_MASTERING_PEAK_NITS = 100.0
+MAX_MASTERING_PEAK_NITS = 10_000.0
 
 
 def _number(value: Any, name: str, minimum: float, maximum: float) -> float:
@@ -362,6 +372,7 @@ def validate_export_submission(
     payload: Any,
     track: dict[str, Any],
     renderer_build: str,
+    available_profiles: Iterable[str] | None = None,
 ) -> tuple[dict[str, Any], float, float]:
     """Validate the browser-owned envelope before any paths are attached.
 
@@ -397,10 +408,33 @@ def validate_export_submission(
     output = recipe.get("output")
     if not isinstance(output, dict):
         raise HTTPException(422, "recipe.output must be an object")
-    if output.get("profile") not in EXPORT_PROFILES:
+    profile = output.get("profile")
+    if profile not in EXPORT_PROFILES:
         raise HTTPException(422, "unsupported export profile")
-    if output.get("encoder") != "av1_nvenc":
-        raise HTTPException(422, "the SDR/debug path requires av1_nvenc")
+    if available_profiles is not None and profile not in set(available_profiles):
+        # The profile exists in the schema but this renderer cannot serve it —
+        # no 10-bit encoder, say.  Refusing here is the whole point of gating
+        # capabilities: the alternative is failing minutes into a render.
+        raise HTTPException(422, f"profile {profile} is not available on this renderer")
+    encoder, _dynamic_range, _transport = EXPORT_PROFILE_TABLE[str(profile)]
+    if output.get("encoder") != encoder:
+        raise HTTPException(422, f"profile {profile} requires encoder {encoder}")
+    paper_white = _number(
+        output.get("paperWhiteNits"),
+        "recipe.output.paperWhiteNits",
+        MIN_PAPER_WHITE_NITS,
+        MAX_PAPER_WHITE_NITS,
+    )
+    mastering_peak = _number(
+        output.get("masteringPeakNits"),
+        "recipe.output.masteringPeakNits",
+        MIN_MASTERING_PEAK_NITS,
+        MAX_MASTERING_PEAK_NITS,
+    )
+    if mastering_peak < paper_white:
+        raise HTTPException(
+            422, "recipe.output.masteringPeakNits must be at least paperWhiteNits"
+        )
     if not isinstance(recipe.get("sim"), str) or not re.fullmatch(
         r"[A-Za-z0-9._-]+", recipe["sim"]
     ):
@@ -545,21 +579,39 @@ def export_job(
         if not output_path.is_file():
             raise ExportProcessError("worker reported success but output is missing")
         frames = int(result.get("frames") or 0)
-        job.result.update(
-            {
-                "filename": job.result["filename"],
-                "byteSize": output_path.stat().st_size,
-                "duration": frames / 120,
-                "width": int(result.get("width") or 0),
-                "height": int(result.get("height") or 0),
-                "frameRate": 120,
-                "frames": frames,
-                "codec": "av1",
-                "audio": bool(result.get("audio")),
-                "transport": str(result.get("transport") or "sdr-rgba8-av1-debug"),
-                "downloadUrl": f"/exports/{job.export_id}/download",
-            }
-        )
+        metadata: dict[str, Any] = {
+            "filename": job.result["filename"],
+            "byteSize": output_path.stat().st_size,
+            "duration": frames / 120,
+            "width": int(result.get("width") or 0),
+            "height": int(result.get("height") or 0),
+            "frameRate": 120,
+            "frames": frames,
+            "codec": str(result.get("codec") or "av1"),
+            "audio": bool(result.get("audio")),
+            "transport": str(result.get("transport") or "sdr-rgba8-av1-debug"),
+            "downloadUrl": f"/exports/{job.export_id}/download",
+        }
+        # The colour summary is reported by the worker that chose the encoder
+        # arguments, not re-derived here, so a completed job describes the file
+        # that was actually written rather than the one this module expected.
+        if result.get("dynamicRange") == "hdr10":
+            metadata.update(
+                {
+                    "dynamicRange": "hdr10",
+                    "pixelFormat": str(result.get("pixelFormat") or "p010le"),
+                    "colorPrimaries": str(result.get("colorPrimaries") or ""),
+                    "colorTransfer": str(result.get("colorTransfer") or ""),
+                    "colorMatrix": str(result.get("colorMatrix") or ""),
+                    "colorRange": str(result.get("colorRange") or ""),
+                    "paperWhiteNits": float(result.get("paperWhiteNits") or 0),
+                    "masteringPeakNits": float(result.get("masteringPeakNits") or 0),
+                }
+            )
+        else:
+            metadata["dynamicRange"] = "sdr"
+            metadata["pixelFormat"] = str(result.get("pixelFormat") or "yuv420p")
+        job.result.update(metadata)
         job.message = f"wrote {job.result['filename']}"
         succeeded = True
     except ExportCancelled:
@@ -714,6 +766,7 @@ def create_app(
             payload,
             entry,
             str(capabilities.get("rendererBuild") or ""),
+            capabilities.get("profiles") or [],
         )
         audio = directory / "audio.wav"
         if not audio.is_file():

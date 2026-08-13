@@ -139,7 +139,7 @@ test('the UI defaults to recommended 1080p and offers honest 1080p and 4K SDR ch
   assert.deepEqual(SDR_DEBUG_PROFILES, [
     {
       profile: 'av1-sdr-debug-1080p120',
-      label: '1080p / 120 fps / SDR debug (recommended)',
+      label: '1080p / 120 fps / SDR debug',
     },
     {
       profile: 'av1-sdr-debug-2160p120',
