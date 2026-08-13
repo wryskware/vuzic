@@ -12,7 +12,10 @@ export interface ExportCapabilities {
   reason: string;
 }
 
-export type ExportJobStatus = 'queued' | 'running' | 'done' | 'error';
+export type ExportJobStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
+
+/** Statuses a job never leaves; `watch` stops here and the busy slot reopens. */
+export const TERMINAL_EXPORT_STATUSES: readonly ExportJobStatus[] = ['done', 'error', 'cancelled'];
 
 /** Flat `/jobs/{id}` response; completion metadata is additive. */
 export interface ExportJob {
@@ -43,6 +46,13 @@ export interface LocalExportClient {
   capabilities(): Promise<ExportCapabilities>;
   start(trackId: string, recipe: ExportRecipe): Promise<ExportJob>;
   job(jobId: string): Promise<ExportJob>;
+  /**
+   * Ask the server to cancel a job. Returns the job as the server then sees it —
+   * `cancelled` for a queued job, still `running` for one whose worker is being
+   * stopped, or an untouched `done` for a job that beat the request. Cancelling
+   * an already-terminal job is not an error.
+   */
+  cancel(jobId: string): Promise<ExportJob>;
   watch(
     jobId: string,
     onUpdate: (job: ExportJob) => void,
@@ -86,7 +96,7 @@ function parseCapabilities(value: unknown): ExportCapabilities {
 function parseJob(value: unknown): ExportJob {
   const row = object(value, 'export job');
   const status = row['status'];
-  if (!['queued', 'running', 'done', 'error'].includes(status as string)) {
+  if (!['queued', 'running', 'done', 'error', 'cancelled'].includes(status as string)) {
     throw new Error('export job: invalid status');
   }
   if (row['kind'] !== 'export') throw new Error('export job: response is not an export job');
@@ -152,6 +162,9 @@ export function createLocalExportClient(
     async job(jobId: string): Promise<ExportJob> {
       return parseJob(await request(`/jobs/${encodeURIComponent(jobId)}`));
     },
+    async cancel(jobId: string): Promise<ExportJob> {
+      return parseJob(await request(`/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' }));
+    },
     async watch(jobId, onUpdate, options = {}): Promise<ExportJob> {
       const intervalMs = options.intervalMs ?? 1500;
       const wait = options.wait ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -159,7 +172,7 @@ export function createLocalExportClient(
         await wait(intervalMs);
         const current = await this.job(jobId);
         onUpdate(current);
-        if (current.status === 'done' || current.status === 'error') return current;
+        if (TERMINAL_EXPORT_STATUSES.includes(current.status)) return current;
       }
     },
     downloadUrl(path: string): string {

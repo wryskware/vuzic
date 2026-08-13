@@ -8,7 +8,14 @@ import type { ExportCapabilities, ExportJob, LocalExportClient } from './client.
  * job response; every other phase mirrors an `ExportJobStatus`, so a panel never
  * has to know whether a value came from the POST or from a poll.
  */
-export type ExportPhase = 'idle' | 'submitting' | 'queued' | 'running' | 'done' | 'error';
+export type ExportPhase =
+  | 'idle'
+  | 'submitting'
+  | 'queued'
+  | 'running'
+  | 'done'
+  | 'error'
+  | 'cancelled';
 
 export interface ExportDownload {
   /** absolute, already resolved through the client's `downloadUrl` */
@@ -64,6 +71,19 @@ export interface ExportSession {
    * instead of a panel-local message that the next rebuild loses.
    */
   start(trackId: string, capture: () => ExportRecipe): boolean;
+  /**
+   * Ask the server to stop the job holding the slot.
+   *
+   * Returns `false` when there is nothing to cancel. The slot is *not* released
+   * here: it reopens when the poll delivers the terminal `cancelled` state, so
+   * a panel cannot start a second render while the first worker is still being
+   * torn down — and so the cancelled state is replayable to a panel built after
+   * it, exactly like `done` and `error`.
+   *
+   * A cancel clicked before the server has answered the submission is
+   * remembered and applied as soon as the job id exists.
+   */
+  cancel(): boolean;
 }
 
 export interface ExportSessionOptions {
@@ -105,6 +125,8 @@ export function createExportSession(
   const listeners = new Set<(state: ExportSessionState) => void>();
   let state: ExportSessionState = IDLE;
   let probe: Promise<ExportCapabilities> | null = null;
+  /** A cancel that arrived while the submission was still in flight. */
+  let cancelPending = false;
 
   const emit = (next: ExportSessionState): void => {
     state = next;
@@ -125,6 +147,14 @@ export function createExportSession(
       ? { url: client.downloadUrl(job.downloadUrl), filename: job.filename ?? '' }
       : null,
   });
+
+  const requestCancel = (jobId: string): void => {
+    void client.cancel(jobId).catch((error: unknown) => {
+      // The job keeps running and the slot stays held: the button is still
+      // there, so the honest recovery is to let the user press it again.
+      console.error('export cancel failed', error);
+    });
+  };
 
   const fail = (text: string): void => {
     emit({ ...IDLE, phase: 'error', error: text, job: state.job });
@@ -154,6 +184,7 @@ export function createExportSession(
     },
     start(trackId, capture): boolean {
       if (state.busy) return false;
+      cancelPending = false;
       emit({ ...IDLE, phase: 'submitting', busy: true, stage: 'submitting' });
       let recipe: ExportRecipe;
       try {
@@ -164,6 +195,10 @@ export function createExportSession(
       }
       void client.start(trackId, recipe).then(async (queued) => {
         emit(fromJob(queued));
+        if (cancelPending) {
+          cancelPending = false;
+          requestCancel(queued.jobId);
+        }
         const completed = await client.watch(
           queued.jobId,
           (job) => emit(fromJob(job)),
@@ -174,6 +209,20 @@ export function createExportSession(
         fail(message(error));
         console.error('video export failed', error);
       });
+      return true;
+    },
+    cancel(): boolean {
+      if (!state.busy) return false;
+      const jobId = state.job?.jobId;
+      if (jobId === undefined) {
+        // Still submitting: the job exists on the server or is about to, and
+        // `start` applies this the moment it learns the id.
+        cancelPending = true;
+      } else {
+        requestCancel(jobId);
+      }
+      // Advisory only — `busy` is untouched, so this cannot open the slot early.
+      emit({ ...state, stage: 'cancelling' });
       return true;
     },
   };

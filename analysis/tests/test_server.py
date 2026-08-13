@@ -291,7 +291,7 @@ def test_export_job_runs_with_server_owned_paths_and_downloads(monkeypatch, tmp_
 
     requests = []
 
-    def run_worker(actual_settings, request_path, diagnostic_path, on_message):
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
         request = json.loads(request_path.read_text(encoding="utf-8"))
         requests.append(
             {
@@ -363,6 +363,238 @@ def test_export_job_runs_with_server_owned_paths_and_downloads(monkeypatch, tmp_
     assert not actual_settings.worker_path.exists()
     assert not Path(request["audioPath"]).exists()
     assert not Path(request["timeline"]["jsonPath"]).exists()
+
+
+def export_app(monkeypatch, tmp_path, run_worker):
+    """A server whose export path is real except for the native worker itself.
+
+    Everything cancellation touches — validation, snapshotting, the single-slot
+    queue, terminal-state bookkeeping, the routes — is the production code. Only
+    the process at the bottom is substituted, and each test substitutes a
+    different one to stage the moment it cares about.
+    """
+
+    write_track(tmp_path, "fixture-track", duration=0.3)
+    settings = export_settings(tmp_path)
+    renderer_build = settings.renderer_build()
+    monkeypatch.setattr(
+        server_module,
+        "probe_export_capabilities",
+        lambda _settings: {
+            "available": True,
+            "profiles": ["av1-sdr-debug-1080p120"],
+            "encoders": ["av1_nvenc"],
+            "rendererBuild": renderer_build,
+            "transport": "sdr-rgba8-av1-debug",
+            "reason": "",
+        },
+    )
+    monkeypatch.setattr(server_module, "run_export_worker", run_worker)
+    return settings, renderer_build
+
+
+def submit_export(client, renderer_build):
+    track = client.get("/tracks").json()["tracks"][0]
+    response = client.post(
+        "/exports",
+        json={
+            "trackId": "fixture-track",
+            "recipe": export_recipe("fixture-track", track["version"], renderer_build),
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def wait_for_status(client, job_id, statuses, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = client.get(f"/jobs/{job_id}").json()
+        if current["status"] in statuses:
+            return current
+        time.sleep(0.01)
+    raise AssertionError(f"job {job_id} never reached {statuses}: {current}")
+
+
+def test_cancelling_a_queued_export_never_starts_its_worker(monkeypatch, tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
+        calls.append(request_path)
+        started.set()
+        release.wait(10)
+        raise server_module.ExportProcessError("first job abandoned")
+
+    settings, renderer_build = export_app(monkeypatch, tmp_path, run_worker)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as client:
+        blocking = submit_export(client, renderer_build)
+        assert started.wait(5), "the first job never occupied the single slot"
+        queued = submit_export(client, blocking["rendererBuild"])
+        assert client.get(f"/jobs/{queued['jobId']}").json()["status"] == "queued"
+
+        cancelled = client.delete(f"/jobs/{queued['jobId']}")
+        assert cancelled.status_code == 200, cancelled.text
+        # Terminal *immediately*: a job stuck behind a long render must not read
+        # as queued until the queue reaches it, or the panel polls forever.
+        assert cancelled.json()["status"] == "cancelled"
+        assert client.get(f"/jobs/{queued['jobId']}").json()["status"] == "cancelled"
+
+        private = tmp_path / ".work" / f"export-{queued['jobId']}"
+        assert not (private / "request.json").exists()
+        assert not (private / "audio.wav").exists()
+        assert not (private / "timeline.bin").exists()
+        assert not (settings.web_dir / ".export-work" / f"export-{queued['jobId']}").exists()
+
+        release.set()
+        wait_for_status(client, blocking["jobId"], {"error"})
+        # The queue moved on without ever handing the cancelled job to a worker.
+        assert len(calls) == 1
+        assert client.get(f"/jobs/{queued['jobId']}").json()["status"] == "cancelled"
+        assert client.get(f"/exports/{queued['exportId']}/download").status_code == 404
+
+
+def test_cancelling_a_running_export_ends_cancelled_and_cleans_partial_output(
+    monkeypatch, tmp_path
+):
+    running = threading.Event()
+
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
+        on_message({"type": "ready", "adapter": "Fixture GPU"})
+        on_message({"type": "progress", "stage": "render", "frame": 5, "frames": 100})
+        # A half-written render, exactly as the native worker leaves it if it
+        # dies before its own cleanup finishes. The server is the backstop for
+        # both names, so both are here to be cleaned up.
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        output = Path(request["output"]["path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"half-an-mp4")
+        Path(f"{output}.partial").write_bytes(b"half-an-mp4")
+        diagnostic_path.write_text("worker diagnostics\n", encoding="utf-8")
+        running.set()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if cancel is not None and cancel.cancelled:
+                raise server_module.ExportCancelled("export cancelled by SIGBREAK")
+            time.sleep(0.01)
+        raise AssertionError("the cancel never reached the worker")
+
+    settings, renderer_build = export_app(monkeypatch, tmp_path, run_worker)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as client:
+        job = submit_export(client, renderer_build)
+        assert running.wait(5)
+        response = client.delete(f"/jobs/{job['jobId']}")
+        assert response.status_code == 200, response.text
+
+        final = wait_for_status(client, job["jobId"], {"cancelled", "done", "error"})
+        assert final["status"] == "cancelled", final
+        assert "downloadUrl" not in final
+        assert client.get(f"/exports/{job['exportId']}/download").status_code == 404
+        assert client.get(f"/exports/{job['exportId']}").json()["status"] == "cancelled"
+
+    output = settings.output_dir / job["filename"]
+    assert not output.exists()
+    assert not Path(f"{output}.partial").exists()
+    # Same residue as any other terminal state: snapshots gone, log kept.
+    private = tmp_path / ".work" / f"export-{job['jobId']}"
+    assert not (private / "request.json").exists()
+    assert not (private / "audio.wav").exists()
+    assert (private / "worker.log").read_text(encoding="utf-8") == "worker diagnostics\n"
+
+
+def test_cancelling_twice_is_a_no_op_and_unknown_jobs_are_404(monkeypatch, tmp_path):
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if cancel is not None and cancel.cancelled:
+                raise server_module.ExportCancelled("cancelled")
+            time.sleep(0.01)
+        raise AssertionError("the cancel never reached the worker")
+
+    settings, renderer_build = export_app(monkeypatch, tmp_path, run_worker)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as client:
+        assert client.delete("/jobs/does-not-exist").status_code == 404
+        job = submit_export(client, renderer_build)
+        first = client.delete(f"/jobs/{job['jobId']}")
+        assert first.status_code == 200
+        final = wait_for_status(client, job["jobId"], {"cancelled", "error", "done"})
+        assert final["status"] == "cancelled"
+        # Both a repeat while it was still stopping and one long after it
+        # stopped answer with the job itself rather than an error.
+        second = client.delete(f"/jobs/{job['jobId']}")
+        assert second.status_code == 200
+        assert second.json()["status"] == "cancelled"
+        assert client.get(f"/jobs/{job['jobId']}").json() == second.json()
+
+
+def test_a_cancel_that_loses_the_race_leaves_a_finished_export_downloadable(
+    monkeypatch, tmp_path
+):
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        output = Path(request["output"]["path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"finished-mp4")
+        return {"type": "result", "frames": 36, "width": 1920, "height": 1080, "audio": True}
+
+    settings, renderer_build = export_app(monkeypatch, tmp_path, run_worker)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as client:
+        job = submit_export(client, renderer_build)
+        done = wait_for_status(client, job["jobId"], {"done", "error"})
+        assert done["status"] == "done", done
+
+        late = client.delete(f"/jobs/{job['jobId']}")
+        # The job finished first, so it keeps its status and its file. A cancel
+        # is a request to stop something, not a request to delete a result.
+        assert late.status_code == 200
+        assert late.json()["status"] == "done"
+        download = client.get(f"/exports/{job['exportId']}/download")
+        assert download.status_code == 200
+        assert download.content == b"finished-mp4"
+
+
+def test_a_worker_that_finishes_after_the_cancel_still_ends_cancelled(monkeypatch, tmp_path):
+    # The other half of the race, inside the job rather than in front of it: the
+    # DELETE is accepted while the worker is running, and the worker then
+    # succeeds anyway. Once a live job has been cancelled the answer is
+    # `cancelled` and there is no file — otherwise the endpoint's own response
+    # would have lied about what it just did.
+    cancel_seen = threading.Event()
+
+    def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
+        on_message({"type": "ready", "adapter": "Fixture GPU"})
+        assert cancel_seen.wait(10)
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        output = Path(request["output"]["path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"finished-anyway")
+        return {"type": "result", "frames": 36, "width": 1920, "height": 1080, "audio": True}
+
+    settings, renderer_build = export_app(monkeypatch, tmp_path, run_worker)
+    with TestClient(create_app(tmp_path, export_settings=settings)) as client:
+        job = submit_export(client, renderer_build)
+        wait_for_status(client, job["jobId"], {"running"})
+        assert client.delete(f"/jobs/{job['jobId']}").status_code == 200
+        cancel_seen.set()
+        final = wait_for_status(client, job["jobId"], {"cancelled", "done", "error"})
+        assert final["status"] == "cancelled", final
+        assert client.get(f"/exports/{job['exportId']}/download").status_code == 404
+    assert not (settings.output_dir / job["filename"]).exists()
+
+
+def test_an_analysis_job_cannot_be_cancelled_through_the_export_endpoint(monkeypatch, tmp_path):
+    # Analysis cancellation is a different problem — the pipeline is one
+    # in-process burst with no child to signal — so the endpoint says so
+    # instead of pretending.
+    monkeypatch.setattr(server_module, "analyze_job", lambda *args: None)
+    with TestClient(create_app(tmp_path)) as analysis_client:
+        job = analysis_client.post(
+            "/analyze", files={"file": ("fixture.wav", WAV_HEAD + b"\x00" * 32, "audio/wav")}
+        ).json()
+        response = analysis_client.delete(f"/jobs/{job['jobId']}")
+    assert response.status_code == 409
+    assert "export" in response.json()["detail"]
 
 
 def test_export_rejects_stale_track_or_renderer(monkeypatch, tmp_path):

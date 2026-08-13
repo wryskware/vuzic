@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import type { ExportCapabilities, ExportJob, LocalExportClient } from '../src/export/client.ts';
 import { createExportSession, type ExportSessionState } from '../src/export/session.ts';
 import type { ExportRecipe } from '../src/runtime/recipe.ts';
-import { exportSessionLabel } from '../src/ui/export-panel.ts';
+import { exportCancelButton, exportSessionLabel } from '../src/ui/export-panel.ts';
 
 const RECIPE = { version: 3, rendererBuild: 'build-1' } as ExportRecipe;
 
@@ -32,8 +32,10 @@ function job(status: ExportJob['status'], progress: number, extra: Partial<Expor
 function fakeClient(updates: ExportJob[], options: {
   start?: () => Promise<ExportJob>;
   capabilities?: () => Promise<ExportCapabilities>;
-} = {}): { client: LocalExportClient; step: () => Promise<void> } {
+  cancel?: (jobId: string) => Promise<ExportJob>;
+} = {}): { client: LocalExportClient; step: () => Promise<void>; cancels: string[] } {
   const pending = [...updates];
+  const cancels: string[] = [];
   let release: (() => void) | null = null;
   const gate = (): Promise<void> => new Promise((resolve) => {
     release = resolve;
@@ -45,6 +47,10 @@ function fakeClient(updates: ExportJob[], options: {
     start: options.start ?? (async () => job('queued', 0)),
     async job() {
       throw new Error('not used');
+    },
+    async cancel(jobId: string) {
+      cancels.push(jobId);
+      return options.cancel ? options.cancel(jobId) : job('running', 0.5);
     },
     async watch(_jobId, onUpdate) {
       for (;;) {
@@ -61,6 +67,7 @@ function fakeClient(updates: ExportJob[], options: {
   };
   return {
     client,
+    cancels,
     /** Let exactly one poll through, then drain the emits it caused. */
     step: async (): Promise<void> => {
       for (let attempt = 0; attempt < 50 && !release; attempt += 1) await settle();
@@ -230,6 +237,138 @@ test('unsubscribing stops notifications for that listener only', async () => {
   assert.equal(kept.at(-1)?.phase, 'done');
   // Unsubscribing twice is harmless.
   unsubscribe();
+});
+
+const CANCELLED = job('cancelled', 0.5, { stage: 'cancelled', message: 'cancelled' });
+
+test('a cancel holds the slot until the server confirms, then releases it', async () => {
+  const fake = fakeClient([job('running', 0.5), CANCELLED]);
+  const session = createExportSession(fake.client);
+  const seen: ExportSessionState[] = [];
+  session.subscribe((state) => seen.push(state));
+
+  assert.equal(session.cancel(), false, 'nothing to cancel while idle');
+  session.start('pink-loop', () => RECIPE);
+  await settle();
+  await fake.step();
+  assert.equal(session.state().phase, 'running');
+
+  assert.equal(session.cancel(), true);
+  await settle();
+  assert.deepEqual(fake.cancels, ['job-1']);
+  // Still busy: the worker is being torn down, and a second render must not
+  // start on top of it.
+  assert.equal(session.state().busy, true);
+  assert.equal(session.state().stage, 'cancelling');
+  assert.equal(exportSessionLabel(session.state()), 'cancelling…');
+
+  await fake.step();
+  const final = session.state();
+  assert.equal(final.phase, 'cancelled');
+  assert.equal(final.busy, false);
+  assert.equal(final.error, '');
+  assert.equal(final.download, null);
+  assert.equal(exportSessionLabel(final), 'cancelled');
+  // The slot is free again.
+  assert.equal(session.start('pink-loop', () => RECIPE), true);
+});
+
+test('a panel built after a cancellation replays the cancelled state', async () => {
+  const fake = fakeClient([CANCELLED]);
+  const session = createExportSession(fake.client);
+  session.start('pink-loop', () => RECIPE);
+  await settle();
+  session.cancel();
+  await fake.step();
+
+  const late: ExportSessionState[] = [];
+  session.subscribe((state) => late.push(state));
+  assert.equal(late.length, 1);
+  assert.equal(late[0]?.phase, 'cancelled');
+  assert.equal(late[0]?.busy, false);
+  assert.equal(late[0]?.download, null);
+  assert.equal(exportSessionLabel(late[0]!), 'cancelled');
+});
+
+test('a cancel clicked before the job id exists is applied as soon as it does', async () => {
+  let release: ((job: ExportJob) => void) | null = null;
+  const fake = fakeClient([CANCELLED], {
+    start: () => new Promise<ExportJob>((resolve) => {
+      release = resolve;
+    }),
+  });
+  const session = createExportSession(fake.client);
+  session.start('pink-loop', () => RECIPE);
+  await settle();
+  assert.equal(session.state().phase, 'submitting');
+
+  assert.equal(session.cancel(), true);
+  assert.deepEqual(fake.cancels, [], 'there is no job to cancel yet');
+  release!(job('queued', 0));
+  await settle();
+  assert.deepEqual(fake.cancels, ['job-1'], 'the deferred cancel fired on the queued job');
+
+  await fake.step();
+  assert.equal(session.state().phase, 'cancelled');
+  assert.equal(session.state().busy, false);
+});
+
+test('a cancel that the server refuses leaves the job alone and the slot held', async () => {
+  const fake = fakeClient([job('running', 0.6), DONE], {
+    cancel: async () => {
+      throw new Error('no such job');
+    },
+  });
+  const session = createExportSession(fake.client);
+  session.start('pink-loop', () => RECIPE);
+  await settle();
+  await fake.step();
+  session.cancel();
+  await settle();
+  assert.equal(session.state().busy, true);
+  assert.equal(session.state().phase, 'running');
+
+  // The render was never interrupted, so it still completes normally.
+  await fake.step();
+  assert.equal(session.state().phase, 'done');
+});
+
+test('a second cancel while the first is in flight is refused by the panel, not the server', async () => {
+  const fake = fakeClient([job('running', 0.5), CANCELLED]);
+  const session = createExportSession(fake.client);
+  session.start('pink-loop', () => RECIPE);
+  await settle();
+  await fake.step();
+  session.cancel();
+  await settle();
+  // The button disables itself on the 'cancelling' stage rather than sending a
+  // second DELETE the server would only have to absorb.
+  assert.equal(session.state().stage, 'cancelling');
+  assert.equal(session.cancel(), true);
+  assert.deepEqual(fake.cancels, ['job-1', 'job-1'], 'a deliberate retry still reaches the server');
+});
+
+test('the cancel button appears exactly for the span in which the slot is held', async () => {
+  const fake = fakeClient([job('running', 0.5), CANCELLED]);
+  const session = createExportSession(fake.client);
+  const buttons: { hidden: boolean; disabled: boolean }[] = [];
+  session.subscribe((state) => buttons.push(exportCancelButton(state)));
+
+  assert.deepEqual(buttons.at(-1), { hidden: true, disabled: false }, 'idle');
+  session.start('pink-loop', () => RECIPE);
+  assert.deepEqual(buttons.at(-1), { hidden: false, disabled: false }, 'submitting');
+  await settle();
+  assert.deepEqual(buttons.at(-1), { hidden: false, disabled: false }, 'queued');
+  await fake.step();
+  assert.deepEqual(buttons.at(-1), { hidden: false, disabled: false }, 'running');
+  session.cancel();
+  assert.deepEqual(buttons.at(-1), { hidden: false, disabled: true }, 'cancelling');
+  await fake.step();
+  assert.deepEqual(buttons.at(-1), { hidden: true, disabled: false }, 'cancelled');
+
+  // And a render that completes normally never shows it again either.
+  const second = createExportSession(fakeClient([DONE]).client);
+  assert.deepEqual(exportCancelButton(second.state()), { hidden: true, disabled: false });
 });
 
 test('capabilities are probed once, and a failed probe is retried by the next panel', async () => {

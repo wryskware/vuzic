@@ -51,6 +51,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .context import STAGE_NAMES, Config
 from .export_jobs import (
+    CancellationHandle,
+    ExportCancelled,
     ExportProcessError,
     ExportSettings,
     probe_export_capabilities,
@@ -79,8 +81,12 @@ SERVED_FILES = {
     "run.json": "application/json",
 }
 
-JobStatus = Literal["queued", "running", "done", "error"]
+JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 JobKind = Literal["analysis", "export"]
+
+#: Once a job reaches one of these it never moves again, and every caller —
+#: the poll loop, the download route, `DELETE /jobs/{id}` — keys off that.
+TERMINAL_STATUSES = frozenset({"done", "error", "cancelled"})
 
 
 def sniff_audio(head: bytes, suffix: str) -> bool:
@@ -136,6 +142,18 @@ class Job:
     #: is "how far through the list", not "how far through the work".
     progress: float = 0.0
     result: dict[str, Any] = field(default_factory=dict)
+    #: Guards the three fields below and the status transitions that read them.
+    #: Narrow on purpose: it is only ever held for a few assignments, never
+    #: across the worker or a `terminate`, so it cannot invert against the
+    #: logging handler that also writes `stage`/`message`.
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    #: Latched by `DELETE /jobs/{id}`. A running job that carries this ends
+    #: `cancelled` even if the worker happened to succeed in the same instant.
+    cancel_requested: bool = False
+    #: True once the export body has taken the job off the queue. Before it, a
+    #: cancel is a pure queue removal; after it, a cancel must reach a process.
+    started: bool = False
+    cancel_handle: CancellationHandle | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         value = {
@@ -198,6 +216,10 @@ class Store:
     strict: bool = False
     jobs: dict[str, Job] = field(default_factory=dict)
     exports: dict[str, Job] = field(default_factory=dict)
+    #: `job id -> (snapshotted settings, request path)`, so a cancel arriving
+    #: before the worker body runs can remove exactly the snapshots that body
+    #: would have removed.
+    export_inputs: dict[str, tuple[ExportSettings, Path]] = field(default_factory=dict)
     export_settings: ExportSettings | None = None
     export_capabilities: dict[str, Any] | None = None
     export_capabilities_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -429,6 +451,58 @@ def snapshot_export_inputs(
     return manifest, binary, audio, job_settings
 
 
+def discard_export_snapshots(settings: ExportSettings, request_path: Path) -> None:
+    """Drop every private snapshot a job took, keeping only its bounded log.
+
+    Shared by the normal terminal path and by cancelling a job that never
+    started, so a queued cancel leaves exactly the same residue on disk as a
+    completed or failed render does.
+    """
+
+    for name in ("request.json", "timeline.json", "timeline.bin", "audio.wav"):
+        (request_path.parent / name).unlink(missing_ok=True)
+    settings.worker_path.unlink(missing_ok=True)
+    try:
+        settings.worker_path.parent.rmdir()
+        settings.worker_path.parent.parent.rmdir()
+    except OSError:
+        pass
+
+
+def cancel_export_job(job: Job, settings: ExportSettings, request_path: Path) -> dict[str, Any]:
+    """Cancel one export job.  Idempotent, and safe against natural completion.
+
+    The lock decides one thing: whether this call is the one that flips the job
+    out of a live state.  A job that already reached a terminal status wins —
+    a render that finished a millisecond before the click keeps its file and
+    stays `done` — and everything after that point is cleanup that a second
+    caller would simply repeat harmlessly.
+
+    Termination happens *outside* the lock because it blocks for up to the
+    cooperative grace period, and nothing else may be blocked behind that.
+    """
+
+    with job.lock:
+        if job.status in TERMINAL_STATUSES:
+            return job.as_dict()
+        job.cancel_requested = True
+        handle = job.cancel_handle
+        never_started = not job.started
+        if never_started:
+            # The worker body will find `cancel_requested` and return without
+            # touching status, so this call owns the whole terminal transition.
+            job.status, job.stage = "cancelled", "cancelled"
+            job.message = "cancelled before the render started"
+        else:
+            job.stage, job.message = "cancelling", "stopping the native worker"
+    if never_started:
+        discard_export_snapshots(settings, request_path)
+    elif handle is not None:
+        handle.cancel()
+    log.info("export job %s: cancelled", job.id)
+    return job.as_dict()
+
+
 def export_job(
     settings: ExportSettings,
     job: Job,
@@ -451,11 +525,23 @@ def export_job(
         elif kind == "error":
             job.message = str(message.get("message") or "worker failed")[:200]
 
+    with job.lock:
+        if job.cancel_requested:
+            # Cancelled while queued: the endpoint already published the
+            # terminal state and removed the snapshots, and the worker must
+            # never start.  Nothing left for this slot to do.
+            return
+        job.started = True
+        job.cancel_handle = handle = CancellationHandle()
+        job.status, job.stage, job.message = "running", "startup", "starting native worker"
+
     succeeded = False
+    cancelled = False
     terminal_error = ""
     try:
-        job.status, job.stage, job.message = "running", "startup", "starting native worker"
-        result = run_export_worker(settings, request_path, diagnostic_path, on_message)
+        result = run_export_worker(
+            settings, request_path, diagnostic_path, on_message, cancel=handle
+        )
         if not output_path.is_file():
             raise ExportProcessError("worker reported success but output is missing")
         frames = int(result.get("frames") or 0)
@@ -476,22 +562,32 @@ def export_job(
         )
         job.message = f"wrote {job.result['filename']}"
         succeeded = True
+    except ExportCancelled:
+        log.info("export job %s: worker stopped for cancellation", job.id)
+        cancelled = True
     except Exception as exc:  # noqa: BLE001 — one failed export must not stop the server
         log.exception("export job %s failed", job.id)
         terminal_error = f"{type(exc).__name__}: {exc}"
     finally:
         # The bounded worker log is the only retained private diagnostic. Track,
         # audio, worker, and request snapshots can be large and are never public.
-        for name in ("request.json", "timeline.json", "timeline.bin", "audio.wav"):
-            (request_path.parent / name).unlink(missing_ok=True)
-        settings.worker_path.unlink(missing_ok=True)
-        try:
-            settings.worker_path.parent.rmdir()
-            settings.worker_path.parent.parent.rmdir()
-        except OSError:
-            pass
+        discard_export_snapshots(settings, request_path)
+    # A cancel that lands in the sliver between the worker's last frame and this
+    # line still wins: the job the user cancelled must not resolve to a
+    # downloadable file, so the finished output goes with it. The other side of
+    # that race — cancel arriving after this job is already `done` — is refused
+    # by the endpoint, which is why the resolution is unambiguous either way.
+    if job.cancel_requested:
+        succeeded, cancelled = False, True
+    if cancelled:
+        output_path.unlink(missing_ok=True)
+        Path(f"{output_path}.partial").unlink(missing_ok=True)
     if succeeded:
         job.status, job.stage, job.progress = "done", "done", 1.0
+    elif cancelled:
+        job.status, job.stage = "cancelled", "cancelled"
+        job.message = "cancelled"
+        job.result.pop("downloadUrl", None)
     else:
         job.status, job.stage, job.error = "error", "error", terminal_error
 
@@ -519,7 +615,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -707,6 +803,7 @@ def create_app(
         )
         store.jobs[job.id] = job
         store.exports[export_id] = job
+        store.export_inputs[job.id] = (job_settings, request_path)
         store.pool.submit(
             export_job,
             job_settings,
@@ -730,6 +827,8 @@ def create_app(
         job = store.exports.get(export_id)
         if job is None:
             raise HTTPException(404, "no such export")
+        if job.status == "cancelled":
+            raise HTTPException(404, "export was cancelled; there is no file")
         if job.status != "done":
             raise HTTPException(409, "export is not complete")
         settings = store.export_settings
@@ -745,6 +844,27 @@ def create_app(
         if job is None:
             raise HTTPException(404, "no such job")
         return job.as_dict()
+
+    @app.delete("/jobs/{job_id}")
+    async def cancel_job(job_id: str) -> dict[str, Any]:
+        """Cancel an export job. Idempotent, and never blocks the event loop.
+
+        An unknown job is a 404 and a terminal one is simply itself again, so a
+        double click, a retry after a dropped response, and a cancel that lost
+        the race to completion all produce the same untroubled answer.
+        """
+
+        job = store.jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "no such job")
+        if job.kind != "export":
+            raise HTTPException(409, "only export jobs can be cancelled")
+        inputs = store.export_inputs.get(job_id)
+        if inputs is None:
+            raise HTTPException(500, "export job has no recorded inputs")
+        # Off the loop: this may spend the cooperative grace period waiting for
+        # a worker to put its FFmpeg down.
+        return await run_in_threadpool(cancel_export_job, job, inputs[0], inputs[1])
 
     return app
 

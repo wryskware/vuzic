@@ -96,6 +96,37 @@ test('watch polls the flat job response through completion and reports every upd
   );
 });
 
+test('cancel is a DELETE on the job with no body, and watch stops on cancelled', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const responses = [
+    { ...job('running', 0.5), status: 'running' },
+    { ...job('cancelled', 0.5), status: 'cancelled', stage: 'cancelled' },
+  ];
+  const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: String(url), ...(init === undefined ? {} : { init }) });
+    if (init?.method === 'DELETE') return json({ ...job('running', 0.5), stage: 'cancelling' });
+    return json(responses.shift());
+  }) as typeof fetch;
+  const client = createLocalExportClient(fetcher, 'http://localhost:8765');
+
+  const acknowledged = await client.cancel('job 1/2');
+  assert.equal(requests[0]?.url, 'http://localhost:8765/jobs/job%201%2F2');
+  assert.equal(requests[0]?.init?.method, 'DELETE');
+  assert.equal(requests[0]?.init?.body, undefined);
+  // The DELETE answers with the job as it stands, not with a bare 204: the
+  // panel needs to know whether the slot is already free.
+  assert.equal(acknowledged.status, 'running');
+  assert.equal(acknowledged.stage, 'cancelling');
+
+  const updates: ExportJob[] = [];
+  const final = await client.watch('job-1', (value) => updates.push(value), {
+    intervalMs: 0,
+    wait: async () => {},
+  });
+  assert.deepEqual(updates.map((value) => value.status), ['running', 'cancelled']);
+  assert.equal(final.status, 'cancelled');
+});
+
 test('server error detail is surfaced instead of a generic failed fetch', async () => {
   const fetcher = (async () => json({ detail: 'renderer build changed' }, 409)) as typeof fetch;
   const client = createLocalExportClient(fetcher, 'http://localhost:8765');

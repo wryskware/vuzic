@@ -6,6 +6,7 @@ import type { ExportRecipe } from '../runtime/recipe.ts';
 import type { PanelContainer } from './panel.ts';
 
 export const EXPORT_BUTTON_LABEL = 'Render video with current settings';
+export const EXPORT_CANCEL_LABEL = 'Cancel render';
 export const SDR_DEBUG_PROFILES = [
   {
     profile: 'av1-sdr-debug-1080p120',
@@ -69,6 +70,10 @@ export function exportProgressLabel(job: ExportJob): string {
  * only thing a rebuilt panel has to reproduce exactly from replayed state.
  */
 export function exportSessionLabel(state: ExportSessionState): string | null {
+  // Checked before the phase: a cancel that has been sent but not yet confirmed
+  // is still a queued/running job, and "render 62%" would read as if the click
+  // did nothing.
+  if (state.busy && state.stage === 'cancelling') return 'cancelling…';
   switch (state.phase) {
     case 'idle':
       return null;
@@ -77,6 +82,8 @@ export function exportSessionLabel(state: ExportSessionState): string | null {
     case 'queued':
     case 'running':
       return state.job ? exportProgressLabel(state.job) : state.stage;
+    case 'cancelled':
+      return 'cancelled';
     case 'done':
       return state.download
         ? `done · ${state.download.filename || 'video ready'}`
@@ -84,6 +91,21 @@ export function exportSessionLabel(state: ExportSessionState): string | null {
     case 'error':
       return `failed: ${state.error}`;
   }
+}
+
+/**
+ * Visibility and enablement of the cancel button, as a function of state alone.
+ *
+ * Split out for the same reason the status line is: it is the one control whose
+ * correctness is a lifecycle question rather than a layout one, and a rebuilt
+ * panel has to arrive at the same answer from replayed state as the panel that
+ * was disposed mid-render.
+ */
+export function exportCancelButton(state: ExportSessionState): {
+  hidden: boolean;
+  disabled: boolean;
+} {
+  return { hidden: !state.busy, disabled: state.stage === 'cancelling' };
 }
 
 /**
@@ -110,6 +132,11 @@ export function createExportFolder(
   const status = folder.addBinding(ui, 'status', { readonly: true, label: 'status' });
   const render = folder.addButton({ title: EXPORT_BUTTON_LABEL }) as ButtonApi;
   render.disabled = true;
+  // Only meaningful while the slot is held, and hidden rather than disabled the
+  // rest of the time: a permanently greyed cancel button next to the render
+  // button reads as a broken control.
+  const cancel = folder.addButton({ title: EXPORT_CANCEL_LABEL }) as ButtonApi;
+  cancel.hidden = true;
 
   const download = document.createElement('a');
   download.textContent = 'Download rendered video';
@@ -148,6 +175,11 @@ export function createExportFolder(
     const ready = capabilities !== null && debugExportAvailable(capabilities, ui.profile);
     render.disabled = session.busy || !ready;
     profile.disabled = session.busy;
+    // Hidden when there is nothing to cancel; disabled while a cancel is
+    // already in flight, because a second click would only be absorbed.
+    const cancelState = exportCancelButton(session);
+    cancel.hidden = cancelState.hidden;
+    cancel.disabled = cancelState.disabled;
     setStatus(exportSessionLabel(session) ?? capabilityLabel());
     if (session.download) {
       download.href = session.download.url;
@@ -176,6 +208,10 @@ export function createExportFolder(
     // The session runs the capture inside its own duplicate guard, so a click
     // that arrives while an earlier render is still going is simply refused.
     host.session.start(host.trackId, () => host.capture(rendererBuild, output));
+  });
+
+  cancel.on('click', () => {
+    host.session.cancel();
   });
 
   // Subscribing last: the callback paints, and it fires once immediately with

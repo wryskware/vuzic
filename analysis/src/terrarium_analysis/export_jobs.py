@@ -12,7 +12,9 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -22,9 +24,25 @@ MAX_PROTOCOL_LINE_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_BYTES = 64 * 1024
 PROBE_TIMEOUT_SECONDS = 30
 
+#: How long a cancelled worker gets to shut down cooperatively — abort FFmpeg,
+#: delete its `.partial`, exit — before it is killed. Long enough for an FFmpeg
+#: that is mid-write to close its file, short enough that a user who clicked
+#: cancel does not think the button is broken.
+CANCEL_GRACE_SECONDS = 5.0
+#: Bound on the force-kill itself, so a wedged `taskkill` cannot hold the request.
+KILL_TIMEOUT_SECONDS = 10.0
+#: The worker's own exit code for "a cancellation signal reached me". Distinct
+#: from 1 (crash) so the supervisor can tell the two apart even if the flag on
+#: this side was never set — an operator killing the tree by hand, say.
+CANCELLED_WORKER_EXIT_CODE = 130
+
 
 class ExportProcessError(RuntimeError):
     """A worker could not start, violated its protocol, or exited unsuccessfully."""
+
+
+class ExportCancelled(ExportProcessError):
+    """The job was cancelled; the worker was stopped rather than failing."""
 
 
 @dataclass(frozen=True)
@@ -95,6 +113,137 @@ class ExportSettings:
 
 def _creation_flags() -> int:
     return int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
+
+
+def _worker_popen_kwargs() -> dict[str, Any]:
+    """Spawn the render worker as the root of its own killable process tree.
+
+    The worker starts FFmpeg, FFmpeg may start nothing or something, and none of
+    them are ours to enumerate by hand — so the child gets a group/session of its
+    own and cancellation addresses the group.
+
+    Windows: `CREATE_NEW_PROCESS_GROUP` makes the worker's PID a process-group id
+    that `GenerateConsoleCtrlEvent` (Python's `send_signal(CTRL_BREAK_EVENT)`)
+    can target, and simultaneously detaches it from the console's Ctrl+C — so a
+    Ctrl+C in the server's terminal no longer half-kills a render behind its
+    back. Deliberately *not* `CREATE_NO_WINDOW`, unlike the probe: that flag
+    gives the child no console at all, and a process with no console can neither
+    be sent nor receive a console control event, which would leave force-kill as
+    the only option. Node inheriting the server's console opens no window.
+    """
+
+    if os.name == "nt":
+        return {"creationflags": int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))}
+    return {"start_new_session": True}
+
+
+def _taskkill(pid: int) -> None:
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    executable = Path(system_root) / "System32" / "taskkill.exe"
+    try:
+        subprocess.run(
+            [str(executable), "/PID", str(pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=KILL_TIMEOUT_SECONDS,
+            shell=False,
+            creationflags=_creation_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Already gone, or taskkill is unavailable.  Either way the caller's
+        # bounded wait below is what decides whether the tree actually died.
+        return
+
+
+def terminate_process_tree(
+    process: "subprocess.Popen[Any]",
+    grace_seconds: float = CANCEL_GRACE_SECONDS,
+) -> None:
+    """Cooperative stop, then force, applied to the whole tree.  Never raises.
+
+    Two stages on purpose: the worker owns an FFmpeg child writing an MP4, and a
+    hard kill of Node alone would orphan that FFmpeg and leave a `.partial`
+    behind.  The cooperative stage lets the worker do its own cleanup; the force
+    stage is what guarantees nothing survives when it will not.
+    """
+
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        except (OSError, ValueError, AttributeError):
+            # No console, or the process is already reaped: fall straight
+            # through to the force stage.
+            pass
+        try:
+            process.wait(timeout=grace_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        _taskkill(process.pid)
+    else:
+        try:
+            group = os.getpgid(process.pid)
+        except (OSError, AttributeError):
+            group = process.pid
+        for sig, timeout in ((signal.SIGTERM, grace_seconds), (signal.SIGKILL, KILL_TIMEOUT_SECONDS)):
+            try:
+                os.killpg(group, sig)
+            except (OSError, AttributeError):
+                pass
+            try:
+                process.wait(timeout=timeout)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+        return
+    try:
+        process.wait(timeout=KILL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+class CancellationHandle:
+    """The join point between an HTTP cancel and a worker that may not exist yet.
+
+    Cancellation and process start race in both directions — a `DELETE` can land
+    while `Popen` is still returning — so both sides go through one lock, and the
+    handle kills on `attach` if the request already arrived.  `cancelled` is
+    latched: once set it never clears, which is what makes double-cancel a no-op
+    and lets the supervisor classify the worker's exit after the fact.
+    """
+
+    def __init__(self, grace_seconds: float = CANCEL_GRACE_SECONDS) -> None:
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._process: "subprocess.Popen[Any] | None" = None
+        self._grace_seconds = grace_seconds
+
+    @property
+    def cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
+
+    def attach(self, process: "subprocess.Popen[Any]") -> None:
+        with self._lock:
+            self._process = process
+            already = self._cancelled
+        if already:
+            terminate_process_tree(process, self._grace_seconds)
+
+    def detach(self) -> None:
+        with self._lock:
+            self._process = None
+
+    def cancel(self) -> None:
+        """Latch the request and stop any attached tree.  Safe to call twice."""
+
+        with self._lock:
+            self._cancelled = True
+            process = self._process
+        if process is not None:
+            terminate_process_tree(process, self._grace_seconds)
 
 
 def _json_lines(text: str) -> list[dict[str, Any]]:
@@ -219,6 +368,7 @@ def run_export_worker(
     request_path: Path,
     diagnostic_path: Path,
     on_message: Callable[[dict[str, Any]], None],
+    cancel: CancellationHandle | None = None,
 ) -> dict[str, Any]:
     """Run one request and forward each validated NDJSON stdout message."""
 
@@ -230,6 +380,11 @@ def run_export_worker(
         raise ExportProcessError(f"request file not found: {request}")
     diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
     assert settings.node_executable is not None
+    # Checked before the spawn as well as after the wait: a cancel that arrives
+    # in the gap between "queued job dequeued" and "worker started" must not
+    # start a render nobody wants.
+    if cancel is not None and cancel.cancelled:
+        raise ExportCancelled("export cancelled before the worker started")
 
     result: dict[str, Any] | None = None
     worker_error = ""
@@ -252,9 +407,11 @@ def run_export_worker(
                 errors="replace",
                 bufsize=1,
                 shell=False,
-                creationflags=_creation_flags(),
+                **_worker_popen_kwargs(),
             )
             assert process.stdout is not None
+            if cancel is not None:
+                cancel.attach(process)
             try:
                 for raw in process.stdout:
                     messages = _json_lines(raw)
@@ -277,9 +434,14 @@ def run_export_worker(
                     except OSError:
                         pass
                 raise
+            finally:
+                if cancel is not None:
+                    cancel.detach()
     finally:
         compact_diagnostic_log(diagnostic_path)
 
+    if (cancel is not None and cancel.cancelled) or return_code == CANCELLED_WORKER_EXIT_CODE:
+        raise ExportCancelled(worker_error or "export cancelled")
     if return_code != 0 or worker_error:
         detail = worker_error or diagnostic_tail(diagnostic_path)
         raise ExportProcessError(detail or f"worker exited with code {return_code}")

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 
 import postCommonWgsl from '../sim/render/shaders/post-common.wgsl?raw';
 import exposureWgsl from '../sim/render/shaders/exposure.wgsl?raw';
@@ -10,7 +11,7 @@ import gate0Wgsl from './shaders/gate0.wgsl?raw';
 
 import { createDawnContext, type DawnRuntimeContext } from './dawn-context.ts';
 import { ExportClock, exportFrameCount } from './export-clock.ts';
-import { Av1DebugEncoder } from './ffmpeg-encoder.ts';
+import { Av1DebugEncoder, partialOutputPath } from './ffmpeg-encoder.ts';
 import { FrameReadbackRing } from './frame-readback.ts';
 import { loadTimelineFromFiles } from './node-timeline-loader.ts';
 import { sdrDebugProfileDimensions } from './sdr-debug-profile.ts';
@@ -48,6 +49,65 @@ console.info = stderrDiagnostic;
 console.debug = stderrDiagnostic;
 
 let activeStage = 'startup';
+
+/**
+ * Exit code for "a cancellation signal reached me", distinct from the 1 a crash
+ * produces so the supervising server can tell a cancelled render from a broken
+ * one even when it was not the party that asked.
+ */
+export const CANCELLED_EXIT_CODE = 130;
+/** Ceiling on cooperative shutdown; the server force-kills the tree after its own. */
+const SHUTDOWN_DEADLINE_MS = 3000;
+const CANCEL_SIGNALS = ['SIGBREAK', 'SIGTERM', 'SIGINT'] as const;
+
+let cancelling = false;
+/**
+ * What a cancellation has to undo, registered as it comes into existence.
+ *
+ * A signal can arrive at any await in a render that is minutes long, so the
+ * handler cannot reach into `runRequest`'s locals — the request path publishes
+ * them here instead, and cleanup runs against whatever exists at that instant.
+ */
+const cancellationCleanups = new Set<() => Promise<void>>();
+
+export function registerCancellationCleanup(cleanup: () => Promise<void>): () => void {
+  cancellationCleanups.add(cleanup);
+  return () => {
+    cancellationCleanups.delete(cleanup);
+  };
+}
+
+export function isCancelling(): boolean {
+  return cancelling;
+}
+
+async function shutdownForCancellation(signal: string): Promise<void> {
+  emit({
+    type: 'error',
+    stage: activeStage,
+    cancelled: true,
+    message: `export cancelled by ${signal}`,
+  });
+  // Cleanup is best-effort under a deadline: FFmpeg has already been signalled
+  // by the same console control event on Windows, and a stuck unlink must not
+  // be the reason a cancelled job needs force-killing.
+  await Promise.race([
+    Promise.allSettled([...cancellationCleanups].map((cleanup) => cleanup())),
+    new Promise((resolve) => setTimeout(resolve, SHUTDOWN_DEADLINE_MS)),
+  ]);
+}
+
+function installCancellationHandlers(): void {
+  for (const signal of CANCEL_SIGNALS) {
+    process.on(signal, () => {
+      if (cancelling) return;
+      cancelling = true;
+      void shutdownForCancellation(signal).finally(() => {
+        process.exit(CANCELLED_EXIT_CODE);
+      });
+    });
+  }
+}
 
 function execFileText(executable: string, args: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -302,6 +362,12 @@ async function runRequest(requestPath: string): Promise<void> {
   let readback: FrameReadbackRing | null = null;
   let encoder: Av1DebugEncoder | null = null;
   const startedAt = performance.now();
+  // Registered before the GPU exists: a cancel during device creation still has
+  // to leave no `.partial` behind, and `rm --force` on an absent path is free.
+  const releaseCleanup = registerCancellationCleanup(async () => {
+    if (encoder && encoder.state !== 'complete') await encoder.abort();
+    await rm(partialOutputPath(request.output.path), { force: true });
+  });
 
   try {
     activeStage = 'gpu-init';
@@ -413,6 +479,7 @@ async function runRequest(requestPath: string): Promise<void> {
       elapsedSeconds,
     });
   } finally {
+    releaseCleanup();
     if (encoder && encoder.state !== 'complete') await encoder.abort();
     await readback?.dispose();
     target?.destroy();
@@ -429,10 +496,16 @@ async function main(): Promise<void> {
     throw new Error('provide exactly one of --probe or --request <absolute-request.json>');
   }
   if (probe) await runProbe(parseProbeOptions(args));
-  else await runRequest(requestPath as string);
+  else {
+    installCancellationHandlers();
+    await runRequest(requestPath as string);
+  }
 }
 
 main().catch((error: unknown) => {
+  // A cancellation unwinds the render as an error too; the signal handler owns
+  // that report and the exit code, so this must not overwrite either.
+  if (cancelling) return;
   const message = error instanceof Error ? error.message : String(error);
   emit({ type: 'error', stage: activeStage, message });
   process.exitCode = 1;
