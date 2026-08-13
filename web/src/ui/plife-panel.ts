@@ -150,7 +150,7 @@ export function createPlifePanel(
   // that belongs to neither the sim nor the mapping, and picking a song comes
   // before shaping what it drives.
   if (opts.tracks) createTrackFolder(tabs.play, opts.tracks);
-  if (opts.exports) createExportFolder(tabs.play, opts.exports);
+  const exportFolder = opts.exports ? createExportFolder(tabs.play, opts.exports) : null;
   // And directly under it, the other "what am I looking at" decision.
   if (opts.sims) createSimFolder(tabs.play, opts.sims);
 
@@ -752,6 +752,9 @@ export function createPlifePanel(
     dispose(): void {
       if (saveTimer !== null) clearTimeout(saveTimer);
       impulsePanel?.dispose();
+      // Unsubscribes only: an export already running is owned by the session and
+      // survives this panel.
+      exportFolder?.dispose();
       workbench?.dispose();
       explorer?.dispose();
       pane.dispose();

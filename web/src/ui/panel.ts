@@ -188,7 +188,7 @@ export function createPanel(
   // that belongs to neither the sim nor the mapping, and picking a song comes
   // before shaping what it drives.
   if (opts.tracks) createTrackFolder(tabs.play, opts.tracks);
-  if (opts.exports) createExportFolder(tabs.play, opts.exports);
+  const exportFolder = opts.exports ? createExportFolder(tabs.play, opts.exports) : null;
   // And directly under it, the other "what am I looking at" decision. Same shape,
   // same reason for the placement, and it is mounted from all three panels
   // identically — see `createSimFolder`.
@@ -481,6 +481,9 @@ export function createPanel(
     dispose(): void {
       if (saveTimer !== null) clearTimeout(saveTimer);
       impulsePanel?.dispose();
+      // Unsubscribes only: an export already running is owned by the session and
+      // survives this panel.
+      exportFolder?.dispose();
       workbench?.dispose();
       explorer?.dispose();
       pane.dispose();

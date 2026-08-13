@@ -12,6 +12,7 @@ import {
 import { buildDriverBank, MAX_CONTINUOUS_TICK_GAP } from './mapping/modulation';
 import { captureBrowserExportRecipe } from './export/browser-recipe';
 import { createLocalExportClient } from './export/client';
+import { createExportSession } from './export/session';
 import {
   defaultModulationConfig,
   downloadText,
@@ -289,7 +290,11 @@ async function main(): Promise<void> {
   // the sampler, the clock and the overlay above it are not rebuilt either.
   const drivers = buildDriverBank(timeline);
   const tuningLog = new TuningLog();
+  // Client and session are both main-lifetime, and the session is the reason the
+  // panel below can be thrown away and rebuilt by a substrate swap while a
+  // render is still going: it, not the folder, owns the job.
   const exportClient = createLocalExportClient();
+  const exportSession = createExportSession(exportClient);
   if (sampler.events.length === 0) {
     console.info(`timeline "${track}" has no events array; impulses idle until test-fired`);
   }
@@ -869,7 +874,7 @@ async function main(): Promise<void> {
         switchTo: switchTrack,
       },
       exports: {
-        client: exportClient,
+        session: exportSession,
         trackId: entry.id,
         // `sim`, `modulator`, and `impulses` are the live `let`s replaced as one
         // unit by a substrate swap. Capture reads them only on the button click.
