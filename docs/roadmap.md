@@ -60,6 +60,32 @@ does not yet *feel reactive* to impulses, and velocity dynamics are flat.
    fully non-default config, serializes, restores, and asserts
    equality — so any future field added to config but missed in
    persistence fails CI instead of costing a bug report.
+5. **Automatic block registration — highest priority bug fix in this
+   phase.** Item 4's first two rungs are closed: fields round trip
+   because the reader walks the destination's own keys rather than a
+   written list, and widgets save because a panel can only be handed a
+   `PersistedContainer` and the compiler rejects anything else. The rung
+   above them is still open and is the same defect one level up: adding
+   a whole new **config block** persists only if somebody remembers to
+   name it in `PlifeSim.extrasBlocks()` (and its defaults in
+   `defaultExtrasBlocks`, and its clamps in `extrasRules`). Nothing
+   fails if they do not — the block simply never saves, and the report
+   arrives weeks later as "my tweak didn't save".
+
+   **We cannot keep relying on an agent, or a person, to register a
+   block by hand.** Declaring a block must *be* registering it:
+   construction enrols it in serialize / restore / clamp, and the only
+   way out is an explicit opt-out passed at the declaration site (for
+   the genuinely session-only state — `effectiveBudget`, the impulse
+   `hold` — which must then say so where it is declared rather than by
+   being quietly absent from a list). Shape it however proves cleanest —
+   a block registry the config declares itself into, a decorator on the
+   defaults function, whatever — but the acceptance test is fixed: add a
+   new block, save nothing else, and it round trips; opt it out, and CI
+   says the opt-out is deliberate. Until that lands, every new block is
+   another instance of a bug we have now paid for four times (accent
+   arcs, the whole impulse lane, the palette and render folders' optional
+   `onChange`, and this).
 
 ## Phase 2 — Tuning tools
 
