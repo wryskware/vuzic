@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -703,6 +704,41 @@ def test_hdr_luminance_policy_is_schema_bounded_server_side(output, message):
         )
     assert exc.value.status_code == 422
     assert message in exc.value.detail
+
+
+def test_the_current_browser_recipe_version_is_accepted(tmp_path):
+    """The gate in `validate_export_submission` has to move when the browser's
+    `EXPORT_RECIPE_VERSION` does, or every export 422s the moment the schema is
+    bumped — which is exactly how v5 broke.  Read the constant rather than
+    restating it, so this test fails on the bump instead of after it."""
+
+    source = (
+        Path(__file__).resolve().parents[2] / "web" / "src" / "runtime" / "recipe.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"EXPORT_RECIPE_VERSION\s*=\s*(\d+)", source)
+    assert match is not None, "could not find EXPORT_RECIPE_VERSION in recipe.ts"
+    current = int(match.group(1))
+
+    track = {"id": "t", "version": "v1", "duration": 10.0}
+    recipe = hdr_recipe("t", "v1", "build")
+    recipe["version"] = current
+    accepted, _start, _duration = server_module.validate_export_submission(
+        {"trackId": "t", "recipe": recipe, "range": None},
+        track,
+        "build",
+        ["av1-hdr10-1080p120"],
+    )
+    assert accepted["version"] == current
+
+    recipe["version"] = current + 1
+    with pytest.raises(HTTPException) as exc:
+        server_module.validate_export_submission(
+            {"trackId": "t", "recipe": recipe, "range": None},
+            track,
+            "build",
+            ["av1-hdr10-1080p120"],
+        )
+    assert exc.value.status_code == 422
 
 
 def test_completed_hdr_export_reports_the_colour_metadata_the_worker_wrote(
