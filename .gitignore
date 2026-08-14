@@ -28,3 +28,14 @@ data/**/embedding.json
 /web/exports/
 /web/.export-work/
 /data/timelines/.work/
+
+# rendered video output from the headless exporter — regenerable, and large
+# (14 GB locally at the time this rule was added). /web/exports/ above covers
+# the request JSON; this covers the frames and muxed video.
+/data/exports/
+
+# regenerable analysis caches, same rule as the embeddings above: the all-in-one
+# structure model's activations and the spectrogram it is fed. Both are rebuilt
+# from audio.wav by the pipeline, and the spectrogram alone is 20 MB per track.
+data/**/allin1/
+data/**/spec/
