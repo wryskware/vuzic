@@ -17,6 +17,15 @@
  * other direction: everything it carries still means what it meant, so it is
  * kept whole, the gains default to 1 (nothing muted) and stem-follow adopts the
  * shipped defaults. One warning, once per session.
+ *
+ * Version 5 (palette v2) is lossless in the same way, and narrower: only the
+ * palette block changed shape. A v4 palette `{colors, saturation, brightness}`
+ * *is* a v5 palette in custom mode with a zero hue shift and a zero cycle rate,
+ * and `paletteHex` short-circuits exactly that case to the authored hex string
+ * with no colour-space conversion at all. A file the user tuned before palette
+ * v2 therefore renders bit-identically after loading — which is the whole
+ * requirement, since the autosaves and the committed `modulation.json` files are
+ * where this project's art direction actually lives.
  */
 import { MODULATION_VERSION, type BoundaryOptions, type ModulationConfig } from './types.ts';
 import { MOD_GROUPS, type ModGroup } from './modspec.ts';
@@ -24,7 +33,17 @@ import { MOD_GROUPS, type ModGroup } from './modspec.ts';
 // one place only would clip loaded files below what the workbench allows.
 import { MAX_DRIVER_GAIN } from './modulation.ts';
 import { defaultStemFollow, type StemFollowConfig } from './stemfollow.ts';
-import type { Palette } from '../sim/palette.ts';
+import {
+  defaultArc,
+  defaultAccentArc,
+  PALETTE_SPACES,
+  type PaletteSpace,
+  syncPaletteColors,
+  FALLBACK_COLOR,
+  MAX_HUE_RATE_DEG_PER_SEC,
+  type Palette,
+  type PaletteArc,
+} from '../sim/palette.ts';
 // `defaultPalette` is physarum's shipped art direction and is the only thing
 // here that still knows a specific sim. It is the fallback a hand-trimmed file
 // falls back *to*, not something the format depends on; a second sim's loader
@@ -137,16 +156,70 @@ function count(v: unknown, what: string, max: number): number {
   return n;
 }
 
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(Math.max(v, lo), hi);
+}
+
+/**
+ * The arc block is always written and always read, even in custom mode: an
+ * optional sub-object would mean every consumer (this parser, the recipe
+ * validator, the panel's bindings) carrying an "or the defaults" branch for a
+ * block that costs four numbers.
+ *
+ * Hue angles are not clamped — any real angle is a legal angle, and a file
+ * saying 720 means the same wheel position as 0. S and L are clamped because
+ * they are coordinates with ends, and a file with `light: 500` should render as
+ * white rather than fail to load.
+ */
+function paletteArc(v: unknown, what: string, d: PaletteArc = defaultArc()): PaletteArc {
+  const o = (v ?? {}) as Record<string, unknown>;
+  return {
+    hueStartDeg: num(o['hueStartDeg'], `${what}.hueStartDeg`, d.hueStartDeg),
+    hueRangeDeg: num(o['hueRangeDeg'], `${what}.hueRangeDeg`, d.hueRangeDeg),
+    sat: clamp(num(o['sat'], `${what}.sat`, d.sat), 0, 100),
+    light: clamp(num(o['light'], `${what}.light`, d.light), 0, 100),
+  };
+}
+
+/**
+ * Palette v2, and the v1 lift.
+ *
+ * A v4-and-earlier palette has no `mode`, so it reads as `custom` — which is
+ * precisely what it was — with the two hue fields at zero. Nothing about how its
+ * colours reach a pixel changes.
+ */
 function palette(v: unknown, speciesCount: number, what: string): Palette {
   const o = (v ?? {}) as Record<string, unknown>;
   const raw = Array.isArray(o['colors']) ? (o['colors'] as unknown[]) : [];
   const fallback = defaultPalette(speciesCount);
   const colors = fallback.colors.map((c, i) => (typeof raw[i] === 'string' ? (raw[i] as string) : c));
-  return {
+  const out: Palette = {
+    mode: o['mode'] === 'arc' ? 'arc' : 'custom',
+    // Unknown or absent space falls back to HSLuv, which is what every palette
+    // written before the space was selectable meant.
+    space: PALETTE_SPACES.includes(o['space'] as PaletteSpace)
+      ? (o['space'] as PaletteSpace)
+      : 'hsluv',
+    arc: paletteArc(o['arc'], `${what}.arc`),
+    accentArc: paletteArc(o['accentArc'], `${what}.accentArc`, defaultAccentArc()),
     colors,
+    hueShiftDeg: o['hueShiftDeg'] === undefined ? 0 : num(o['hueShiftDeg'], `${what}.hueShiftDeg`),
+    hueRateDegPerSec:
+      o['hueRateDegPerSec'] === undefined
+        ? 0
+        : clamp(
+            num(o['hueRateDegPerSec'], `${what}.hueRateDegPerSec`),
+            -MAX_HUE_RATE_DEG_PER_SEC,
+            MAX_HUE_RATE_DEG_PER_SEC,
+          ),
     saturation: o['saturation'] === undefined ? 1 : num(o['saturation'], `${what}.saturation`),
     brightness: o['brightness'] === undefined ? 1 : num(o['brightness'], `${what}.brightness`),
   };
+  // In arc mode the stored hexes are a cache, and a hand-edited or stale one
+  // must not survive the load. In custom mode this only pads a short list, which
+  // the `fallback.colors` map above has already done.
+  syncPaletteColors(out, speciesCount, (i) => fallback.colors[i] ?? FALLBACK_COLOR);
+  return out;
 }
 
 /**
@@ -206,6 +279,19 @@ function warnV3(): void {
       'it carried was kept; driver gains default to 1 (no driver muted) and the ' +
       'stem-follow brightness lane adopts the shipped defaults. The `brightness` ' +
       'group depth no longer exists — brightness left the projections for stem-follow.',
+  );
+}
+
+/** v4 → v5 is narrower still: the palette block grew fields, nothing changed meaning. */
+let warnedV4 = false;
+
+function warnV4(): void {
+  if (warnedV4) return;
+  warnedV4 = true;
+  console.warn(
+    'modulation: migrating a v4 mapping file to v5 (palette v2). The palette is now ' +
+      'in custom mode with a zero global hue shift and no hue cycle, which is exactly ' +
+      'what a v4 palette meant — the rendered colours are unchanged.',
   );
 }
 
@@ -283,7 +369,7 @@ export function parseModulation(text: string): ModulationConfig {
   const o = raw as Record<string, unknown>;
   if (!o || typeof o !== 'object') fail('top level is not an object');
   const version = o['version'];
-  if (version !== 4 && version !== 3 && version !== 2 && version !== 1) {
+  if (version !== 5 && version !== 4 && version !== 3 && version !== 2 && version !== 1) {
     fail(`unsupported version ${String(version)}`);
   }
   const speciesCount = count(o['speciesCount'], 'speciesCount', MAX_SPECIES_COUNT);
@@ -316,6 +402,7 @@ export function parseModulation(text: string): ModulationConfig {
   // ones, which take their defaults; `groupDepth.brightness`, if present, is
   // simply not read, because that group no longer exists.
   if (version === 3) warnV3();
+  if (version === 4) warnV4();
 
   const extra = extras(o['extras']);
   return {

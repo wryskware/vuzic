@@ -25,12 +25,12 @@ export const EXPORT_CANCEL_LABEL = 'Cancel render';
  */
 export const EXPORT_PROFILE_CHOICES = [
   {
-    profile: 'hevc-hdr10-1080p120',
-    label: '1080p / 120 fps / HDR10 (HEVC Main10, PQ)',
+    profile: 'av1-hdr10-1080p120',
+    label: '1080p / 120 fps / HDR10 (AV1 10-bit, PQ)',
   },
   {
-    profile: 'hevc-hdr10-2160p120',
-    label: '4K / 120 fps / HDR10 (HEVC Main10, PQ)',
+    profile: 'av1-hdr10-2160p120',
+    label: '4K / 120 fps / HDR10 (AV1 10-bit, PQ)',
   },
   {
     profile: 'av1-sdr-debug-1080p120',
@@ -47,7 +47,7 @@ export const SDR_DEBUG_PROFILES = EXPORT_PROFILE_CHOICES.filter(
   (choice) => !isHdrExportProfile(choice.profile),
 );
 export type SdrDebugProfile = ExportRecipe['output']['profile'];
-export const DEFAULT_EXPORT_PROFILE: SdrDebugProfile = 'hevc-hdr10-1080p120';
+export const DEFAULT_EXPORT_PROFILE: SdrDebugProfile = 'av1-hdr10-1080p120';
 export const DEFAULT_SDR_DEBUG_PROFILE: SdrDebugProfile = 'av1-sdr-debug-1080p120';
 
 /**

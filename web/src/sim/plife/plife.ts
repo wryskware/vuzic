@@ -67,10 +67,10 @@ import type { ModTarget, ThetaRegistry } from '../../mapping/target';
 import { SECONDS_PER_TICK } from '../../timing';
 import type { FeaturesFrame } from '../../timeline/sampler';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
-import { paletteLinear } from '../palette';
+import { paletteHuePhase, paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { RenderFrame, Sim } from '../types';
-import { advanceStepCadence } from '../step-cadence';
+import { advanceStepCadence, smoothDtFrames } from '../step-cadence';
 import {
   BUDGET_FPS_RANGE,
   BUDGET_MIN,
@@ -291,6 +291,8 @@ interface PlifeSnapshot {
   particles: GPUBuffer;
   seed: number;
   stepAccumulator: number;
+  /** absolute substep count — the palette's hue cycle rides this, so it travels */
+  simSteps: number;
   lastPcgTick: number;
   /** which ping-pong slot the copy came from; restore puts it back in the same one */
   parity: number;
@@ -672,11 +674,23 @@ export class PlifeSim implements Sim, ModTarget {
   private readonly splashData = new Float32Array(MAX_SPLASHES * FLOATS_PER_SPLASH);
   private splashCount = 0;
 
-  /** Render-frame length expressed in 60 Hz frames for the feedback lane. */
+  /**
+   * Render-frame length expressed in 60 Hz frames for the feedback lane,
+   * smoothed — see `smoothDtFrames`, which owns the reasoning. Seeded at the
+   * 60 Hz value and snapped to the first real measurement by `dtFramesPrimed`.
+   */
   private renderDtFrames = 1;
+  private dtFramesPrimed = false;
 
   private parity = 0;
   private stepAccumulator = 0;
+  /**
+   * Absolute substeps since the world began — this substrate's clock, in
+   * `PLIFE_SUBSTEP_DT` units. Only the palette's autonomous hue cycle reads it
+   * today; it exists because that cycle must be a function of *simulation* time
+   * so that pausing freezes it and a headless export replays it exactly.
+   */
+  private simSteps = 0;
   private pendingSingleStep = false;
   private lastPcgTick = 0;
   private stepsThisFrame = 0;
@@ -728,10 +742,29 @@ export class PlifeSim implements Sim, ModTarget {
     this.paletteDirty = true;
   }
 
+  /** Sim time in seconds — the argument the palette's hue cycle is a function of. */
+  get simSeconds(): number {
+    return this.simSteps * PLIFE_SUBSTEP_DT;
+  }
+
   private refreshPalette(): void {
     this.paletteDirty = false;
+    const phase = paletteHuePhase(this.config.palette, this.simSeconds);
+    // This substrate's species come in two groups keyed to the same stems — four
+    // primaries and their four accents (`PALETTE_HEX`, and the stem map in
+    // `speciesStemMap`). Arc mode gives each group its own arc, so the accents
+    // are their own colour family instead of landing on whatever hue an
+    // eight-way split of one wheel happened to put there.
+    const groupSize = Math.min(PRIMARY_COUNT, this.config.speciesCount);
     for (let k = 0; k < this.config.speciesCount; k++) {
-      const [r, g, b] = paletteLinear(this.config.palette, k, defaultPlifePaletteColor(k));
+      const [r, g, b] = paletteLinear(
+        this.config.palette,
+        k,
+        defaultPlifePaletteColor(k),
+        phase,
+        this.config.speciesCount,
+        groupSize,
+      );
       this.paletteRgb[k * 3 + 0] = r;
       this.paletteRgb[k * 3 + 1] = g;
       this.paletteRgb[k * 3 + 2] = b;
@@ -1720,6 +1753,9 @@ export class PlifeSim implements Sim, ModTarget {
       return;
     }
     this.stepAccumulator = 0;
+    // A new world starts its colour phase where a fresh load would, alongside
+    // the pcg tick. `keepWorld` returned above and keeps both.
+    this.simSteps = 0;
     this.lastPcgTick = 0;
     this.uploadSpecies();
     this.writeGlobals(0);
@@ -1781,6 +1817,7 @@ export class PlifeSim implements Sim, ModTarget {
         }),
         seed: this.seed,
         stepAccumulator: this.stepAccumulator,
+        simSteps: this.simSteps,
         lastPcgTick: this.lastPcgTick,
         parity: this.parity,
         stemLevel: new Float32Array(this.stemLevel.length),
@@ -1793,6 +1830,7 @@ export class PlifeSim implements Sim, ModTarget {
     const snap = this.snap;
     snap.seed = this.seed;
     snap.stepAccumulator = this.stepAccumulator;
+    snap.simSteps = this.simSteps;
     snap.lastPcgTick = this.lastPcgTick;
     snap.parity = this.parity;
     snap.stemLevel.set(this.stemLevel);
@@ -1822,6 +1860,9 @@ export class PlifeSim implements Sim, ModTarget {
     this.parity = snap.parity;
     this.setSeed(snap.seed);
     this.stepAccumulator = snap.stepAccumulator;
+    this.simSteps = snap.simSteps;
+    // The hue phase is a function of the clock that was just rewound.
+    this.paletteDirty = true;
     this.lastPcgTick = snap.lastPcgTick;
     // Population posture comes back with the particles. Without this the ramps
     // would immediately start pulling the restored world toward the *current*
@@ -1964,6 +2005,12 @@ export class PlifeSim implements Sim, ModTarget {
     }
 
     this.stepsThisFrame = steps;
+    if (steps > 0) {
+      this.simSteps += steps;
+      // Only when a cycle is actually running: a static palette must not be
+      // re-linearised every tick, which is what the dirty flag exists to avoid.
+      if (this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
+    }
     // Once per tick, not once per substep: the disc list is a property of the
     // tick's envelopes, and every substep of this tick applies the same discs
     // (which is what makes a splash a sustained shove for the length of its
@@ -2363,14 +2410,15 @@ export class PlifeSim implements Sim, ModTarget {
     // manufactured the fake radial "tracers". Raising both to the dtFrames power
     // makes the authored numbers mean "per 60 Hz frame" on every monitor.
     //
-    // The 0.25 s clamp is for a tab that was backgrounded: a two-second gap
-    // would otherwise raise 0.88 to the 120th power and clear the echo outright,
-    // which is a black flash on the first frame back.
-    // Floored at 1e-3 s, not 0: browser timestamps can be coarsened and two renders
-    // can share a timestamp, making the exponent 0 — and pow(x, 0) is 1 for
-    // every x, which would switch a disabled or heavily-faded echo fully on
-    // for that frame. The floor is a no-op at any real frame rate.
-    this.renderDtFrames = Math.min(Math.max(frame.deltaSeconds, 1e-3), 0.25) * 60;
+    // Smoothed rather than measured raw, and the clamps live in the helper —
+    // see `smoothDtFrames` for why an unsmoothed exponent made a frozen world
+    // flicker.
+    this.renderDtFrames = smoothDtFrames(
+      this.renderDtFrames,
+      frame.deltaSeconds,
+      !this.dtFramesPrimed,
+    );
+    this.dtFramesPrimed = true;
 
     // Both render passes read Globals (exposure, feedback) and the species block
     // (colour, size, stretch), and a frame can be drawn with zero substeps. This

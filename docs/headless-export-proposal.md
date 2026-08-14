@@ -393,7 +393,7 @@ Example response:
   "profiles": ["av1-sdr-debug-2160p120", "av1-sdr-debug-1080p120"],
   "gpu": "NVIDIA GeForce RTX 5090",
   "backend": "d3d12",
-  "encoders": ["hevc_nvenc", "av1_nvenc"],
+  "encoders": ["av1_nvenc"],
   "rendererBuild": "<build-id>",
   "reason": ""
 }
@@ -555,6 +555,15 @@ do not invent measured values.
 Default to **HEVC Main10 in MP4** for the broadest HDR playback compatibility.
 Offer AV1 Main10 as an opt-in where supported. Both profiles use constant 120 fps
 timestamps.
+
+> **Superseded 2026-08-13, at the user's direction.** Every shipping profile is
+> AV1; `hevc_nvenc` is gone. The Blackwell-generation NVENC AV1 encoder plus
+> FFmpeg 9 carries a complete HDR10 description (`av1_metadata` for the sequence
+> header, `-mastering_display` for ST 2086), so the compatibility argument no
+> longer outweighs having one codec and one code path. Note also that "AV1
+> Main10" is a misnomer this document introduced: AV1 Main already covers 10-bit
+> and there is no Main10 profile to select. See the correction at the top of
+> `handoffs/headless-export-current-state.md`.
 
 Audio should be encoded from the track WAV at 48 kHz, using AAC-LC for the MP4
 deliverable. An optional archival Matroska profile can retain lossless audio

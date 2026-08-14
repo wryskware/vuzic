@@ -6,9 +6,9 @@ import {
   DEFAULT_MASTERING_PEAK_NITS,
   MAX_MASTERING_PEAK_NITS,
   MIN_MASTERING_PEAK_NITS,
+  masteringDisplayMetadata,
   p010Layout,
 } from './hdr.ts';
-import { injectHdrContainerMetadata } from './mp4-hdr-metadata.ts';
 
 export const AV1_DEBUG_FPS = 120;
 export const EXPORT_FPS = 120;
@@ -158,7 +158,15 @@ export function partialOutputPath(outputPath: string): string {
   return `${outputPath}.partial`;
 }
 
-function rawInputArgs(pixelFormat: string, value: ValidatedEncoderOptions): string[] {
+/**
+ * `extra` carries per-input options such as `-mastering_display`, which FFmpeg
+ * only accepts before the `-i` they describe.
+ */
+function rawInputArgs(
+  pixelFormat: string,
+  value: ValidatedEncoderOptions,
+  extra: readonly string[] = [],
+): string[] {
   return [
     '-hide_banner',
     '-loglevel',
@@ -173,6 +181,7 @@ function rawInputArgs(pixelFormat: string, value: ValidatedEncoderOptions): stri
     `${value.width}x${value.height}`,
     '-framerate',
     String(EXPORT_FPS),
+    ...extra,
     '-i',
     'pipe:0',
   ];
@@ -251,28 +260,69 @@ export function buildAv1DebugFfmpegArgs(options: Av1DebugEncoderOptions): string
 }
 
 /**
+ * ISO/IEC 23091-2 code points for the signal this pipeline produces. AV1 uses
+ * the same CICP registry as HEVC, so these are also the values the AV1 sequence
+ * header's `color_config` (spec section 6.4.2) carries.
+ */
+export const COLOUR_PRIMARIES_BT2020 = 9;
+export const TRANSFER_CHARACTERISTICS_SMPTE2084 = 16;
+export const MATRIX_COEFFICIENTS_BT2020_NCL = 9;
+
+/**
+ * `-mastering_display` value: SMPTE ST 2086 in FFmpeg's documented format,
+ * `G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`, chromaticities in 0.00002 units and
+ * luminance in 0.0001 cd/m² — exactly the units `masteringDisplayMetadata`
+ * already returns.
+ */
+export function masteringDisplayArgument(masteringPeakNits: number): string {
+  const m = masteringDisplayMetadata(masteringPeakNits);
+  return (
+    `G(${m.greenX},${m.greenY})` +
+    `B(${m.blueX},${m.blueY})` +
+    `R(${m.redX},${m.redY})` +
+    `WP(${m.whiteX},${m.whiteY})` +
+    `L(${m.maxLuminance},${m.minLuminance})`
+  );
+}
+
+/**
  * Fixed, server-owned argument set for the real HDR10 profile.
  *
- * Three details are load-bearing:
+ * Four details are load-bearing:
  *
  * - the input is already P010LE, so FFmpeg inserts no scaler and performs no
  *   range or matrix conversion between the packing shader and NVENC;
- * - NVENC writes only the matrix and range into the HEVC VUI, so the
- *   `hevc_metadata` bitstream filter restamps the full colour description with
- *   BT.2020 primaries and the ST 2084 transfer;
- * - there is no `+faststart`, because the ST 2086 mastering-display box is
- *   injected into the trailing `moov` after FFmpeg exits and a leading index
- *   would make that edit shift every chunk offset in the file.
+ * - AV1 Main covers 10-bit, so unlike HEVC there is no `main10` profile to
+ *   request — asking for one is what makes an AV1 command line look strange;
+ * - NVENC writes only the matrix and range into the AV1 sequence header, so the
+ *   `av1_metadata` bitstream filter restamps the full colour description with
+ *   BT.2020 primaries and the ST 2084 transfer. This is the direct analogue of
+ *   `hevc_metadata` and has shipped in FFmpeg for years;
+ * - `-mastering_display` is an *input* option. It attaches ST 2086 side data to
+ *   the raw stream, which the MP4 muxer then writes as a real `mdcv` box. That
+ *   is why this profile can ask for `+faststart` like any other modern encode
+ *   instead of reserving a trailing `moov` for post-hoc container surgery.
+ *
+ * No `-content_light` is passed: MaxCLL and MaxFALL must be measured from the
+ * encoded content, and this pipeline does not measure them. Both are optional in
+ * HDR10, and claiming an unmeasured number would be worse than omitting it.
  */
 export function buildHdr10FfmpegArgs(options: Hdr10EncoderOptions): string[] {
   const value = validateOptions(options, 20);
   if (value.width % 2 !== 0 || value.height % 2 !== 0) {
     throw new RangeError('HDR10 4:2:0 output requires even dimensions');
   }
-  const args = [...rawInputArgs('p010le', value), ...audioInputArgs(value)];
+  const masteringPeakNits = validateMasteringPeak(options.masteringPeakNits);
+  const args = [
+    ...rawInputArgs('p010le', value, [
+      '-mastering_display',
+      masteringDisplayArgument(masteringPeakNits),
+    ]),
+    ...audioInputArgs(value),
+  ];
   args.push(
     '-c:v',
-    'hevc_nvenc',
+    'av1_nvenc',
     '-preset',
     value.preset,
     '-tune',
@@ -283,10 +333,6 @@ export function buildHdr10FfmpegArgs(options: Hdr10EncoderOptions): string[] {
     String(value.cq),
     '-b:v',
     '0',
-    '-profile:v',
-    'main10',
-    '-tier',
-    'high',
     '-pix_fmt',
     'p010le',
     '-color_primaries',
@@ -298,17 +344,16 @@ export function buildHdr10FfmpegArgs(options: Hdr10EncoderOptions): string[] {
     '-color_range',
     'tv',
     '-bsf:v',
-    'hevc_metadata=colour_primaries=9:transfer_characteristics=16:' +
-      'matrix_coefficients=9:video_full_range_flag=0',
+    `av1_metadata=color_primaries=${COLOUR_PRIMARIES_BT2020}:` +
+      `transfer_characteristics=${TRANSFER_CHARACTERISTICS_SMPTE2084}:` +
+      `matrix_coefficients=${MATRIX_COEFFICIENTS_BT2020_NCL}:color_range=tv`,
     '-r',
     String(EXPORT_FPS),
     '-fps_mode',
     'cfr',
-    '-tag:v',
-    'hvc1',
   );
   args.push(...audioCodecArgs(value));
-  args.push('-f', 'mp4', partialOutputPath(value.outputPath));
+  args.push('-movflags', '+faststart', '-f', 'mp4', partialOutputPath(value.outputPath));
   return args;
 }
 
@@ -544,11 +589,16 @@ export const Av1DebugEncoder = {
 };
 export type Av1DebugEncoder = FfmpegFrameEncoder;
 
-/** The real P010 → HEVC Main10 HDR10 transport. */
+/**
+ * The real P010 → AV1 10-bit HDR10 transport.
+ *
+ * There is no finalize step: every byte of colour description this file needs is
+ * written by FFmpeg itself, in the sequence header and in the muxer's `mdcv`.
+ */
 export const Hdr10Encoder = {
   async start(options: Hdr10EncoderOptions): Promise<FfmpegFrameEncoder> {
     const value = validateOptions(options, 20);
-    const masteringPeakNits = validateMasteringPeak(options.masteringPeakNits);
+    validateMasteringPeak(options.masteringPeakNits);
     // Exactly what the packing shader writes: a 16-bit luma plane plus a
     // half-height interleaved 16-bit chroma plane, three bytes per pixel.
     const bytesPerFrame = p010Layout(value.width, value.height).byteLength;
@@ -559,7 +609,6 @@ export const Hdr10Encoder = {
       bytesPerFrame,
       args: buildHdr10FfmpegArgs(options),
       audioPath: value.audio?.path ?? null,
-      finalize: (partialPath) => injectHdrContainerMetadata(partialPath, masteringPeakNits),
     });
   },
 };

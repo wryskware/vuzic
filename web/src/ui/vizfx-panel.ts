@@ -49,6 +49,7 @@ import {
 import { createImpulsePanel, type ImpulsePanelHandle } from './impulses-panel';
 import { createModBands, slotLookup, type ModBands } from './mod-fill';
 import { createPanelTabs, type PanelContainer, type PanelHandle, type PanelWorkbench } from './panel';
+import { addPaletteFolder } from './palette-folder';
 import { addRenderFolder } from './render-folder';
 import { createExportFolder, type ExportPanelHost } from './export-panel';
 import { createSimFolder, type SimPanelHost } from './sim-panel';
@@ -192,7 +193,7 @@ export function createVizFxPanel(
         // A reroll or a file load rewrites the live config wholesale; the palette
         // widgets are bound to a proxy and must be re-read.
         onConfigReplaced: () => {
-          syncPaletteProxy();
+          refreshPalette();
           pane.refresh();
         },
       },
@@ -330,27 +331,14 @@ export function createVizFxPanel(
   // ── look ───────────────────────────────────────────────────────────────────
   // Static art direction, outside the modulation registry entirely. Editing these
   // edits the object the config file serialises.
-  const palette = tabs.look.addFolder({
-    title: 'palette (static — never modulated)',
-    expanded: false,
+  // Palette v2, in the folder builder every substrate's panel shares.
+  const refreshPalette = addPaletteFolder(tabs.look, {
+    palette: config.palette,
+    speciesCount: k,
+    speciesName: (i) => config.species[i]?.name ?? '',
+    invalidate: () => sim.invalidatePalette(),
+    onChange: persistExtras,
   });
-  const colorProxy: Record<string, string> = {};
-  for (let i = 0; i < k; i++) {
-    const key = `c${i}`;
-    colorProxy[key] = config.palette.colors[i] ?? '#ffffff';
-    palette
-      .addBinding(colorProxy, key, { label: `${i} ${config.species[i]?.name ?? ''}` })
-      .on('change', (ev) => {
-        config.palette.colors[i] = ev.value;
-        sim.invalidatePalette();
-      });
-  }
-  palette
-    .addBinding(config.palette, 'saturation', { min: 0, max: 2, step: 0.01 })
-    .on('change', () => sim.invalidatePalette());
-  palette
-    .addBinding(config.palette, 'brightness', { min: 0, max: 2, step: 0.01 })
-    .on('change', () => sim.invalidatePalette());
 
   // `exposure` and `gamma` are θ slots with no `folder`, so nothing above bound
   // them; this is their one widget. The range comes from the table rather than
@@ -378,11 +366,6 @@ export function createVizFxPanel(
     // draw from.
   });
 
-  /** The palette widgets edit a proxy, so a load or reroll has to be pulled back in. */
-  function syncPaletteProxy(): void {
-    for (let i = 0; i < k; i++) colorProxy[`c${i}`] = config.palette.colors[i] ?? '#ffffff';
-  }
-
   return {
     refresh(): void {
       const st = sim.stats();
@@ -401,7 +384,7 @@ export function createVizFxPanel(
           `stem ${(es.level[i] ?? 0).toFixed(2)} · presence ${(es.energy[i] ?? 1).toFixed(2)}`;
       }
 
-      syncPaletteProxy();
+      refreshPalette();
       refreshRender();
       impulsePanel?.refresh();
       workbench?.refresh();

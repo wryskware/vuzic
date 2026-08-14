@@ -68,7 +68,7 @@ import type { ModTarget, ThetaRegistry } from '../../mapping/target.ts';
 import type { FeaturesFrame } from '../../timeline/sampler.ts';
 import { LEGACY_SUBSTRATE_HZ, LEGACY_TICK_DIVISOR } from '../../timing.ts';
 import { hash3, MAX_SPLASHES, pcg, type ImpulseState } from '../impulses.ts';
-import { paletteLinear } from '../palette.ts';
+import { paletteHuePhase, paletteLinear } from '../palette.ts';
 import { mergeRenderConfig } from '../render/config.ts';
 import { HDR_FORMAT, PostFx } from '../render/postfx.ts';
 import type { RenderFrame, Sim } from '../types.ts';
@@ -961,6 +961,8 @@ export class VizFxSim implements Sim, ModTarget {
     this.parity = snap.parity;
     this.setSeed(snap.seed);
     this.steps = snap.steps;
+    // The hue phase is a function of the clock that was just rewound.
+    this.paletteDirty = true;
     this.stepAccumulator = snap.stepAccumulator;
     // The energy posture comes back with the picture. Without this the lane would
     // immediately start pulling the restored field toward the *current* moment's
@@ -1043,6 +1045,9 @@ export class VizFxSim implements Sim, ModTarget {
     this.uploadSplashes();
 
     for (let s = 0; s < steps; s++) this.runStep();
+    // Only when a cycle is actually running: a static palette must not be
+    // re-linearised every tick, which is what the dirty flag exists to avoid.
+    if (steps > 0 && this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
   }
 
   private runStep(): void {
@@ -1143,10 +1148,26 @@ export class VizFxSim implements Sim, ModTarget {
 
   // ── uploads ────────────────────────────────────────────────────────────────
 
+  /**
+   * Sim time in seconds. This substrate already had the absolute step counter the
+   * other two had to grow — it is the same `this.steps` that feeds `f[4]` in the
+   * globals block — so the palette's hue cycle simply reads it.
+   */
+  get simSeconds(): number {
+    return this.steps * STEP_DT;
+  }
+
   private refreshPalette(): void {
     this.paletteDirty = false;
+    const phase = paletteHuePhase(this.config.palette, this.simSeconds);
     for (let k = 0; k < this.config.speciesCount; k++) {
-      const [r, g, b] = paletteLinear(this.config.palette, k, defaultVizFxColor(this.visual, k));
+      const [r, g, b] = paletteLinear(
+        this.config.palette,
+        k,
+        defaultVizFxColor(this.visual, k),
+        phase,
+        this.config.speciesCount,
+      );
       this.paletteRgb[k * 3 + 0] = r;
       this.paletteRgb[k * 3 + 1] = g;
       this.paletteRgb[k * 3 + 2] = b;

@@ -25,7 +25,7 @@ function recipe(): ExportRecipe {
     'plife',
   );
   return {
-    version: 3,
+    version: 4,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',

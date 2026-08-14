@@ -1,5 +1,5 @@
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
-import { rotateHue, type Palette } from '../palette.ts';
+import { customPalette, rotateHue, type Palette } from '../palette.ts';
 
 // Colour machinery moved to `sim/palette.ts` when the mapping layer stopped
 // depending on physarum concretely: it is shared by every sim, whereas the
@@ -332,12 +332,15 @@ export function defaultPaletteColor(index: number): string {
   return cycle === 0 ? t.colorHex : rotateHue(t.colorHex, cycle * 41);
 }
 
+/**
+ * Custom mode, not an arc, and that is the whole migration story for the shipped
+ * default: `customPalette` is exactly the v1 palette with the v2 fields at their
+ * neutral values (zero shift, zero rate), and `paletteHex` short-circuits a
+ * zero-shift custom palette straight to the authored string. The default look is
+ * therefore bit-identical to what it was before palette v2 existed.
+ */
 export function defaultPalette(k: number): Palette {
-  return {
-    colors: Array.from({ length: Math.max(1, k) }, (_, i) => defaultPaletteColor(i)),
-    saturation: 1,
-    brightness: 1,
-  };
+  return customPalette(Array.from({ length: Math.max(1, k) }, (_, i) => defaultPaletteColor(i)));
 }
 
 export function defaultSpecies(index: number): SpeciesConfig {

@@ -749,7 +749,7 @@ test('boundary snap moves only its own class, by exactly the given fraction', ()
 
 // ── persistence ──────────────────────────────────────────────────────────────
 
-test('a v4 config survives serialize → parse, palette and grade and all', () => {
+test('a v5 config survives serialize → parse, palette and grade and all', () => {
   const base = defaultConfig(K);
   base.palette.colors[0] = '#123456';
   base.palette.saturation = 0.7;
@@ -770,7 +770,7 @@ test('a v4 config survives serialize → parse, palette and grade and all', () =
   assert.equal(cfg.render, base.render);
 
   const back = parseModulation(serializeModulation(cfg));
-  assert.equal(back.version, 4);
+  assert.equal(back.version, 5);
   assert.deepEqual(back.driverGains, cfg.driverGains);
   assert.deepEqual(back.stemFollow, cfg.stemFollow);
   assert.deepEqual(back.palette, cfg.palette);
@@ -801,7 +801,7 @@ test('a v2 file loads its palette and render block and discards the anchors', ()
     anchors: [{ id: 'a0', name: 'anchor 0', center: [1, 2, 3], preset: { species: [] } }],
   };
   const back = parseModulation(JSON.stringify(v2));
-  assert.equal(back.version, 4);
+  assert.equal(back.version, 5);
   assert.equal(back.palette.colors[1], '#abcdef');
   assert.equal(back.palette.saturation, 0.4);
   assert.equal(back.render.grade.vignette, 0.42);
@@ -815,7 +815,7 @@ test('a v2 file loads its palette and render block and discards the anchors', ()
   assert.equal(back.boundary.snapFraction, 0.3);
 });
 
-test('a v3 file migrates to v4 losslessly: nothing dropped, gains default to 1', () => {
+test('a v3 file migrates losslessly: nothing dropped, gains default to 1', () => {
   const v3 = {
     version: 3,
     speciesCount: K,
@@ -830,7 +830,7 @@ test('a v3 file migrates to v4 losslessly: nothing dropped, gains default to 1',
     boundary: { enabled: false, snapFraction: 0.25, respawnFraction: 0.4 },
   };
   const back = parseModulation(JSON.stringify(v3));
-  assert.equal(back.version, 4);
+  assert.equal(back.version, 5);
   // everything v3 carried survives verbatim
   assert.equal(back.depth, 2.5);
   assert.equal(back.enabled, false);

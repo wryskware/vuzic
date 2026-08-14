@@ -25,22 +25,28 @@ import type { VizFxConfig } from '../sim/vizfx/config.ts';
 import { isVizFxId } from '../sim/vizfx/ids.ts';
 import { EVENT_KINDS } from '../timeline/types.ts';
 
-export const EXPORT_RECIPE_VERSION = 3 as const;
+export const EXPORT_RECIPE_VERSION = 4 as const;
 
 /**
- * Additive within recipe v3: a v3 recipe naming an SDR debug profile means
- * exactly what it always did, so no existing capture, request, or sidecar is
- * invalidated by the HDR profiles joining the list.
+ * Additive within recipe v3 for the SDR debug profiles: a v3 recipe naming one
+ * means exactly what it always did, so no existing capture, request, or sidecar
+ * is invalidated.
+ *
+ * The HDR10 profiles were briefly named `hevc-hdr10-*` and are now `av1-hdr10-*`.
+ * That rename is deliberately *not* aliased. The HEVC ids existed for less than a
+ * day, described an encoder this pipeline no longer uses, and a recipe is a
+ * reproduction contract — silently re-pointing an old id at a different codec
+ * would make it lie. An old recipe is rejected by `$.output.profile` instead.
  */
 export const EXPORT_PROFILES = [
-  'hevc-hdr10-2160p120',
-  'hevc-hdr10-1080p120',
+  'av1-hdr10-2160p120',
+  'av1-hdr10-1080p120',
   'av1-sdr-debug-2160p120',
   'av1-sdr-debug-1080p120',
 ] as const;
 export type ExportProfile = (typeof EXPORT_PROFILES)[number];
 
-export const EXPORT_ENCODERS = ['hevc_nvenc', 'av1_nvenc'] as const;
+export const EXPORT_ENCODERS = ['av1_nvenc'] as const;
 export type ExportEncoder = (typeof EXPORT_ENCODERS)[number];
 
 /** A conservative request bound; the worker may impose a lower device bound. */
@@ -56,7 +62,7 @@ export type SimulationBaseConfig =
 /** ModulationConfig also shares render in the live app; the recipe does not. */
 export type RecipeModulationConfig = Omit<ModulationConfig, 'render'>;
 
-export interface ExportRecipeV3 {
+export interface ExportRecipeV4 {
   version: typeof EXPORT_RECIPE_VERSION;
   rendererBuild: string;
   track: {
@@ -75,7 +81,7 @@ export interface ExportRecipeV3 {
   render: RenderConfig;
   /** Authored fixed export cap. Preview adaptive-quality state is not consulted. */
   particleBudget: number;
-  /** V3 exports one concrete visual and never reads browser auto-advance state. */
+  /** A recipe exports one concrete visual and never reads browser auto-advance state. */
   presentation: {
     mode: 'single';
     autoAdvance: false;
@@ -90,7 +96,7 @@ export interface ExportRecipeV3 {
   };
 }
 
-export type ExportRecipe = ExportRecipeV3;
+export type ExportRecipe = ExportRecipeV4;
 
 const TOP_LEVEL_KEYS = [
   'version',
@@ -306,25 +312,97 @@ function validateImpulse(value: unknown, path: string): void {
   }
 }
 
+const PALETTE_SPACES = ['hsl', 'hsluv', 'oklch'] as const;
+
+const PALETTE_KEYS = [
+  'mode',
+  'space',
+  'arc',
+  'accentArc',
+  'colors',
+  'hueShiftDeg',
+  'hueRateDegPerSec',
+  'saturation',
+  'brightness',
+] as const;
+
+/**
+ * Palette v2, validated strictly and exactly — a v1 palette block inside a v4
+ * recipe is rejected by `keysExactly`, not quietly defaulted. A recipe is a
+ * reproduction contract; the *lift* from an old recipe version is the migration
+ * seam (`liftExportRecipe`) and this is not it.
+ */
 function validatePalette(value: unknown, speciesCount: number, path: string): void {
   const palette = object(value, path);
-  keysExactly(palette, ['colors', 'saturation', 'brightness'], path);
+  keysExactly(palette, PALETTE_KEYS, path);
+  if (palette['mode'] !== 'arc' && palette['mode'] !== 'custom') {
+    fail(`${path}.mode`, 'must be "arc" or "custom"');
+  }
+  if (!PALETTE_SPACES.includes(palette['space'] as never)) {
+    fail(`${path}.space`, `must be one of ${PALETTE_SPACES.join(', ')}`);
+  }
+  // Both arcs, validated the same way: the primaries' and the accents'. They are
+  // independent colour families, so nothing here relates one to the other.
+  for (const key of ['arc', 'accentArc'] as const) {
+    const arc = object(palette[key], `${path}.${key}`);
+    keysExactly(arc, ['hueStartDeg', 'hueRangeDeg', 'sat', 'light'], `${path}.${key}`);
+    // Angles are unbounded within the generic config-number bound: 720 and 0 are
+    // the same wheel position, and rejecting one would make a hand-written recipe
+    // fail for being arithmetically honest.
+    finiteNumber(
+      arc['hueStartDeg'],
+      `${path}.${key}.hueStartDeg`,
+      -MAX_ABS_CONFIG_NUMBER,
+      MAX_ABS_CONFIG_NUMBER,
+    );
+    finiteNumber(
+      arc['hueRangeDeg'],
+      `${path}.${key}.hueRangeDeg`,
+      -MAX_ABS_CONFIG_NUMBER,
+      MAX_ABS_CONFIG_NUMBER,
+    );
+    finiteNumber(arc['sat'], `${path}.${key}.sat`, 0, 100);
+    finiteNumber(arc['light'], `${path}.${key}.light`, 0, 100);
+  }
+
   const colors = palette['colors'];
   if (!Array.isArray(colors) || colors.length !== speciesCount) {
     fail(`${path}.colors`, `must contain exactly ${speciesCount} colors`);
   }
   for (let i = 0; i < colors.length; i++) boundedString(colors[i], `${path}.colors[${i}]`, 64);
+  finiteNumber(
+    palette['hueShiftDeg'],
+    `${path}.hueShiftDeg`,
+    -MAX_ABS_CONFIG_NUMBER,
+    MAX_ABS_CONFIG_NUMBER,
+  );
+  finiteNumber(palette['hueRateDegPerSec'], `${path}.hueRateDegPerSec`, -3600, 3600);
   finiteNumber(palette['saturation'], `${path}.saturation`, 0, 100);
   finiteNumber(palette['brightness'], `${path}.brightness`, 0, 100);
 }
 
+/**
+ * The simulation and modulation blocks are one live object in the browser, so a
+ * recipe that encodes them differently is a recipe whose two halves disagree
+ * about the look. Every v2 field participates — an arc that matched only in its
+ * derived hexes would drift apart the moment a headless renderer recomputed it.
+ */
 function palettesEqual(a: unknown, b: unknown): boolean {
-  const left = a as { colors: unknown[]; saturation: number; brightness: number };
-  const right = b as { colors: unknown[]; saturation: number; brightness: number };
-  return left.saturation === right.saturation &&
-    left.brightness === right.brightness &&
-    left.colors.length === right.colors.length &&
-    left.colors.every((color, index) => color === right.colors[index]);
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  for (const key of ['mode', 'space', 'hueShiftDeg', 'hueRateDegPerSec', 'saturation', 'brightness']) {
+    if (left[key] !== right[key]) return false;
+  }
+  for (const which of ['arc', 'accentArc']) {
+    const la = left[which] as Record<string, unknown>;
+    const ra = right[which] as Record<string, unknown>;
+    for (const key of ['hueStartDeg', 'hueRangeDeg', 'sat', 'light']) {
+      if (la[key] !== ra[key]) return false;
+    }
+  }
+  const lc = left['colors'] as unknown[];
+  const rc = right['colors'] as unknown[];
+  return lc.length === rc.length && lc.every((color, index) => color === rc[index]);
 }
 
 function validateSpecies(value: unknown, speciesCount: number, path: string): void {
@@ -526,9 +604,9 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
 
   const presentation = object(recipe['presentation'], '$.presentation');
   keysExactly(presentation, ['mode', 'autoAdvance'], '$.presentation');
-  if (presentation['mode'] !== 'single') fail('$.presentation.mode', 'must be "single" in v3');
+  if (presentation['mode'] !== 'single') fail('$.presentation.mode', 'must be "single"');
   if (presentation['autoAdvance'] !== false) {
-    fail('$.presentation.autoAdvance', 'must be false in the single-visual v3 recipe');
+    fail('$.presentation.autoAdvance', 'must be false in the single-visual recipe');
   }
 
   const output = object(recipe['output'], '$.output');
@@ -540,7 +618,7 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
   if (!EXPORT_PROFILES.includes(output['profile'] as never)) fail('$.output.profile', 'is unsupported');
   if (!EXPORT_ENCODERS.includes(output['encoder'] as never)) fail('$.output.encoder', 'is unsupported');
   // The codec is a property of the profile, not an independent browser choice:
-  // an HDR10 profile is only meaningful through its Main10 encoder.
+  // an HDR10 profile is only meaningful through its 10-bit encoder.
   if (output['encoder'] !== requiredEncoder(output['profile'] as ExportProfile)) {
     fail('$.output.encoder', 'does not match the encoder required by $.output.profile');
   }
@@ -578,6 +656,73 @@ export function serializeExportRecipe(recipe: ExportRecipe): string {
   return `${JSON.stringify(canonical(recipe), null, 2)}\n`;
 }
 
+/** Shape of a v1 palette block, as it appears inside a v3 recipe. */
+function liftPaletteBlock(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const old = value as Record<string, unknown>;
+  if (typeof old['mode'] === 'string') return value; // already v2
+  return {
+    mode: 'custom',
+    // Pre-v2 palettes are authored hexes at zero shift, which no space touches.
+    space: 'hsluv',
+    // Not `defaultArc()`/`defaultAccentArc()`: this module must not import sim
+    // art direction, and neither arc is reachable in custom mode anyway. These
+    // are the same numbers; the "v3 lift touches nothing but the palette" test
+    // is what fails loudly if the defaults ever move apart.
+    arc: { hueStartDeg: 0, hueRangeDeg: 360, sat: 100, light: 62 },
+    accentArc: { hueStartDeg: 0, hueRangeDeg: 360, sat: 100, light: 80 },
+    colors: old['colors'],
+    hueShiftDeg: 0,
+    hueRateDegPerSec: 0,
+    saturation: old['saturation'],
+    brightness: old['brightness'],
+  };
+}
+
+/**
+ * v3 → v4, and the reason this is a *lift* rather than a rejection.
+ *
+ * The precedent this looks like is the `hevc-hdr10-*` → `av1-hdr10-*` profile
+ * rename above, which is deliberately NOT aliased: those ids named a different
+ * codec, so re-pointing them would make an old recipe lie about what it
+ * produced. This is the opposite case. A v1 palette block `{colors, saturation,
+ * brightness}` and a v2 block in custom mode with a zero hue shift and a zero
+ * cycle rate are the *same function of the same inputs* — `paletteHex`
+ * short-circuits that case to the authored hex with no conversion — so the lift
+ * preserves meaning exactly and an old export replays to the same pixels.
+ *
+ * Anything that is not the palette is untouched: v3 and v4 differ in nothing
+ * else. A recipe at any other version falls through unchanged and is rejected by
+ * `validateExportRecipe`.
+ */
+export function liftExportRecipe(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const recipe = value as Record<string, unknown>;
+  if (recipe['version'] !== 3) return value;
+
+  const simulation = recipe['simulation'];
+  const modulation = recipe['modulation'];
+  const lifted: Record<string, unknown> = { ...recipe, version: EXPORT_RECIPE_VERSION };
+  if (simulation !== null && typeof simulation === 'object' && !Array.isArray(simulation)) {
+    lifted['simulation'] = {
+      ...(simulation as Record<string, unknown>),
+      palette: liftPaletteBlock((simulation as Record<string, unknown>)['palette']),
+    };
+  }
+  if (modulation !== null && typeof modulation === 'object' && !Array.isArray(modulation)) {
+    const mod = modulation as Record<string, unknown>;
+    lifted['modulation'] = {
+      ...mod,
+      // The modulation block carries its own version, which the validator pins
+      // to MODULATION_VERSION. A v3 recipe embeds a v4 modulation config whose
+      // only v5 change is this same palette lift, so bumping it here is honest.
+      ...(mod['version'] === MODULATION_VERSION - 1 ? { version: MODULATION_VERSION } : {}),
+      palette: liftPaletteBlock(mod['palette']),
+    };
+  }
+  return lifted;
+}
+
 export function parseExportRecipe(text: string): ExportRecipe {
   if (text.length > MAX_RECIPE_JSON_CHARS) {
     fail('$', `exceeds ${MAX_RECIPE_JSON_CHARS} serialized characters`);
@@ -588,6 +733,7 @@ export function parseExportRecipe(text: string): ExportRecipe {
   } catch (error) {
     fail('$', `is not valid JSON (${(error as Error).message})`);
   }
-  validateExportRecipe(value);
-  return value;
+  const lifted = liftExportRecipe(value);
+  validateExportRecipe(lifted);
+  return lifted;
 }

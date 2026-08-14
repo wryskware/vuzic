@@ -92,7 +92,7 @@ def test_probe_parses_only_the_worker_ndjson_protocol(tmp_path, monkeypatch):
                     "type": "ready",
                     "adapter": "Test GPU",
                     "backend": "d3d12",
-                    "encoders": ["hevc_nvenc", "av1_nvenc"],
+                    "encoders": ["av1_nvenc"],
                 }
             ),
             json.dumps({"type": "result", "stage": "gate0-probe"}),
@@ -369,26 +369,25 @@ def _probe_stdout(encoders: list[str], ten_bit: list[str]) -> str:
 
 
 def test_hdr_profiles_are_advertised_only_with_a_ten_bit_encoder():
-    both = ["hevc_nvenc", "av1_nvenc"]
-    assert advertised_profiles(both, ["hevc_nvenc"]) == [
-        "hevc-hdr10-2160p120",
-        "hevc-hdr10-1080p120",
+    av1 = ["av1_nvenc"]
+    assert advertised_profiles(av1, av1) == [
+        "av1-hdr10-2160p120",
+        "av1-hdr10-1080p120",
         "av1-sdr-debug-2160p120",
         "av1-sdr-debug-1080p120",
     ]
-    # The encoder exists but this FFmpeg build cannot feed it P010: the HDR
-    # profiles must not be offered, because the failure would otherwise land
-    # several minutes into a render rather than on the capability call.
-    assert advertised_profiles(both, []) == [
+    # The encoder exists but this FFmpeg build cannot carry a full AV1 HDR10
+    # colour description — no P010 input, or no ``av1_metadata`` filter to stamp
+    # the sequence header.  The HDR profiles must not be offered, because the
+    # failure would otherwise land several minutes into a render rather than on
+    # the capability call.  The SDR debug path is unaffected and stays.
+    assert advertised_profiles(av1, []) == [
         "av1-sdr-debug-2160p120",
         "av1-sdr-debug-1080p120",
-    ]
-    # HEVC only, 10-bit capable: HDR is offered and the SDR debug path is not.
-    assert advertised_profiles(["hevc_nvenc"], ["hevc_nvenc"]) == [
-        "hevc-hdr10-2160p120",
-        "hevc-hdr10-1080p120",
     ]
     assert advertised_profiles([], []) == []
+    # The retired HEVC encoder buys nothing: every profile is AV1 now.
+    assert advertised_profiles(["hevc_nvenc"], ["hevc_nvenc"]) == []
 
 
 def test_probe_gates_hdr_profiles_on_the_workers_ten_bit_report(tmp_path, monkeypatch):
@@ -397,14 +396,14 @@ def test_probe_gates_hdr_profiles_on_the_workers_ten_bit_report(tmp_path, monkey
         subprocess,
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 0, _probe_stdout(["hevc_nvenc", "av1_nvenc"], ["hevc_nvenc"]), ""
+            args[0], 0, _probe_stdout(["av1_nvenc"], ["av1_nvenc"]), ""
         ),
     )
     result = probe_export_capabilities(cfg)
     assert result["available"] is True
     assert result["reason"] == ""
-    assert result["tenBitEncoders"] == ["hevc_nvenc"]
-    assert "hevc-hdr10-2160p120" in result["profiles"]
+    assert result["tenBitEncoders"] == ["av1_nvenc"]
+    assert "av1-hdr10-2160p120" in result["profiles"]
     assert result["hdrTransport"] == HDR10_TRANSPORT
     # The SDR transport string keeps its old meaning for older browser builds.
     assert result["transport"] == SDR_DEBUG_TRANSPORT
@@ -422,7 +421,7 @@ def test_probe_reports_a_reason_when_no_profile_can_be_served(tmp_path, monkeypa
     result = probe_export_capabilities(cfg)
     assert result["available"] is False
     assert result["profiles"] == []
-    assert "NVENC" in result["reason"]
+    assert "av1_nvenc" in result["reason"]
 
 
 def test_a_ten_bit_claim_for_an_absent_encoder_is_discarded(tmp_path, monkeypatch):
@@ -431,7 +430,7 @@ def test_a_ten_bit_claim_for_an_absent_encoder_is_discarded(tmp_path, monkeypatc
         subprocess,
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 0, _probe_stdout(["av1_nvenc"], ["hevc_nvenc"]), ""
+            args[0], 0, _probe_stdout(["av1_nvenc"], ["some_other_nvenc"]), ""
         ),
     )
     result = probe_export_capabilities(cfg)

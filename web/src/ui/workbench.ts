@@ -57,6 +57,10 @@
  * - While the transport is paused the sim free-runs on wall-clock pacing, so two
  *   restores separated by idle time diverge slightly. Pause the sim (run ▸ paused)
  *   for a frozen comparison.
+ * - `run ▸ paused` freezes the world but keeps rendering it, which is what makes
+ *   it a *tuning* control: render edits still show. It is not a way to stop
+ *   spending GPU. The transport bar's `halt` (or `h`) is — it stops the frame
+ *   loop outright, for when an export is rendering on the same machine.
  */
 import type { Pane } from 'tweakpane';
 import type { PanelContainer } from './panel';

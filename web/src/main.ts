@@ -151,6 +151,7 @@ const FPS_DISPLAY_MS = 500;
 const stage = document.getElementById('stage') as HTMLCanvasElement;
 const overlayCanvas = document.getElementById('overlay') as HTMLCanvasElement;
 const playButton = document.getElementById('play') as HTMLButtonElement;
+const haltButton = document.getElementById('halt') as HTMLButtonElement;
 const statusEl = document.getElementById('status') as HTMLElement;
 const fatalHost = document.getElementById('fatal-host') as HTMLElement;
 
@@ -1041,6 +1042,9 @@ async function main(): Promise<void> {
       panel.refresh();
     } finally {
       swapping = false;
+      // A halted loop draws nothing, so a swap made while halted would leave the
+      // previous substrate on screen. One frame, then back to spending nothing.
+      needsRedraw = true;
     }
   };
 
@@ -1105,6 +1109,7 @@ async function main(): Promise<void> {
   }
 
   playButton.addEventListener('click', () => void clock.toggle());
+  haltButton.addEventListener('click', () => setHalted(!halted));
   window.addEventListener('keydown', (ev) => {
     if (ev.target instanceof HTMLInputElement) return;
     // Explorer's keys are claimed only while the mode is active, so 'r',
@@ -1128,7 +1133,12 @@ async function main(): Promise<void> {
         return;
       }
     }
-    if (ev.code === 'Space') {
+    if (ev.code === 'KeyH') {
+      // Live in both modes and whichever substrate is running: it is a statement
+      // about the machine, not about the world.
+      ev.preventDefault();
+      setHalted(!halted);
+    } else if (ev.code === 'Space') {
       ev.preventDefault();
       void clock.toggle();
     } else if (ev.code === 'ArrowLeft') {
@@ -1141,6 +1151,9 @@ async function main(): Promise<void> {
     gpu?.resize();
     overlay.resize();
     if (gpu) explorerRig?.layout(gpu.width, gpu.height);
+    // A resize clears the canvas's drawing buffer, so a halted workbench would
+    // go black and stay black. One frame puts the frozen world back.
+    needsRedraw = true;
   });
 
   // Explorer routing. Both listeners are registered once and guard on the mode
@@ -1178,6 +1191,52 @@ async function main(): Promise<void> {
   let freeAccum = 0;
   let lastNow = performance.now();
   let frameCount = 0;
+
+  /**
+   * The full stop, as distinct from `run ▸ paused` in the panel.
+   *
+   * `paused` is a *substrate* control: it zeroes the substep count and leaves
+   * the render chain running, which is what makes it useful for tuning the look
+   * of a still field. It is not a way to stop spending anything — the fade pass,
+   * the whole particle draw, the bloom pyramid and the grade all still run every
+   * rAF frame, which is most of the per-frame cost. Halting is the other
+   * control: no ticks, no GPU work, no presented frame.
+   *
+   * It exists for one concrete situation: an export rendering on this machine
+   * should not be competing with a workbench nobody is looking at.
+   *
+   * The rAF loop keeps running while halted rather than being cancelled. A
+   * halted frame costs one callback and an early return, un-halting is
+   * immediate, and there is no "who restarts the loop" question to get wrong on
+   * a sim switch or a track change.
+   *
+   * The canvas keeps its last presented image for free as long as nothing calls
+   * `getCurrentTexture()`, so a halted workbench still shows the world it froze
+   * on. What that does NOT survive is a resize, which clears the drawing buffer
+   * — hence `needsRedraw`, which buys exactly one more frame.
+   */
+  let halted = false;
+  let needsRedraw = false;
+
+  const setHalted = (next: boolean): void => {
+    if (next === halted) return;
+    halted = next;
+    // Halting stops the world, and a transport that kept running behind a frozen
+    // screen would be one: the features would advance, the modulator and the
+    // impulse envelopes would not, and resuming would land the sim somewhere the
+    // music had moved on from. Resuming deliberately does not restart playback —
+    // "unhalt" is not "play", and which one you wanted is not guessable.
+    if (halted && clock.isPlaying) clock.pause();
+    haltButton.textContent = halted ? 'resume' : 'halt';
+    // Both of these are rebuilt every frame by the loop, which is exactly what a
+    // halted loop is not doing — so the state that halting itself caused has to
+    // be published here or the chrome would keep describing the frame before it.
+    // Resuming leaves them alone: the next frame rewrites both.
+    if (halted) {
+      playButton.textContent = 'play';
+      statusEl.textContent = `${statusEl.textContent} · HALTED`;
+    }
+  };
 
   /**
    * The frame-rate EMA, held as a frame *time* in ms because that is the quantity
@@ -1336,6 +1395,38 @@ async function main(): Promise<void> {
     sim.tick(features, stepIndex);
   };
 
+  /**
+   * Everything that touches the GPU and the overlay, in one place so the halted
+   * path can buy a single frame without duplicating it.
+   */
+  const draw = (renderFrame: RenderFrame): void => {
+    if (gpu) {
+      gpu.resize();
+      const encoder = gpu.device.createCommandEncoder();
+      const view = gpu.gpuCanvasContext.getCurrentTexture().createView();
+      if (explorerActive && explorerRig) {
+        // Cheaper than a resize listener and strictly more complete: this also
+        // catches a DPR change and a CSS-driven resize, and it is a no-op when
+        // the canvas has not moved.
+        explorerRig.layout(gpu.width, gpu.height);
+        explorerRig.render(encoder, view, renderFrame);
+      } else {
+        sim.render(encoder, view, renderFrame);
+      }
+      gpu.device.queue.submit([encoder.finish()]);
+    }
+
+    // The scrub strip is hidden while exploring (it would cover the bottom row),
+    // so there is nothing to draw into.
+    if (!explorerActive) {
+      overlay.draw(clock.tickTime, {
+        tick: clock.simTick,
+        playing: clock.isPlaying,
+        seed: sim.currentSeed,
+      });
+    }
+  };
+
   const frame = (now: DOMHighResTimeStamp): void => {
     const wallDelta = Math.min((now - lastNow) / 1000, 0.25);
     lastNow = now;
@@ -1347,6 +1438,20 @@ async function main(): Promise<void> {
       timeSeconds: now / 1000,
       deltaSeconds: frameCount === 0 ? 1 / 60 : wallDelta,
     };
+
+    if (halted) {
+      // Ahead of every other lane, and it returns: no ticks, no modulation, no
+      // governor sample (an empty loop measures the display's refresh rate, and
+      // a budget grown against a frame nobody rendered is a lie), no panel
+      // refresh, no status rebuild. `lastNow` is already updated above, so the
+      // first frame back is a normal one rather than a long one.
+      if (needsRedraw) {
+        needsRedraw = false;
+        draw(renderFrame);
+      }
+      requestAnimationFrame(frame);
+      return;
+    }
 
     // The frame-rate lane. Same clamped `wallDelta` the free-run pump uses, so a
     // backgrounded tab's two-second gap is one 0.25 s sample rather than a
@@ -1386,31 +1491,7 @@ async function main(): Promise<void> {
       freeAccum = 0;
     }
 
-    if (gpu) {
-      gpu.resize();
-      const encoder = gpu.device.createCommandEncoder();
-      const view = gpu.gpuCanvasContext.getCurrentTexture().createView();
-      if (explorerActive && explorerRig) {
-        // Cheaper than a resize listener and strictly more complete: this also
-        // catches a DPR change and a CSS-driven resize, and it is a no-op when
-        // the canvas has not moved.
-        explorerRig.layout(gpu.width, gpu.height);
-        explorerRig.render(encoder, view, renderFrame);
-      } else {
-        sim.render(encoder, view, renderFrame);
-      }
-      gpu.device.queue.submit([encoder.finish()]);
-    }
-
-    // The scrub strip is hidden while exploring (it would cover the bottom row),
-    // so there is nothing to draw into.
-    if (!explorerActive) {
-      overlay.draw(clock.tickTime, {
-        tick: clock.simTick,
-        playing: clock.isPlaying,
-        seed: sim.currentSeed,
-      });
-    }
+    draw(renderFrame);
 
     if (frameCount % PANEL_REFRESH_FRAMES === 0) {
       // The panel's own cadence, shared by the two things that keep the grid and

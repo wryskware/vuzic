@@ -29,7 +29,7 @@
  * `VizFxSim.serializeExtras`), which is also what carries them to the nine
  * explorer tiles twice a second.
  */
-import type { Palette } from '../palette.ts';
+import { customPalette, type Palette } from '../palette.ts';
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
 import { defaultMacros, defaultParams, type VizFxVisual } from './slots.ts';
 
@@ -125,12 +125,9 @@ export interface VizFxConfig {
   paused: boolean;
 }
 
+/** Custom mode with the v2 fields neutral — bit-identical to the pre-v2 default. */
 export function defaultVizFxPalette(v: VizFxVisual): Palette {
-  return {
-    colors: Array.from({ length: v.speciesCount }, (_, i) => defaultVizFxColor(v, i)),
-    saturation: 1,
-    brightness: 1,
-  };
+  return customPalette(Array.from({ length: v.speciesCount }, (_, i) => defaultVizFxColor(v, i)));
 }
 
 /** Fallback for `paletteLinear` when the palette is shorter than K. */

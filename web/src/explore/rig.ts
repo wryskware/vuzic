@@ -439,6 +439,10 @@ export class ExplorerRig {
       device: this.gpu.device,
       format: this.gpu.format,
       float32Filterable: this.gpu.float32Filterable,
+      // Tiles grade into their own float texture, so they can carry the same
+      // headroom the live view does and the composite passes it straight
+      // through to the swapchain. A candidate should be judged as it will look.
+      displayHeadroom: this.gpu.displayHeadroom ?? 1,
       width: this.tileW,
       height: this.tileH,
     };

@@ -19,7 +19,15 @@ fn fsMain(in: PostVSOut) -> @location(0) vec4f {
   // Exposure is not applied here — the compositor already did it, so that
   // auto-exposure measures the fully-exposed frame. `p.exposureEv` reaches this
   // module only as documentation of what that multiply was.
-  c = tonemapSelect(c, p.tonemap);
+  //
+  // `H * tonemap(x / H)`, where H is the display's headroom over diffuse white:
+  // unit-sloped at the origin, so shadows and mid-tones land exactly where the
+  // author put them, and asymptotic to H rather than to 1, so highlights use the
+  // headroom an HDR swapchain actually has. H = 1 on every SDR display and on
+  // the 8-bit swapchain, and at H = 1 this is bit-for-bit `tonemapSelect(c)` —
+  // the SDR image is unchanged. Same family as grade-hdr.wgsl's display map.
+  let headroom = max(p.hdrHeadroom, 1.0);
+  c = headroom * tonemapSelect(c / headroom, p.tonemap);
 
   // Deep blacks, deliberately here rather than in the tone curve.
   let black = clamp(p.blackPoint, 0.0, 0.9);
@@ -38,8 +46,18 @@ fn fsMain(in: PostVSOut) -> @location(0) vec4f {
   let d = length((in.uv - vec2f(0.5)) * vec2f(aspect, 1.0));
   c = c * mix(1.0, smoothstep(1.15, 0.30, d), clamp(p.vignette, 0.0, 1.0));
 
-  // The swapchain format is *not* sRGB (getPreferredCanvasFormat returns
-  // bgra8unorm), so the transfer function is applied by hand, matching the
-  // pow(2.2) decode the palette uses on the way in.
-  return vec4f(pow(clamp(c, vec3f(0.0), vec3f(1.0)), vec3f(1.0 / max(p.gamma, 0.01))), 1.0);
+  // The swapchain format is *not* an `-srgb` one (getPreferredCanvasFormat
+  // returns bgra8unorm, and the HDR path asks for rgba16float), so the transfer
+  // function is applied by hand, matching the pow(2.2) decode the palette uses
+  // on the way in.
+  //
+  // The ceiling is the headroom, not 1.0. An extended-range float swapchain
+  // carries the *same* encoding past diffuse white — pow() extends smoothly, so
+  // there is nothing to special-case — and the compositor is what maps the
+  // result onto whatever the panel can actually emit. On an 8-bit swapchain
+  // headroom is 1 and this clamps exactly where it always did.
+  return vec4f(
+    pow(clamp(c, vec3f(0.0), vec3f(headroom)), vec3f(1.0 / max(p.gamma, 0.01))),
+    1.0,
+  );
 }

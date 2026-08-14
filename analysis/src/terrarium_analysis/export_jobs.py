@@ -45,8 +45,8 @@ HDR10_TRANSPORT = "hdr10-p010-compute"
 #: and this exists so capabilities and submission can be answered without
 #: starting Node.
 EXPORT_PROFILE_TABLE: dict[str, tuple[str, str, str]] = {
-    "hevc-hdr10-2160p120": ("hevc_nvenc", "hdr10", HDR10_TRANSPORT),
-    "hevc-hdr10-1080p120": ("hevc_nvenc", "hdr10", HDR10_TRANSPORT),
+    "av1-hdr10-2160p120": ("av1_nvenc", "hdr10", HDR10_TRANSPORT),
+    "av1-hdr10-1080p120": ("av1_nvenc", "hdr10", HDR10_TRANSPORT),
     "av1-sdr-debug-2160p120": ("av1_nvenc", "sdr", SDR_DEBUG_TRANSPORT),
     "av1-sdr-debug-1080p120": ("av1_nvenc", "sdr", SDR_DEBUG_TRANSPORT),
 }
@@ -55,9 +55,12 @@ EXPORT_PROFILE_TABLE: dict[str, tuple[str, str, str]] = {
 def advertised_profiles(encoders: list[str], ten_bit_encoders: list[str]) -> list[str]:
     """Profiles whose *entire* path the probe just proved.
 
-    An HDR profile needs its encoder to exist **and** to accept 10-bit 4:2:0
-    input; advertising one whose encoder cannot take P010 would turn a
-    capability question into a failure several minutes into a render.
+    An HDR profile needs its encoder to exist **and** to be able to carry a full
+    HDR10 colour description — for AV1 that means P010 input plus the
+    ``av1_metadata`` bitstream filter, which the worker probe checks together and
+    reports as ``tenBitEncoders``.  Advertising a profile whose path was not
+    proved would turn a capability question into a failure several minutes into a
+    render.
     """
 
     offered: list[str] = []
@@ -356,7 +359,7 @@ def probe_export_capabilities(settings: ExportSettings) -> dict[str, Any]:
     encoders = [
         encoder
         for encoder in ready.get("encoders", [])
-        if encoder in ("hevc_nvenc", "av1_nvenc")
+        if encoder == "av1_nvenc"
     ]
     ten_bit = [
         encoder
@@ -367,9 +370,9 @@ def probe_export_capabilities(settings: ExportSettings) -> dict[str, Any]:
     if profiles:
         reason = ""
     elif not encoders:
-        reason = "no NVENC encoder is available"
+        reason = "av1_nvenc is not available"
     else:
-        reason = "no encoder on this build accepts 10-bit or AV1 output"
+        reason = "this FFmpeg build cannot describe 10-bit AV1 HDR10 output"
     return {
         "available": bool(profiles),
         "profiles": profiles,

@@ -39,7 +39,7 @@
  * `PlifeFieldConfig` below.
  */
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
-import type { Palette } from '../palette.ts';
+import { customPalette, type Palette } from '../palette.ts';
 
 /** Sim substeps one clock tick may expand into; folded into the PCG tick key. */
 export const MAX_SUBSTEPS = 4;
@@ -741,12 +741,11 @@ export function defaultPlifePaletteColor(index: number): string {
   return PALETTE_HEX[index % PALETTE_HEX.length] as string;
 }
 
+/** Custom mode with the v2 fields neutral — bit-identical to the pre-v2 default. */
 export function defaultPlifePalette(k: number): Palette {
-  return {
-    colors: Array.from({ length: Math.max(1, k) }, (_, i) => defaultPlifePaletteColor(i)),
-    saturation: 1,
-    brightness: 1,
-  };
+  return customPalette(
+    Array.from({ length: Math.max(1, k) }, (_, i) => defaultPlifePaletteColor(i)),
+  );
 }
 
 /** How many species are primaries. The rest are accents keyed to the same stems. */

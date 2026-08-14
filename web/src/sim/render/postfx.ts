@@ -545,12 +545,19 @@ export class PostFx {
     p[17] = Math.max(g.autoMaxGain, g.autoMinGain);
     p[18] = dt;
     p[19] = 0;
-    // Zero for every SDR host. grade.wgsl never reads these words; grade-hdr.wgsl
-    // reads nothing else to decide what absolute luminance a graded 1.0 means.
+    // Zero for every host that is not exporting HDR10. grade.wgsl never reads
+    // these two; grade-hdr.wgsl reads nothing else to decide what absolute
+    // luminance a graded 1.0 means.
     const hdr = this.ctx?.hdrOutput;
     p[20] = hdr ? hdr.paperWhiteNits : 0;
     p[21] = hdr ? hdr.masteringPeakNits : 0;
-    p[22] = hdr ? Math.max(hdr.masteringPeakNits / hdr.paperWhiteNits, 1) : 1;
+    // Headroom, on the other hand, is read by both grades and means the same
+    // thing in each: how far above diffuse white the target can go. The export
+    // knows it from its mastering policy; the browser measures it from the
+    // display and gets 1 whenever the swapchain is 8-bit or the panel is SDR.
+    p[22] = hdr
+      ? Math.max(hdr.masteringPeakNits / hdr.paperWhiteNits, 1)
+      : Math.max(this.ctx?.displayHeadroom ?? 1, 1);
     p[23] = 0;
     device.queue.writeBuffer(this.paramsBuf, 0, p);
   }

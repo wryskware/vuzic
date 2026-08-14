@@ -1,5 +1,41 @@
 # Headless export handoff
 
+## Correction — 2026-08-13 (HDR10 is AV1, not HEVC)
+
+The HDR10 work described in the next section shipped on `hevc_nvenc` because the
+implementing session concluded AV1 could not carry an HDR10 colour description.
+**That conclusion was wrong**, and the two caveats it produced are both gone. The
+cause was an old local FFmpeg, not a codec limitation. On FFmpeg 9 (verified by
+running the pipeline's own generated argument list end to end):
+
+- `av1_metadata` is the direct analogue of `hevc_metadata` and writes primaries,
+  transfer, matrix and range into the AV1 sequence header. It is not new — it has
+  been in FFmpeg since 4.3. The claim that "AV1 has no VUI bitstream filter
+  equivalent" was never true;
+- the CLI's `-mastering_display` **input** option attaches real ST 2086 side data,
+  which the MP4 muxer writes as a proper `mdcv` box. The 254-line hand-rolled
+  `moov` box-surgery module (`web/src/export/mp4-hdr-metadata.ts`) and the
+  no-faststart constraint it forced both existed only to work around the absence
+  of this option, and are deleted;
+- AV1 needs no HDR-specific profile: Main already covers 10-bit, so there is no
+  `main10` to request and no `-tag:v` to set.
+
+Current state: profiles are `av1-hdr10-2160p120` / `av1-hdr10-1080p120`
+(1080p is the default), `hevc_nvenc` is gone from the codebase entirely, and HDR
+MP4s are ordinary `+faststart` files. The old `hevc-hdr10-*` ids are rejected
+rather than aliased — a recipe is a reproduction contract, and re-pointing an id
+at a different codec would make it lie. Capability gating now requires
+`av1_nvenc` *and* P010 input *and* the `av1_metadata` filter.
+
+Verified output: `codec=av1 profile=Main pix_fmt=yuv420p10le color_range=tv
+color_space=bt2020nc color_transfer=smpte2084 color_primaries=bt2020`, ST 2086
+mastering metadata at 1000 nits, CFR 120. Suites 298 web / 146 python, all green.
+
+Still-open caveats from below: HDR playback on a real HDR display remains
+unverified (ffprobe and decoded-pixel statistics only); no MaxCLL/MaxFALL, which
+would have to be measured and this pipeline does not measure them; 4K120 HDR
+throughput; analysis-job cancellation returns 409 by design.
+
 ## Update — 2026-08-13 (later the same day)
 
 All three "Next priorities" below are implemented, tested, and committed:

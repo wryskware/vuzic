@@ -11,12 +11,12 @@ import {
   vectorLength,
 } from '../../mapping/preset';
 import type { FeaturesFrame } from '../../timeline/sampler';
-import { LEGACY_TICK_DIVISOR } from '../../timing';
+import { LEGACY_SUBSTRATE_HZ, LEGACY_TICK_DIVISOR } from '../../timing';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
-import { hexToLinear, paletteLinear } from '../palette';
+import { hexToLinear, paletteHuePhase, paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { RenderFrame, Sim } from '../types';
-import { advanceStepCadence } from '../step-cadence';
+import { advanceStepCadence, smoothDtFrames } from '../step-cadence';
 import {
   defaultConfig,
   defaultPaletteColor,
@@ -62,6 +62,8 @@ interface SimSnapshot {
   soil: GPUTexture;
   seed: number;
   stepAccumulator: number;
+  /** absolute model-step count — the palette's hue cycle rides this, so it travels */
+  simSteps: number;
   lastPcgTick: number;
   /** wall-clock label for the workbench; not part of sim state */
   takenAt: number;
@@ -178,10 +180,26 @@ export class PhysarumSim implements Sim, ModTarget {
   private matrixData!: Float32Array<ArrayBuffer>;
   private readonly splashData = new Float32Array(MAX_SPLASHES * FLOATS_PER_SPLASH);
 
-  /** Render-frame length expressed in 60 Hz frames for the feedback lane. */
+  /**
+   * Render-frame length expressed in 60 Hz frames for the feedback lane,
+   * smoothed — see `smoothDtFrames`. Seeded at the 60 Hz value and snapped to
+   * the first real measurement by `dtFramesPrimed`.
+   */
   private renderDtFrames = 1;
+  private dtFramesPrimed = false;
 
   private stepAccumulator = 0;
+  /**
+   * Absolute model steps since the world began — this substrate's clock.
+   *
+   * VizFx already had one (it feeds `f[4]` in its globals); physarum and plife
+   * only counted `stepsThisFrame`, and the palette's autonomous hue cycle needs
+   * an absolute time that is *the simulation's*, not the wall's. Pausing takes no
+   * steps, so the cycle stops with the picture; a snapshot carries it, so
+   * restoring a world restores its colour phase; a headless export starts it at
+   * zero and replays the identical trajectory.
+   */
+  private simSteps = 0;
   private pendingSingleStep = false;
   private lastPcgTick = 0;
   private stepsThisFrame = 0;
@@ -211,13 +229,25 @@ export class PhysarumSim implements Sim, ModTarget {
     this.paletteDirty = true;
   }
 
+  /** Sim time in seconds — the argument the palette's hue cycle is a function of. */
+  get simSeconds(): number {
+    return this.simSteps / LEGACY_SUBSTRATE_HZ;
+  }
+
   private refreshPalette(): void {
     this.paletteDirty = false;
+    const phase = paletteHuePhase(this.config.palette, this.simSeconds);
     for (let k = 0; k < this.config.speciesCount; k++) {
       // The fallback is passed explicitly: `paletteLinear` is sim-agnostic now
       // and cannot know physarum's authored hue walk, which is what a palette
       // shorter than K should fall back to.
-      const [r, g, b] = paletteLinear(this.config.palette, k, defaultPaletteColor(k));
+      const [r, g, b] = paletteLinear(
+        this.config.palette,
+        k,
+        defaultPaletteColor(k),
+        phase,
+        this.config.speciesCount,
+      );
       this.paletteRgb[k * 3 + 0] = r;
       this.paletteRgb[k * 3 + 1] = g;
       this.paletteRgb[k * 3 + 2] = b;
@@ -779,6 +809,10 @@ export class PhysarumSim implements Sim, ModTarget {
       return;
     }
     this.stepAccumulator = 0;
+    // A new world starts its colour phase where a fresh load would, so a reseed
+    // and a reload of the same recipe agree. `keepWorld` returned above and
+    // therefore keeps its clock, which is the same rule the pcg tick follows.
+    this.simSteps = 0;
     this.writeGlobals(0);
     this.uploadSpecies();
     // A new world starts from black; letting the adapted gain carry over would
@@ -891,6 +925,7 @@ export class PhysarumSim implements Sim, ModTarget {
         }),
         seed: this.seed,
         stepAccumulator: this.stepAccumulator,
+        simSteps: this.simSteps,
         lastPcgTick: this.lastPcgTick,
         takenAt: performance.now(),
       };
@@ -898,6 +933,7 @@ export class PhysarumSim implements Sim, ModTarget {
     const snap = this.snap;
     snap.seed = this.seed;
     snap.stepAccumulator = this.stepAccumulator;
+    snap.simSteps = this.simSteps;
     snap.lastPcgTick = this.lastPcgTick;
     snap.takenAt = performance.now();
 
@@ -942,6 +978,10 @@ export class PhysarumSim implements Sim, ModTarget {
 
     this.setSeed(snap.seed);
     this.stepAccumulator = snap.stepAccumulator;
+    this.simSteps = snap.simSteps;
+    // The hue phase is a function of the clock that was just rewound, so the
+    // cached linearisation is now stale by however far the cycle had run.
+    this.paletteDirty = true;
     this.lastPcgTick = snap.lastPcgTick;
     return true;
   }
@@ -993,6 +1033,12 @@ export class PhysarumSim implements Sim, ModTarget {
     }
 
     this.stepsThisFrame = steps;
+    if (steps > 0) {
+      this.simSteps += steps;
+      // Only when a cycle is actually running: a static palette must not be
+      // re-linearised every tick, which is what the dirty flag exists to avoid.
+      if (this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
+    }
     if (steps > 0) this.uploadSplashes();
     // Convert the 120 Hz app key back to the 60 Hz model key. On the even ticks
     // that can run steps this is exactly the key the old 60 Hz clock supplied.
@@ -1116,7 +1162,16 @@ export class PhysarumSim implements Sim, ModTarget {
     // shipped `amount = 0` would switch the feedback lane fully on for one
     // frame. A frame is never zero seconds long, so the floor costs nothing and
     // keeps `pow(0, dtFrames)` at 0 for every reachable input.
-    this.renderDtFrames = Math.min(Math.max(frame.deltaSeconds, 1e-3), 0.25) * 60;
+    //
+    // Both clamps now live in `smoothDtFrames`, which also smooths the
+    // measurement — plife's flicker-on-pause was the unsmoothed version of this
+    // exact line, and the two substrates share one feedback model.
+    this.renderDtFrames = smoothDtFrames(
+      this.renderDtFrames,
+      frame.deltaSeconds,
+      !this.dtFramesPrimed,
+    );
+    this.dtFramesPrimed = true;
 
     // This is the LAST Globals write before the composite pass, which is what
     // lets the substep path publish an uncorrected `renderDtFrames` harmlessly —

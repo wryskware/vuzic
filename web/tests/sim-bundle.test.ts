@@ -100,7 +100,7 @@ function plifeRecipe(): ExportRecipe {
   const modulationWithRender = structuredClone(authored.modulator.config);
   const { render: _render, ...modulation } = modulationWithRender;
   return {
-    version: 3,
+    version: 4,
     rendererBuild: 'test',
     track: { id: 'test', contentVersion: 'test-v1' },
     sim: 'plife',

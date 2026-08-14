@@ -50,6 +50,7 @@ import {
   MAX_NEAR_STENCIL,
   MAX_REACH_BRUTE,
   PAIR_SEARCH_MODES,
+  PRIMARY_COUNT,
   R_CAP,
   type PairSearch,
   type PlifeSpeciesConfig,
@@ -71,6 +72,7 @@ import {
   type SliderParams,
 } from './mod-fill';
 import { createPanelTabs, type PanelHandle, type PanelWorkbench } from './panel';
+import { addPaletteFolder } from './palette-folder';
 import { addRenderFolder } from './render-folder';
 import { createExportFolder, type ExportPanelHost } from './export-panel';
 import { createSimFolder, type SimPanelHost } from './sim-panel';
@@ -217,6 +219,7 @@ export function createPlifePanel(
         // and palette widgets are bound to proxies and must be re-read.
         onConfigReplaced: () => {
           syncMatrixProxy();
+          refreshPalette();
           pane.refresh();
         },
       },
@@ -669,26 +672,16 @@ export function createPlifePanel(
   // ── look ───────────────────────────────────────────────────────────────────
   // Static art direction, outside the modulation registry entirely (plan.md
   // Revision 2). Editing these edits the object the config file serialises.
-  const palette = tabs.look.addFolder({ title: 'palette (static — never modulated)', expanded: false });
-  const colorProxy: Record<string, string> = {};
-  for (let i = 0; i < k; i++) {
-    const key = `c${i}`;
-    colorProxy[key] = config.palette.colors[i] ?? '#ffffff';
-    palette
-      .addBinding(colorProxy, key, { label: `${i} ${config.species[i]?.name ?? ''}` })
-      .on('change', (ev) => {
-        config.palette.colors[i] = ev.value;
-        sim.invalidatePalette();
-      });
-  }
-  // The sim linearises the palette once and caches it, so every edit here has to
-  // say so — these are the only widgets that touch it.
-  palette
-    .addBinding(config.palette, 'saturation', { min: 0, max: 2, step: 0.01 })
-    .on('change', () => sim.invalidatePalette());
-  palette
-    .addBinding(config.palette, 'brightness', { min: 0, max: 2, step: 0.01 })
-    .on('change', () => sim.invalidatePalette());
+  // Palette v2, in the folder builder every substrate's panel shares.
+  const refreshPalette = addPaletteFolder(tabs.look, {
+    palette: config.palette,
+    speciesCount: k,
+    // Four primaries then their four stem-keyed accents: two groups, two arcs.
+    groupSize: Math.min(PRIMARY_COUNT, k),
+    speciesName: (i) => config.species[i]?.name ?? '',
+    invalidate: () => sim.invalidatePalette(),
+    onChange: persistExtras,
+  });
 
   const refreshRender = addRenderFolder(tabs.look, {
     render: config.render,
@@ -704,10 +697,9 @@ export function createPlifePanel(
     // No soil field in this sim, so the ember underlay has nothing to draw from.
   });
 
-  /** The matrix and palette widgets edit proxies, so a load or reroll has to be pulled back in. */
+  /** The matrix widgets edit a proxy, so a load or reroll has to be pulled back in. */
   function syncMatrixProxy(): void {
     for (let i = 0; i < k; i++) {
-      colorProxy[`c${i}`] = config.palette.colors[i] ?? '#ffffff';
       for (let j = 0; j < k; j++) {
         proxy[`a${i}_${j}`] = config.attraction[i * k + j] ?? 0;
       }
@@ -749,6 +741,7 @@ export function createPlifePanel(
       for (const sync of speciesTitles) sync();
 
       syncMatrixProxy();
+      refreshPalette();
       refreshRender();
       impulsePanel?.refresh();
       workbench?.refresh();

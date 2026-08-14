@@ -25,6 +25,13 @@ export interface GpuRuntimeContext {
   format: GPUTextureFormat;
   /** Set only by a host that wants the HDR10 final transform. */
   hdrOutput?: GpuHdrOutput;
+  /**
+   * Display peak over diffuse white for an extended-range swapchain, as a
+   * multiplier: 1 for every SDR host, > 1 when the browser preview holds an
+   * `rgba16float` surface on a display with real headroom. The final grade
+   * stretches its tone curve to end here; at 1 it is the SDR curve exactly.
+   */
+  displayHeadroom?: number;
   /** Granted only if the adapter offered it; the sim must fall back to manual bilinear otherwise. */
   float32Filterable: boolean;
   /** Render-target dimensions in physical pixels, maintained by the owning host. */

@@ -141,24 +141,27 @@ async function probeFfmpeg(): Promise<FfmpegCapabilities> {
     execFileText('ffmpeg', ['-hide_banner', '-version']),
     execFileText('ffmpeg', ['-hide_banner', '-encoders']),
   ]);
-  const encoders = ['hevc_nvenc', 'av1_nvenc'].filter((name) =>
+  const encoders = ['av1_nvenc'].filter((name) =>
     new RegExp(`\\b${name}\\b`).test(encodersText),
   );
-  if (!encoders.includes('hevc_nvenc')) {
-    throw new Error('FFmpeg does not expose the required hevc_nvenc encoder');
+  if (!encoders.includes('av1_nvenc')) {
+    throw new Error('FFmpeg does not expose the required av1_nvenc encoder');
   }
-  // Advertising an HDR profile the encoder cannot accept would turn a capability
-  // question into a failure minutes into a render, so ask before offering:
-  // hevc_nvenc must take P010 input and expose the Main10 profile.
+  // Advertising an HDR profile this build cannot actually describe would turn a
+  // capability question into a failure minutes into a render, so ask first. Two
+  // things are required and both are build-time facts: the encoder must accept
+  // P010 input, and `av1_metadata` must exist to stamp the sequence header's
+  // colour description. AV1 Main already covers 10 bits, so unlike HEVC there is
+  // no separate profile to look for.
+  const bsfsText = await execFileText('ffmpeg', ['-hide_banner', '-bsfs']).catch(() => '');
+  const hasAv1Metadata = /\bav1_metadata\b/.test(bsfsText);
   const tenBitEncoders: string[] = [];
   for (const name of encoders) {
     const help = await execFileText('ffmpeg', ['-hide_banner', '-h', `encoder=${name}`]).catch(
       () => '',
     );
     const pixelFormats = /Supported pixel formats:([^\n]*)/.exec(help)?.[1] ?? '';
-    const tenBitInput = /\bp010le\b/.test(pixelFormats);
-    const tenBitProfile = name === 'av1_nvenc' || /\bmain10\b/.test(help);
-    if (tenBitInput && tenBitProfile) tenBitEncoders.push(name);
+    if (/\bp010le\b/.test(pixelFormats) && hasAv1Metadata) tenBitEncoders.push(name);
   }
   return {
     version: versionText.split(/\r?\n/, 1)[0] ?? 'unknown FFmpeg',
@@ -603,7 +606,7 @@ async function runRequest(requestPath: string): Promise<void> {
       path: request.output.path,
       profile: request.output.profile,
       transport: profile.transport,
-      codec: profile.encoder === 'hevc_nvenc' ? 'hevc' : 'av1',
+      codec: 'av1',
       dynamicRange: profile.dynamicRange,
       pixelFormat: hdr ? 'p010le' : 'yuv420p',
       ...(hdr

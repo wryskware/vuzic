@@ -25,6 +25,7 @@ import {
   type NumericKey,
   type SliderParams,
 } from './mod-fill';
+import { addPaletteFolder } from './palette-folder';
 import { addRenderFolder } from './render-folder';
 import { createExportFolder, type ExportPanelHost } from './export-panel';
 import { createSimFolder, type SimPanelHost } from './sim-panel';
@@ -258,6 +259,7 @@ export function createPanel(
         // and matrix widgets are bound to that object and must be re-read.
         onConfigReplaced: () => {
           syncMatrixProxy();
+          refreshPalette();
           pane.refresh();
         },
       },
@@ -417,26 +419,18 @@ export function createPanel(
   // ── look ───────────────────────────────────────────────────────────────────
   // Static art direction, outside the modulation registry entirely (plan.md
   // Revision 2). Editing these edits the object the config file serialises.
-  const palette = tabs.look.addFolder({ title: 'palette (static — never modulated)', expanded: false });
-  const colorProxy: Record<string, string> = {};
-  for (let i = 0; i < k; i++) {
-    const key = `c${i}`;
-    colorProxy[key] = config.palette.colors[i] ?? '#ffffff';
-    palette
-      .addBinding(colorProxy, key, { label: `${i} ${config.species[i]?.name ?? ''}` })
-      .on('change', (ev) => {
-        config.palette.colors[i] = ev.value;
-        sim.invalidatePalette();
-      });
-  }
-  // The sim linearises the palette once and caches it, so every edit here has to
-  // say so — these are the only widgets that touch it.
-  palette
-    .addBinding(config.palette, 'saturation', { min: 0, max: 2, step: 0.01 })
-    .on('change', () => sim.invalidatePalette());
-  palette
-    .addBinding(config.palette, 'brightness', { min: 0, max: 2, step: 0.01 })
-    .on('change', () => sim.invalidatePalette());
+  // Palette v2 lives in one shared folder builder — the mode selector, the arc,
+  // the global hue shift and cycle, the pickers, and the catalog are the same
+  // instrument in every substrate's panel. `persistExtras` re-serialises the
+  // whole mapping config, and the palette is shared by reference with it, so a
+  // colour edit now reaches the autosave the same way a macro edit does.
+  const refreshPalette = addPaletteFolder(tabs.look, {
+    palette: config.palette,
+    speciesCount: k,
+    speciesName: (i) => config.species[i]?.name ?? '',
+    invalidate: () => sim.invalidatePalette(),
+    onChange: persistExtras,
+  });
 
   // The HDR chain is shared with every other substrate's panel; physarum's only
   // additions to it are the soil underlay and its own scene-exposure bound.
@@ -452,10 +446,9 @@ export function createPanel(
     soil: true,
   });
 
-  /** The matrix and palette widgets edit proxies, so a load or reroll has to be pulled back in. */
+  /** The matrix widgets edit a proxy, so a load or reroll has to be pulled back in. */
   function syncMatrixProxy(): void {
     for (let i = 0; i < k; i++) {
-      colorProxy[`c${i}`] = config.palette.colors[i] ?? '#ffffff';
       for (let j = 0; j < k; j++) {
         proxy[`m${i}_${j}`] = config.matrix[i * k + j] ?? 0;
       }
@@ -469,6 +462,7 @@ export function createPanel(
       state.grid = `${st.gridW}×${st.gridH}×${k}`;
       state.seed = String(sim.currentSeed);
       syncMatrixProxy();
+      refreshPalette();
       refreshRender();
       impulsePanel?.refresh();
       workbench?.refresh();

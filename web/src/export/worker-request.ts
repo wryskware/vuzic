@@ -4,6 +4,7 @@ import { extname, isAbsolute } from 'node:path';
 import {
   EXPORT_PROFILES,
   MAX_RECIPE_JSON_CHARS,
+  liftExportRecipe,
   validateExportRecipe,
   type ExportProfile,
   type ExportRecipe,
@@ -101,6 +102,12 @@ export function validateExportWorkerRequest(value: unknown): asserts value is Ex
     fail('$.version', `has unsupported version ${String(request['version'])}`);
   }
   try {
+    // The headless replay path is exactly where an old sidecar shows up, so the
+    // v3 → v4 palette lift happens here too. Assigning back into the request is
+    // safe: the caller just parsed this object from JSON and nothing else holds
+    // it, and the alternative — rejecting every export captured before palette
+    // v2 — throws away recipes whose meaning is completely preserved.
+    request['recipe'] = liftExportRecipe(request['recipe']);
     validateExportRecipe(request['recipe']);
   } catch (error) {
     fail('$.recipe', `is invalid (${(error as Error).message})`);

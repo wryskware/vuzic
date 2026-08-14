@@ -395,8 +395,13 @@ def validate_export_submission(
         raise HTTPException(422, f"recipe is not finite JSON: {exc}") from exc
     if len(encoded) > MAX_EXPORT_RECIPE_BYTES:
         raise HTTPException(413, f"recipe exceeds {MAX_EXPORT_RECIPE_BYTES} bytes")
-    if recipe.get("version") != 3:
-        raise HTTPException(422, "recipe version 3 is required")
+    # 4 is current (palette v2); 3 is still accepted because the Node worker
+    # lifts a v3 palette block losslessly on the way in. This layer does not
+    # validate the recipe's contents at all — that is `validateExportRecipe`'s
+    # job in the worker — so it only has to refuse versions the worker cannot
+    # read at all.
+    if recipe.get("version") not in (3, 4):
+        raise HTTPException(422, "recipe version 3 or 4 is required")
     if recipe.get("rendererBuild") != renderer_build:
         raise HTTPException(409, "renderer build changed; refresh the app and capture again")
     identity = recipe.get("track")

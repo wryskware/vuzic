@@ -29,7 +29,7 @@ export interface BoundaryOptions {
  */
 export interface ModulationConfig {
   /** 1/2 = anchor era; 3 = raw-embedding projections; 4 = the named driver bank */
-  version: 4;
+  version: 5;
   /**
    * Which simulation this mapping drives (`ModTarget.simId`). θ is a different
    * vector for every substrate, so a file authored against one is meaningless
@@ -83,4 +83,5 @@ export interface ModulationConfig {
   extras?: Record<string, unknown>;
 }
 
-export const MODULATION_VERSION = 4;
+/** 5: palette v2 (HSLuv arc, global hue shift, autonomous cycle). See persist.ts. */
+export const MODULATION_VERSION = 5;

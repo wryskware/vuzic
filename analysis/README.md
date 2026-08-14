@@ -426,9 +426,11 @@ above; only the much smaller analyzed track artifacts need to cross that seam.
 The current browser checkpoint emits **constant 120 fps AV1 NVENC SDR-debug
 video with AAC-LC audio** at either 1920×1080 or 3840×2160. The workbench
 labels both choices explicitly and defaults to the more practical 1080p path.
-Neither is HDR. True PQ/BT.2020, P010/Main10, hosted/product compute,
-cancellation, restart recovery, disk quotas, and retention policy are later
-work.
+Neither is HDR. Real HDR10 now ships alongside them as
+`av1-hdr10-1080p120` / `av1-hdr10-2160p120` — scene-linear PQ/BT.2020 graded and
+GPU-packed to P010, encoded as 10-bit AV1 with the colour description in the
+sequence header and ST 2086 in the container. Hosted/product compute, restart
+recovery, disk quotas, and retention policy are later work.
 
 Prerequisites on Windows:
 

@@ -48,7 +48,7 @@ test('every schema profile has a spec, and only the PQ path is labelled hdr10', 
     assert.equal(spec.id.includes('hdr10'), hdr, `${spec.id} is labelled dishonestly`);
     assert.equal(spec.transport, hdr ? HDR10_TRANSPORT : SDR_DEBUG_TRANSPORT);
     assert.equal(spec.inputPixelFormat, hdr ? 'p010le' : 'rgba');
-    assert.equal(spec.encoder, hdr ? 'hevc_nvenc' : 'av1_nvenc');
+    assert.equal(spec.encoder, 'av1_nvenc');
     assert.equal(spec.fps, 120);
     // 4:2:0 chroma decimation needs both dimensions even for every profile.
     assert.equal(spec.width % 2, 0);
@@ -56,11 +56,11 @@ test('every schema profile has a spec, and only the PQ path is labelled hdr10', 
     assert.equal(isHdrExportProfile(spec.id), hdr);
     assert.equal(requiredEncoder(spec.id), spec.encoder);
   }
-  assert.equal(exportProfileSpec('hevc-hdr10-2160p120').width, 3840);
-  assert.equal(exportProfileSpec('hevc-hdr10-1080p120').height, 1080);
+  assert.equal(exportProfileSpec('av1-hdr10-2160p120').width, 3840);
+  assert.equal(exportProfileSpec('av1-hdr10-1080p120').height, 1080);
 });
 
-test('HDR10 arguments feed P010 straight into Main10 with the full colour description', () => {
+test('HDR10 arguments feed P010 straight into 10-bit AV1 with the full colour description', () => {
   const value = options();
   const args = buildHdr10FfmpegArgs(value);
 
@@ -69,8 +69,7 @@ test('HDR10 arguments feed P010 straight into Main10 with the full colour descri
   assert.equal(valueAfter(args, '-pixel_format'), 'p010le');
   assert.equal(valueAfter(args, '-video_size'), '3840x2160');
   assert.equal(valueAfter(args, '-framerate'), '120');
-  assert.equal(valueAfter(args, '-c:v'), 'hevc_nvenc');
-  assert.equal(valueAfter(args, '-profile:v'), 'main10');
+  assert.equal(valueAfter(args, '-c:v'), 'av1_nvenc');
   assert.equal(valueAfter(args, '-pix_fmt'), 'p010le');
   assert.equal(valueAfter(args, '-color_primaries'), 'bt2020');
   assert.equal(valueAfter(args, '-color_trc'), 'smpte2084');
@@ -78,25 +77,53 @@ test('HDR10 arguments feed P010 straight into Main10 with the full colour descri
   assert.equal(valueAfter(args, '-color_range'), 'tv');
   assert.equal(valueAfter(args, '-r'), '120');
   assert.equal(valueAfter(args, '-fps_mode'), 'cfr');
-  assert.equal(valueAfter(args, '-tag:v'), 'hvc1');
   assert.equal(args.at(-1), partialOutputPath(value.outputPath));
   assert.equal(valueAfter(args, '-f'), 'rawvideo');
   assert.equal(args[args.lastIndexOf('-f') + 1], 'mp4');
+
+  // AV1 Main already covers 10 bits. Asking for a profile or an HEVC-shaped tag
+  // is the mistake this pipeline is not allowed to reintroduce.
+  assert.ok(!args.includes('-profile:v'));
+  assert.ok(!args.includes('-tag:v'));
+  assert.ok(!args.some((arg) => arg.includes('hevc')));
 });
 
-test('the VUI is restamped, because NVENC writes only matrix and range', () => {
+test('the AV1 sequence header is restamped, because NVENC writes only matrix and range', () => {
   const args = buildHdr10FfmpegArgs(options());
   const bsf = valueAfter(args, '-bsf:v') ?? '';
-  assert.ok(bsf.startsWith('hevc_metadata='));
-  assert.ok(bsf.includes('colour_primaries=9'));
+  assert.ok(bsf.startsWith('av1_metadata='));
+  assert.ok(bsf.includes('color_primaries=9'));
   assert.ok(bsf.includes('transfer_characteristics=16'));
   assert.ok(bsf.includes('matrix_coefficients=9'));
-  assert.ok(bsf.includes('video_full_range_flag=0'));
+  assert.ok(bsf.includes('color_range=tv'));
 });
 
-test('HDR10 output is written without faststart so the trailing moov can be patched', () => {
+test('ST 2086 rides in as real input side data, before the -i it describes', () => {
   const args = buildHdr10FfmpegArgs(options());
-  assert.ok(!args.includes('-movflags'));
+  const flag = args.indexOf('-mastering_display');
+  assert.ok(flag >= 0, 'mastering display metadata must be requested');
+  assert.ok(flag < args.indexOf('-i'), '-mastering_display is an input option');
+  // BT.2020 primaries and D65 in 0.00002 units; 1000 nits in 0.0001 cd/m².
+  assert.equal(
+    args[flag + 1],
+    'G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)',
+  );
+
+  const dim = buildHdr10FfmpegArgs({ ...options(), masteringPeakNits: 600 });
+  assert.ok(dim[dim.indexOf('-mastering_display') + 1]?.endsWith('L(6000000,1)'));
+  assert.throws(
+    () => buildHdr10FfmpegArgs({ ...options(), masteringPeakNits: 20_000 }),
+    /masteringPeakNits/,
+  );
+
+  // MaxCLL/MaxFALL are measurements this pipeline does not make, so it makes no
+  // claim about them rather than inventing one.
+  assert.ok(!args.includes('-content_light'));
+});
+
+test('HDR10 output is a normal faststart MP4 needing no post-hoc container surgery', () => {
+  const args = buildHdr10FfmpegArgs(options());
+  assert.equal(valueAfter(args, '-movflags'), '+faststart');
 });
 
 test('HDR10 keeps the deterministic AAC-LC audio behaviour unchanged', () => {
@@ -134,12 +161,12 @@ test('HDR10 arguments expose no caller-controlled surface and reject bad geometr
 });
 
 test('the panel offers HDR first, honestly labelled, and pairs each id with its encoder', () => {
-  assert.equal(DEFAULT_EXPORT_PROFILE, 'hevc-hdr10-1080p120');
+  assert.equal(DEFAULT_EXPORT_PROFILE, 'av1-hdr10-1080p120');
   assert.deepEqual(
     EXPORT_PROFILE_CHOICES.map((choice) => choice.profile),
     [
-      'hevc-hdr10-1080p120',
-      'hevc-hdr10-2160p120',
+      'av1-hdr10-1080p120',
+      'av1-hdr10-2160p120',
       'av1-sdr-debug-1080p120',
       'av1-sdr-debug-2160p120',
     ],
@@ -149,9 +176,9 @@ test('the panel offers HDR first, honestly labelled, and pairs each id with its 
     assert.equal(/HDR10/.test(choice.label), hdr, `${choice.profile} label is dishonest`);
     assert.equal(/SDR debug/.test(choice.label), !hdr);
   }
-  assert.deepEqual(debugExportOutput('hevc-hdr10-2160p120'), {
-    profile: 'hevc-hdr10-2160p120',
-    encoder: 'hevc_nvenc',
+  assert.deepEqual(debugExportOutput('av1-hdr10-2160p120'), {
+    profile: 'av1-hdr10-2160p120',
+    encoder: 'av1_nvenc',
     paperWhiteNits: 203,
     masteringPeakNits: 1000,
   });
@@ -160,8 +187,8 @@ test('the panel offers HDR first, honestly labelled, and pairs each id with its 
 test('an HDR profile is offered only when the server advertises its whole path', () => {
   const base = {
     available: true,
-    profiles: ['hevc-hdr10-1080p120', 'av1-sdr-debug-1080p120'] as string[],
-    encoders: ['hevc_nvenc', 'av1_nvenc'],
+    profiles: ['av1-hdr10-1080p120', 'av1-sdr-debug-1080p120'] as string[],
+    encoders: ['av1_nvenc'],
     rendererBuild: 'build-1',
     gpu: '',
     backend: '',
@@ -171,24 +198,21 @@ test('an HDR profile is offered only when the server advertises its whole path',
   const caps = (patch: Partial<typeof base>): Parameters<typeof exportProfileAvailable>[0] =>
     ({ ...base, ...patch }) as unknown as Parameters<typeof exportProfileAvailable>[0];
 
-  assert.equal(exportProfileAvailable(caps({}), 'hevc-hdr10-1080p120'), true);
+  assert.equal(exportProfileAvailable(caps({}), 'av1-hdr10-1080p120'), true);
   assert.equal(exportProfileAvailable(caps({}), 'av1-sdr-debug-1080p120'), true);
   // Not advertised: an older or less capable renderer.
-  assert.equal(exportProfileAvailable(caps({}), 'hevc-hdr10-2160p120'), false);
+  assert.equal(exportProfileAvailable(caps({}), 'av1-hdr10-2160p120'), false);
   // Advertised, but the encoder it needs is gone.
-  assert.equal(
-    exportProfileAvailable(caps({ encoders: ['av1_nvenc'] }), 'hevc-hdr10-1080p120'),
-    false,
-  );
-  assert.equal(exportProfileAvailable(caps({ available: false }), 'hevc-hdr10-1080p120'), false);
-  assert.equal(exportProfileAvailable(caps({ rendererBuild: '' }), 'hevc-hdr10-1080p120'), false);
+  assert.equal(exportProfileAvailable(caps({ encoders: [] }), 'av1-hdr10-1080p120'), false);
+  assert.equal(exportProfileAvailable(caps({ available: false }), 'av1-hdr10-1080p120'), false);
+  assert.equal(exportProfileAvailable(caps({ rendererBuild: '' }), 'av1-hdr10-1080p120'), false);
   // The SDR transport string still gates the SDR profiles, and only those.
   assert.equal(
     exportProfileAvailable(caps({ transport: 'something-else' }), 'av1-sdr-debug-1080p120'),
     false,
   );
   assert.equal(
-    exportProfileAvailable(caps({ transport: 'something-else' }), 'hevc-hdr10-1080p120'),
+    exportProfileAvailable(caps({ transport: 'something-else' }), 'av1-hdr10-1080p120'),
     true,
   );
 });

@@ -638,8 +638,16 @@ export class Modulator {
     // The palette is one object shared with the live config: copy the loaded
     // values *into* it (so the panel's colour pickers keep their bindings) and
     // then re-share, so later edits land in the thing that gets serialised.
+    // Every v2 field is copied, not just the v1 three: a loaded arc that did not
+    // land here would leave the live palette in custom mode showing the arc's
+    // cached hexes, which is the same picture until the first arc edit and then
+    // silently the wrong one.
     const live = this.target.config.palette;
     live.colors = live.colors.map((c, i) => config.palette.colors[i] ?? c);
+    live.mode = config.palette.mode;
+    live.arc = { ...config.palette.arc };
+    live.hueShiftDeg = config.palette.hueShiftDeg;
+    live.hueRateDegPerSec = config.palette.hueRateDegPerSec;
     live.saturation = config.palette.saturation;
     live.brightness = config.palette.brightness;
     config.palette = live;

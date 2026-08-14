@@ -628,8 +628,8 @@ def test_export_rejects_stale_track_or_renderer(monkeypatch, tmp_path):
 def hdr_recipe(track_id, track_version, renderer_build, **output):
     recipe = export_recipe(track_id, track_version, renderer_build)
     recipe["output"] = {
-        "profile": "hevc-hdr10-1080p120",
-        "encoder": "hevc_nvenc",
+        "profile": "av1-hdr10-1080p120",
+        "encoder": "av1_nvenc",
         "paperWhiteNits": 203,
         "masteringPeakNits": 1000,
         **output,
@@ -643,18 +643,18 @@ def test_export_submission_binds_each_profile_to_its_encoder(tmp_path):
 
     ok = hdr_recipe("t", "v1", "build")
     recipe, start, duration = server_module.validate_export_submission(
-        body(ok), track, "build", ["hevc-hdr10-1080p120"]
+        body(ok), track, "build", ["av1-hdr10-1080p120"]
     )
-    assert recipe["output"]["profile"] == "hevc-hdr10-1080p120"
+    assert recipe["output"]["profile"] == "av1-hdr10-1080p120"
     assert (start, duration) == (0.0, 10.0)
 
-    wrong_encoder = hdr_recipe("t", "v1", "build", encoder="av1_nvenc")
+    wrong_encoder = hdr_recipe("t", "v1", "build", encoder="hevc_nvenc")
     with pytest.raises(HTTPException) as exc:
         server_module.validate_export_submission(
-            body(wrong_encoder), track, "build", ["hevc-hdr10-1080p120"]
+            body(wrong_encoder), track, "build", ["av1-hdr10-1080p120"]
         )
     assert exc.value.status_code == 422
-    assert "requires encoder hevc_nvenc" in exc.value.detail
+    assert "requires encoder av1_nvenc" in exc.value.detail
 
 
 def test_export_submission_refuses_a_profile_this_renderer_cannot_serve(tmp_path):
@@ -670,8 +670,9 @@ def test_export_submission_refuses_a_profile_this_renderer_cannot_serve(tmp_path
     assert exc.value.status_code == 422
     assert "not available on this renderer" in exc.value.detail
 
-    # An invented "hdr" name is refused by the schema before capabilities apply.
-    invented = hdr_recipe("t", "v1", "build", profile="av1-hdr10-1080p120")
+    # An invented "hdr" name — and the retired HEVC id, which is deliberately not
+    # aliased — is refused by the schema before capabilities apply.
+    invented = hdr_recipe("t", "v1", "build", profile="hevc-hdr10-1080p120")
     with pytest.raises(HTTPException) as exc:
         server_module.validate_export_submission(
             {"trackId": "t", "recipe": invented, "range": None}, track, "build", None
@@ -698,7 +699,7 @@ def test_hdr_luminance_policy_is_schema_bounded_server_side(output, message):
             {"trackId": "t", "recipe": recipe, "range": None},
             track,
             "build",
-            ["hevc-hdr10-1080p120"],
+            ["av1-hdr10-1080p120"],
         )
     assert exc.value.status_code == 422
     assert message in exc.value.detail
@@ -716,9 +717,9 @@ def test_completed_hdr_export_reports_the_colour_metadata_the_worker_wrote(
         "probe_export_capabilities",
         lambda _settings: {
             "available": True,
-            "profiles": ["hevc-hdr10-1080p120"],
-            "encoders": ["hevc_nvenc"],
-            "tenBitEncoders": ["hevc_nvenc"],
+            "profiles": ["av1-hdr10-1080p120"],
+            "encoders": ["av1_nvenc"],
+            "tenBitEncoders": ["av1_nvenc"],
             "rendererBuild": renderer_build,
             "transport": "sdr-rgba8-av1-debug",
             "reason": "",
@@ -727,7 +728,7 @@ def test_completed_hdr_export_reports_the_colour_metadata_the_worker_wrote(
 
     def run_worker(actual_settings, request_path, diagnostic_path, on_message, cancel=None):
         request = json.loads(request_path.read_text(encoding="utf-8"))
-        assert request["output"]["profile"] == "hevc-hdr10-1080p120"
+        assert request["output"]["profile"] == "av1-hdr10-1080p120"
         output = tmp_path / "exports" / request["output"]["path"].split("\\")[-1]
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"fixture-hdr-mp4")
@@ -737,7 +738,7 @@ def test_completed_hdr_export_reports_the_colour_metadata_the_worker_wrote(
             "width": 1920,
             "height": 1080,
             "audio": True,
-            "codec": "hevc",
+            "codec": "av1",
             "transport": "hdr10-p010-compute",
             "dynamicRange": "hdr10",
             "pixelFormat": "p010le",
@@ -770,7 +771,7 @@ def test_completed_hdr_export_reports_the_colour_metadata_the_worker_wrote(
             time.sleep(0.01)
 
     assert completed["status"] == "done", completed
-    assert completed["codec"] == "hevc"
+    assert completed["codec"] == "av1"
     assert completed["dynamicRange"] == "hdr10"
     assert completed["pixelFormat"] == "p010le"
     assert completed["colorPrimaries"] == "bt2020"
