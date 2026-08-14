@@ -1,0 +1,35 @@
+{
+  "trackId": "Lost in Space (1)",
+  "input": "C:\\Users\\perag\\wryskware\\latent-music-terrarium\\data\\timelines\\.work\\lost-in-space-1.wav",
+  "wav": "C:\\Users\\perag\\wryskware\\latent-music-terrarium\\data\\timelines\\.work\\lost-in-space-1.wav",
+  "seed": 1967981133,
+  "hopSeconds": 0.1,
+  "frames": 2060,
+  "device": "auto",
+  "stagesRun": [
+    "audio",
+    "stems",
+    "events",
+    "recurrence"
+  ],
+  "stagesSkipped": [],
+  "muq": {
+    "model": "OpenMuQ/MuQ-large-msd-iter",
+    "layer": 6
+  },
+  "events": {
+    "total": 0,
+    "kick": 0,
+    "snare": 0,
+    "hat": 0,
+    "bass": 0,
+    "vocal": 0
+  },
+  "notes": [
+    "stage 'beats' skipped - missing dependency",
+    "stage 'structure' skipped - missing dependency",
+    "stems: no stem files. They come from All-In-One's demucs pass (--skip structure removes them), or pass --stems-dir DIR containing bass/drums/vocals/other.wav.",
+    "events: no stem files. They come from All-In-One's demucs pass (--skip structure removes them), or pass --stems-dir DIR containing bass/drums/vocals/other.wav.",
+    "stage 'character' skipped - missing dependency"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "track": {
+    "id": "Lost in Space (1)",
+    "duration": 206.0,
+    "sampleRate": 48000
+  },
+  "grid": {
+    "hopSeconds": 0.1,
+    "frames": 2060
+  },
+  "beats": [],
+  "downbeats": [],
+  "tempo": 0.0,
+  "segments": [],
+  "channels": [
+    {
+      "name": "stems",
+      "dims": 4,
+      "offset": 0
+    },
+    {
+      "name": "latent",
+      "dims": 64,
+      "offset": 4
+    },
+    {
+      "name": "novelty4",
+      "dims": 1,
+      "offset": 68
+    },
+    {
+      "name": "novelty16",
+      "dims": 1,
+      "offset": 69
+    },
+    {
+      "name": "actChorus",
+      "dims": 1,
+      "offset": 70
+    },
+    {
+      "name": "recurTime",
+      "dims": 1,
+      "offset": 71
+    },
+    {
+      "name": "recurStr",
+      "dims": 1,
+      "offset": 72
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "trackId": "Drifting Slow (2)",
+  "input": "/home/steven/lmt/data/timelines/.work/drifting-slow-2.wav",
+  "wav": "/home/steven/lmt/data/timelines/.work/drifting-slow-2.wav",
+  "seed": 1201879784,
+  "hopSeconds": 0.1,
+  "frames": 1797,
+  "device": "auto",
+  "stagesRun": [
+    "audio",
+    "beats",
+    "structure",
+    "stems",
+    "events",
+    "character",
+    "recurrence"
+  ],
+  "stagesSkipped": [],
+  "muq": {
+    "model": "OpenMuQ/MuQ-large-msd-iter",
+    "layer": 6
+  },
+  "events": {
+    "total": 2229,
+    "kick": 363,
+    "snare": 429,
+    "hat": 574,
+    "bass": 600,
+    "vocal": 263
+  },
+  "notes": []
+}
