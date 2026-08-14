@@ -12,6 +12,16 @@ indexer:
   watch: true
   debounce_ms: 750
   redact_secrets: true
+  # Watcher-level ignores match single path COMPONENTS, not .cceignore-style
+  # path patterns — without these, events under generated dirs still wake the
+  # reindex pipeline (ONNX model spin-up) even though .cceignore later drops
+  # the content. Merged with cce's built-in defaults (dist, build, node_modules…).
+  ignore:
+    - dist-worker
+    - exports
+    - timelines
+    - media
+    - tracks
 
 memory:
   redact_pii: true

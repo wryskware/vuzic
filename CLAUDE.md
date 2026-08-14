@@ -71,17 +71,34 @@ records the original open questions and the reasoning behind them.
 The decisions in `plan.md` are settled. Do not silently reverse one — if the
 evidence turns out to contradict a decision, say so and let the user choose.
 
-## Indexed code retrieval
+## Indexed retrieval and session memory
 
-For unfamiliar implementation questions, start with the local
-`cce-latent-music-terrarium` semantic search and request a narrow result set
-(normally 3–8 hits). Once a symbol is known, use `codebase-memory` graph tools
-only for structural questions such as callers, callees, dependencies, impact,
-or paths through the code. Read the exact source before changing it; source is
-authoritative when an index is stale or incomplete.
+Two local MCP servers are the first-class retrieval surfaces here. Route by
+what kind of question it is — not by whether it "feels like implementation":
 
-Use direct Grep/Glob/Read for known paths, exact strings, generated timeline
-fields, shader bindings, query parameters, and other data-driven or dynamic
-references. Avoid broad duplicate searches and stop retrieving when the
+- **Anything about this project's code, docs, plan, or architecture**
+  ("how/where does X work", "what does the plan say about Y") →
+  `cce-latent-music-terrarium` `context_search` first, narrow result set
+  (3–8 hits). The index covers `docs/` too — plan and research questions
+  belong here, not in a repo-wide grep.
+- **Project history** ("what did we decide", "why is it this way", "what did
+  the earlier session do") → `session_recall` first. It returns recorded
+  decisions with reasons across all past sessions; drill in with
+  `session_timeline`/`session_event`. Check the auto-memory index too.
+- **Structure, once a symbol is known** (callers, callees, dependencies,
+  impact, execution paths) → `codebase-memory` graph tools.
+- **Exact strings, known paths, generated timeline fields, shader bindings,
+  query parameters, dynamic references** → direct Grep/Glob/Read.
+
+These MCP tools are deferred: batch-load the ones you need in a single
+ToolSearch call at first need. That round-trip is far cheaper than a broad
+grep — never fall back to grep just because the tools aren't loaded yet.
+
+Write-side hygiene, so recall works next time: after settling a non-obvious
+decision, call `record_decision` (decision + reason); after tracing or
+modifying a non-obvious flow, call `record_code_area`.
+
+Read the exact source before changing it; source is authoritative when an
+index is stale or incomplete. Avoid duplicate search layers and stop when the
 evidence is sufficient. Both indexes are local; never send repository source
 to the remote `claude.ai Era Context` server.

@@ -1,7 +1,11 @@
 # Generated analysis products and copied runtime data are exact-search territory.
 data/timelines/
+data/exports/
 analysis/out/
 web/public/timelines/
+web/dist/
+web/dist-worker/
+web/exports/
 media/
 *.wav
 *.mp3
