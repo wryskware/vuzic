@@ -411,8 +411,17 @@ export function createPlifePanel(
   // stability sweep in the commit that added this): at r-max ≈ 0.15 the shipped
   // force settings hold; at 0.25–0.3 the summed tent over a few thousand
   // neighbours pins everything at maxSpeed, and the working settings are the
-  // `force` macro around 0.3 with `agility` at or below 1. Reach for the macros
-  // before the θ sliders — they survive rerolls and modulation.
+  // `force` macro around 0.3. Reach for the macros before the θ sliders — they
+  // survive rerolls and modulation.
+  //
+  // "Pins everything at maxSpeed" is worth taking literally, and it is not
+  // confined to r-max 0.25+: a readback on 2026-08-13 measured 36–45% of live
+  // particles sitting at exactly the ceiling at *shipped* settings, with the
+  // rest just under it. Pinning is what kills velocity dynamics, because the
+  // clamp keeps heading and discards speed and the render's velocity stretch
+  // then saturates too. `drag` is the knob that fixes it (it divides the
+  // equilibrium); `speed` raises the ceiling instead if you want the pace as
+  // well as the spread.
   // The brute label also carries the one caveat that is not visible from here:
   // the explorer's nine tiles stay on the grid search whatever this says (see
   // `PlifeSim.forceGridSearch`), so at large radii the 9-up under-represents

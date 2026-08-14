@@ -36,6 +36,16 @@ import {
   PHYSARUM_MACRO_RANGE,
   type PhysarumMacros,
 } from '../src/sim/physarum/config.ts';
+import {
+  defaultPlifeConfig,
+  defaultPlifeMacros,
+  migrateLegacyMacros,
+  MACRO_LABELS,
+  MACRO_RANGE,
+  MAX_EFFECTIVE_FRICTION,
+  MAX_FRICTION,
+  type PlifeMacros,
+} from '../src/sim/plife/config.ts';
 import type { ModulationConfig } from '../src/mapping/types.ts';
 
 // ── a v4 file, as text, with whatever extras the caller wants ────────────────
@@ -251,4 +261,119 @@ test('groupDriverWeights honours topN and the driver gains', () => {
 
 test('groupDriverWeights is empty when there are no drivers at all', () => {
   assert.deepEqual(makeModulator(null).groupDriverWeights(), []);
+});
+
+// ── plife's macro rig, and the agility split ─────────────────────────────────
+
+/**
+ * The plife side of the same three-table invariant physarum is pinned on above,
+ * plus the migration that carries pre-2026-08-13 files across the `agility`
+ * split.
+ *
+ * Why the split exists is measured, not stylistic: a particle readback at
+ * shipped settings found 36–45% of live particles sitting at exactly the
+ * `maxSpeed` ceiling, with the force/friction equilibrium ~4× the ceiling at the
+ * median and ~40× at p99. The clamp renormalises velocity isotropically, so it
+ * preserves heading and discards speed — every particle ends up moving at the
+ * same rate. `agility` could not cure that at any setting, because it raised the
+ * ceiling and lowered friction, and lowering friction raises the equilibrium by
+ * the same factor. `speed` and `drag` move opposite sides of that inequality,
+ * which is the whole point of separating them.
+ */
+test('the plife macro tables are one source of truth, and neutral by default', () => {
+  const def = defaultPlifeMacros();
+  const keys = Object.keys(def) as (keyof PlifeMacros)[];
+
+  for (const key of keys) assert.equal(def[key], 1, `${key} must ship neutral`);
+  assert.deepEqual(defaultPlifeConfig(8).macros, def);
+
+  // The split is the point: two independent keys, and no survivor of the one
+  // they replaced. A lingering `agility` would be a macro the panel shows and
+  // nothing reads.
+  assert.ok(keys.includes('speed'), 'speed macro missing');
+  assert.ok(keys.includes('drag'), 'drag macro missing');
+  assert.ok(!keys.includes('agility' as keyof PlifeMacros), 'agility must be gone');
+
+  assert.deepEqual(Object.keys(MACRO_RANGE).sort(), [...keys].sort());
+  for (const key of keys) {
+    const r = MACRO_RANGE[key];
+    assert.ok(r.min < r.max, `${key}: empty range`);
+    assert.ok(r.min <= 1 && 1 <= r.max, `${key}: the neutral value is outside its own slider`);
+  }
+
+  // Both new knobs must reach past neutral by enough to matter. A `speed` that
+  // stopped at 2 could not lift the ceiling clear of a 4× equilibrium, and a
+  // `drag` that stopped at 2 could not pull the equilibrium down to the ceiling
+  // — either bound would ship the knob and keep the bug.
+  assert.ok(MACRO_RANGE.speed.max >= 4, 'speed cannot reach the measured equilibrium');
+  assert.ok(MACRO_RANGE.drag.max >= 4, 'drag cannot reach the measured equilibrium');
+
+  const labelled = MACRO_LABELS.map((l) => l.key);
+  assert.equal(new Set(labelled).size, labelled.length, 'a macro is listed twice');
+  assert.deepEqual([...labelled].sort(), [...keys].sort());
+  for (const { label } of MACRO_LABELS) assert.match(label, /\(×/);
+});
+
+test('migrateLegacyMacros carries an agility file across the split exactly', () => {
+  // The old wiring was "× maxSpeed, ÷ friction", so the inverse pair reproduces
+  // both halves and the file replays at the look it was saved at.
+  const out = migrateLegacyMacros({ density: 0.5, agility: 2 });
+  assert.equal(out['speed'], 2);
+  assert.equal(out['drag'], 0.5);
+  assert.equal(out['density'], 0.5, 'unrelated macros must pass through untouched');
+
+  // Pure: the caller's blob is not ours to write into.
+  const src = { agility: 2 };
+  migrateLegacyMacros(src);
+  assert.deepEqual(src, { agility: 2 });
+
+  // The current schema wins over a stale sibling key, in both directions.
+  const both = migrateLegacyMacros({ agility: 2, speed: 1.5, drag: 3 });
+  assert.equal(both['speed'], 1.5);
+  assert.equal(both['drag'], 3);
+  assert.equal(migrateLegacyMacros({ agility: 2, speed: 1.5 })['drag'], 0.5);
+
+  // Nothing to migrate, nothing invented — these fall through to the defaults
+  // that `applyExtras` supplies.
+  for (const bad of [{}, { agility: 0 }, { agility: -1 }, { agility: 'fast' }, { agility: NaN }]) {
+    const o = migrateLegacyMacros(bad as Record<string, unknown>);
+    assert.equal(o['speed'], undefined, `${JSON.stringify(bad)} invented a speed`);
+    assert.equal(o['drag'], undefined, `${JSON.stringify(bad)} invented a drag`);
+  }
+});
+
+/**
+ * The `drag` slider must reach its own top without the post-macro clamp eating
+ * the end of it.
+ *
+ * This is the failure the split's first cut still had, and it is subtle in a way
+ * that matters: at `drag` 6 against the old shared ceiling of 16, three of eight
+ * species clipped — and they clipped to *exactly* 16, so the damper species all
+ * landed on one identical friction. A clamp that compresses the per-species
+ * spread is re-creating, one layer up, the very uniformity the split was made to
+ * cure. `MAX_EFFECTIVE_FRICTION` is therefore a separate constant from the θ
+ * slider's `MAX_FRICTION`: one bounds what the music may author, the other is
+ * the rail behind the macro, and a rail must sit above the whole useful range.
+ */
+test('drag reaches the top of its slider without clipping a shipped species', () => {
+  const cfg = defaultPlifeConfig(8);
+  const top = MACRO_RANGE.drag.max;
+  const worst = Math.max(...cfg.species.slice(0, cfg.speciesCount).map((s) => s.friction));
+
+  assert.ok(worst > 0, 'no shipped species has friction to scale');
+  assert.ok(
+    worst * top <= MAX_EFFECTIVE_FRICTION,
+    `drag ${top} clips the stiffest shipped species (${worst} × ${top} = ${worst * top} > ${MAX_EFFECTIVE_FRICTION})`,
+  );
+
+  // The two ceilings are deliberately different numbers doing different jobs.
+  // Collapsing them back together is precisely the regression above.
+  assert.ok(
+    MAX_EFFECTIVE_FRICTION > MAX_FRICTION,
+    'the post-macro rail must sit above the authored ceiling, not on it',
+  );
+
+  // …and the authored ceiling must still be reachable without the rail cutting
+  // in first, or a θ value the slider offers could never actually be applied.
+  assert.ok(MAX_FRICTION <= MAX_EFFECTIVE_FRICTION, 'an authored friction is unreachable');
 });

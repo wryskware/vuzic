@@ -144,6 +144,29 @@ export const MAX_STRETCH = 8;
 export const MAX_FRICTION = 16;
 export const MAX_RADIUS_SCALE = 3;
 
+/**
+ * The ceiling on `friction × drag` — the value that actually reaches the GPU,
+ * after the macro has composed on top of θ.
+ *
+ * Deliberately a *different* number from `MAX_FRICTION`, because the two bound
+ * different things. `MAX_FRICTION` is what the music and the sliders may author;
+ * this is the hard rail behind the macro, and a rail has to sit above the whole
+ * useful range or it stops being a rail and becomes a governor — the exact
+ * failure the `speed`/`drag` split was made to cure. At the old shared value of
+ * 16, `drag` 6 already clipped three of eight species, and worse, it clipped
+ * them all to *exactly* 16: the per-species friction spread (the thing that
+ * makes different species move differently) collapsed at the top of the slider.
+ *
+ * 64 is where the useful range ends rather than where stability does. The
+ * damping is `exp(-friction · dt)`, which is unconditionally stable at any
+ * value, so nothing here is a correctness bound; what 64 buys is that the
+ * shipped species (friction 1.8 … 3.5) clear the top of the `drag` slider
+ * without clipping — 3.5 × 16 = 56 — while a file that has *also* pushed θ
+ * friction toward its own ceiling still gets caught. Past ~550 the exponential
+ * kills the whole velocity every substep and more range would buy nothing.
+ */
+export const MAX_EFFECTIVE_FRICTION = 64;
+
 export interface PlifeSpeciesConfig {
   name: string;
   role: 'primary' | 'secondary';
@@ -275,8 +298,33 @@ export interface PlifeMacros {
   force: number;
   /** × every species' radiusScale (the shader still clamps at the cell size) */
   reach: number;
-  /** × maxSpeed, ÷ friction (friction floored at 0.1) */
-  agility: number;
+  /**
+   * × maxSpeed — the velocity **ceiling**, and nothing else.
+   *
+   * Split out of the old `agility` macro on 2026-08-13, after measuring that the
+   * ceiling was not a safety rail but the sim's primary velocity governor: at
+   * shipped defaults the force/friction equilibrium sits ~4× the ceiling at the
+   * median and ~40× at p99, so 36-45% of live particles were pinned at exactly
+   * `maxSpeed` and the rest sat just under it. The clamp renormalises v
+   * isotropically, so it keeps heading and deletes speed — which is precisely
+   * the "everything moves at the same speed" symptom.
+   *
+   * `agility` could not fix that at any setting, and that is why it had to go:
+   * it multiplied the ceiling AND divided friction, and dividing friction raises
+   * the equilibrium by the same factor it raises the ceiling. Both halves moved
+   * the same side of the saturation inequality, so no value of one knob could
+   * ever unpin the sim. These two can, in opposite directions.
+   */
+  speed: number;
+  /**
+   * × every species' friction — the exponential damping rate, and nothing else.
+   *
+   * This is the knob that lowers the equilibrium *under* the ceiling: terminal
+   * speed goes as force/friction, so `drag` divides it. Raise this to recover
+   * velocity spread without making the world faster; raise `speed` instead to
+   * keep the spread and let the whole thing move quicker.
+   */
+  drag: number;
   /** × every species' wander */
   chaos: number;
   /** secondaries only: × population target and × intensity */
@@ -290,7 +338,8 @@ export function defaultPlifeMacros(): PlifeMacros {
     density: 1,
     force: 1,
     reach: 1,
-    agility: 1,
+    speed: 1,
+    drag: 1,
     chaos: 1,
     accents: 1,
     trails: 1,
@@ -306,18 +355,58 @@ export const MACRO_RANGE: Readonly<Record<keyof PlifeMacros, { min: number; max:
   density: { min: 0, max: 2 },
   force: { min: 0, max: 2 },
   reach: { min: 0, max: 2 },
-  agility: { min: 0, max: 2 },
+  // Wider than the 0..2 the rest of the rig uses, and measured rather than
+  // guessed: the equilibrium sits ~4× the ceiling at the median, so a 0..2
+  // `speed` could not lift the ceiling clear of it and a 0..2 `drag` could not
+  // pull the equilibrium down to it. These two need the range to actually reach
+  // the unsaturated regime; the others are trims and 0..2 is right for them.
+  // (The working point the user settled on is `speed` 1.5, well inside this.)
+  speed: { min: 0, max: 4 },
+  // Raised 6 → 16 on user report (2026-08-13): tuning landed at `speed` 1.5 with
+  // `drag` at the old ceiling and still wanting more. Measurement agreed — at
+  // drag 6 three of eight species were already pinned on the post-macro clamp —
+  // so the clamp moved to `MAX_EFFECTIVE_FRICTION` and this followed it up.
+  drag: { min: 0, max: 16 },
   chaos: { min: 0, max: 2 },
   accents: { min: 0, max: 2 },
   trails: { min: 0, max: 1.5 },
 };
+
+/**
+ * Files written before 2026-08-13 carry a single `agility` macro, which meant
+ * "× maxSpeed, ÷ friction". Both halves survive the split, so the migration is
+ * exact rather than approximate — `speed = agility` reproduces the old ceiling
+ * and `drag = 1/agility` reproduces the old damping — and a loaded file replays
+ * at the look it was saved at rather than snapping to neutral.
+ *
+ * Pure, and returns a copy: `PlifeSim.applyExtras` runs this over the untrusted
+ * `extras.macros` blob before its clamping walk, and the caller's object is not
+ * this function's to write into. A file that already carries `speed`/`drag`
+ * wins outright — those are the current schema, and a stale `agility` sitting
+ * beside them must not override what the newer keys say.
+ */
+export function migrateLegacyMacros(
+  src: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const out = { ...src };
+  const legacy = out['agility'];
+  // `> 0` and not merely finite: the old wiring divided by this, so 0 (and any
+  // negative, which the old range could not produce but a hand-edited file can)
+  // has no inverse to migrate and falls through to the shipped default.
+  if (typeof legacy === 'number' && Number.isFinite(legacy) && legacy > 0) {
+    if (out['speed'] === undefined) out['speed'] = legacy;
+    if (out['drag'] === undefined) out['drag'] = 1 / legacy;
+  }
+  return out;
+}
 
 /** Order the macro folder lists them in, with the wiring stated in the label. */
 export const MACRO_LABELS: readonly { key: keyof PlifeMacros; label: string }[] = [
   { key: 'density', label: 'density  (× all populations)' },
   { key: 'force', label: 'force  (× forceGain·forceScale)' },
   { key: 'reach', label: 'reach  (× radius scales)' },
-  { key: 'agility', label: 'agility  (× speed, ÷ friction)' },
+  { key: 'speed', label: 'speed  (× velocity ceiling)' },
+  { key: 'drag', label: 'drag  (× friction)' },
   { key: 'chaos', label: 'chaos  (× wander)' },
   { key: 'accents', label: 'accents  (× accent pop + glow)' },
   { key: 'trails', label: 'trails  (× echo persistence)' },

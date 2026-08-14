@@ -86,8 +86,9 @@ import {
   FAR_SCALE_RANGE,
   FAR_SCALE_REF,
   MACRO_RANGE,
+  migrateLegacyMacros,
   MAX_BRIGHTNESS,
-  MAX_FRICTION,
+  MAX_EFFECTIVE_FRICTION,
   MAX_MIN_R,
   MAX_NEAR_STENCIL,
   MAX_RADIUS_SCALE,
@@ -1035,7 +1036,10 @@ export class PlifeSim implements Sim, ModTarget {
     const o = (raw ?? {}) as Record<string, unknown>;
 
     const m = this.config.macros;
-    const src = plainObject(o['macros']);
+    // Pre-split files carry `agility` instead of `speed`/`drag` — see
+    // `migrateLegacyMacros`. Runs before the clamping walk so the migrated
+    // values are bounded by the same table as everything else.
+    const src = migrateLegacyMacros(plainObject(o['macros']));
     const defM = defaultPlifeMacros();
     for (const key of Object.keys(defM) as (keyof PlifeMacros)[]) {
       const r = MACRO_RANGE[key];
@@ -2502,8 +2506,12 @@ export class PlifeSim implements Sim, ModTarget {
     f[13] = Math.max(cfg.exposure, 0) * Math.pow(2, cfg.render.grade.exposureEv);
     f[14] = this.respawnFraction;
     u[15] = this.respawnKey >>> 0;
-    // Macro `agility`, half of it: speed up here, damping down in uploadSpecies.
-    f[16] = Math.max(Math.max(cfg.maxSpeed, 1e-4) * Math.max(macros.agility, 0), 1e-4);
+    // Macro `speed`: the velocity ceiling, and only the ceiling. Its partner
+    // `drag` lives in uploadSpecies and moves the *equilibrium* instead — the
+    // two are deliberately independent, because the old combined `agility`
+    // pushed both sides of the saturation inequality the same way and so could
+    // never take the sim out of the clamp. See PlifeMacros.speed.
+    f[16] = Math.max(Math.max(cfg.maxSpeed, 1e-4) * Math.max(macros.speed, 0), 1e-4);
     u[17] = this.activeTotal >>> 0;
     // The feedback lane, converted from "per 60 Hz frame" (what the sliders and
     // the shipped defaults mean) to "per frame at this display's refresh rate"
@@ -2546,10 +2554,11 @@ export class PlifeSim implements Sim, ModTarget {
     const list = this.config.species;
     const imp = this.impulses;
     const macros = this.config.macros;
-    // Macro `agility`, the damping half. Floored at 0.1 rather than 0: a species
-    // with no friction at all never settles, it just accumulates speed until the
-    // maxSpeed clamp is the only thing shaping the motion.
-    const frictionDiv = Math.max(macros.agility, 1e-3);
+    // Macro `drag`, the damping half of what used to be `agility`. It now
+    // MULTIPLIES friction rather than dividing it — "drag up = more damping" is
+    // the only reading of the word, and it is also the direction that fixes the
+    // measured problem, since terminal speed goes as force/friction.
+    const frictionMul = Math.max(macros.drag, 0);
     let rawTotal = 0;
 
     for (let k = 0; k < this.config.speciesCount; k++) {
@@ -2636,11 +2645,20 @@ export class PlifeSim implements Sim, ModTarget {
       // the same idea — energy into the system — expressed in each substrate's
       // own currency, so one ResponseConfig drives both without re-tuning.
       d[o + 6] = Math.max(s.forceScale, 0) * Math.max(depositMul, 0);
-      // Macro `agility` divides here (less damping = longer slides) and the 0.1
-      // floor is what keeps "agility at its ceiling" from meaning "no damping".
+      // Macro `drag` multiplies here (more damping = shorter slides, and a lower
+      // terminal speed). The 0.1 floor is what keeps `drag` at 0 from meaning
+      // "no damping at all" — a species with no friction never settles, it just
+      // accumulates speed until the ceiling is the only thing shaping the
+      // motion, which is exactly the failure this pair was split to cure.
+      //
+      // The ceiling is `MAX_EFFECTIVE_FRICTION`, NOT the θ slider's own
+      // `MAX_FRICTION`: this value has the macro composed into it, so bounding
+      // it by what the *slider* may author would clip the macro's whole top end
+      // — and clip every damper species to the identical value, which is how a
+      // clamp quietly puts the per-species spread back where it started.
       d[o + 7] = Math.min(
-        Math.max(Math.max(s.friction, 0) / frictionDiv, 0.1),
-        MAX_FRICTION,
+        Math.max(Math.max(s.friction, 0) * frictionMul, 0.1),
+        MAX_EFFECTIVE_FRICTION,
       );
       // Macro `chaos`.
       d[o + 8] = Math.max(s.wander, 0) * Math.max(macros.chaos, 0);

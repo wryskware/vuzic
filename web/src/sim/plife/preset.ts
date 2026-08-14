@@ -424,7 +424,8 @@ export const ATTRACTION_MOD: ModSpec = ATTRACTION_BOUND.mod as ModSpec;
  * A whole-sim scalar has no musical referent — there is nothing in the track
  * that *means* "global physics" — so the music sweeping it reads as drift, not
  * response, and it fights the one knob the user reaches for to set the sim's
- * overall energy. The always-yours handles are the `force`/`agility` macros;
+ * overall energy. The always-yours handles are the `force`/`speed`/`drag`
+ * macros;
  * these θ slots stay for files and the panel, absolute in every mode. Both
  * remain bounded well inside explicit-Euler stability at dt = 1/120. Halving
  * the old step strictly increases the integrator's stability margin.
