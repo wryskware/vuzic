@@ -37,7 +37,7 @@
  * invites judging by reading, which is the thing the workbench already does
  * better. The log carries the numbers for anything downstream that wants them.
  */
-import type { ButtonApi, FolderApi } from 'tweakpane';
+import type { ButtonApi } from 'tweakpane';
 import { EXPLORER_SUBSPACES, type ExplorerSubspace } from '../explore/search';
 import type { PanelContainer } from './panel';
 
@@ -160,7 +160,7 @@ export function createExplorePanel(
   };
 }
 
-function button(root: FolderApi, title: string, onClick: () => void): ButtonApi {
+function button(root: PanelContainer, title: string, onClick: () => void): ButtonApi {
   const b = root.addButton({ title });
   b.on('click', onClick);
   return b;

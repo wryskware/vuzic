@@ -72,20 +72,15 @@ import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { RenderFrame, Sim } from '../types';
 import { advanceStepCadence, smoothDtFrames } from '../step-cadence';
 import {
-  BUDGET_FPS_RANGE,
   BUDGET_MIN,
-  defaultMatrixGen,
-  defaultPlifeBudget,
+  defaultExtrasBlocks,
   defaultPlifeConfig,
-  defaultPlifeField,
-  defaultPlifeMacros,
   defaultPlifePaletteColor,
-  defaultPlifePopulation,
-  FAR_GAIN_RANGE,
+  extrasRules,
   FAR_SCALE_MIN_RATIO,
   FAR_SCALE_RANGE,
   FAR_SCALE_REF,
-  MACRO_RANGE,
+  LOOK_RULES,
   migrateLegacyMacros,
   MAX_BRIGHTNESS,
   MAX_EFFECTIVE_FRICTION,
@@ -96,15 +91,15 @@ import {
   MAX_SIZE,
   MAX_STRETCH,
   MAX_SUBSTEPS,
+  MAX_WIGGLE_ROLL,
   MIN_R_FLOOR,
-  PAIR_SEARCH_MODES,
   PRIMARY_COUNT,
   R_CAP,
   type PairSearch,
   type PlifeConfig,
-  type PlifeMacros,
 } from './config';
-import { seedMatrixBase } from './genmatrix';
+import { readInto } from '../../mapping/read-into';
+import { seedMatrixBase, seedWiggleDirs, wiggleAttraction } from './genmatrix';
 import {
   applyVector,
   fieldClasses,
@@ -518,12 +513,35 @@ export class PlifeSim implements Sim, ModTarget {
    * never written, and applied *after* whatever set the base parameters — the
    * modulator's slew limiter included — so transients are never smoothed away.
    *
-   * All four lanes are wired: the three multipliers in `uploadSpecies`, and the
-   * splash discs through `uploadSplashes` into the `splashParticles` pass.
+   * All five lanes are wired: the three multipliers in `uploadSpecies`, the
+   * splash discs through `uploadSplashes` into the `splashParticles` pass, and
+   * the wiggle envelope through `uploadAttraction` into the interaction matrix.
    */
   private impulses: ImpulseState | null = null;
   /** Per-species brightness multiplier from the stem-follow lane, held by reference. */
   private brightFollow: Float32Array | null = null;
+
+  // ── the impulse wiggle (roadmap phase 1 item 2) ────────────────────────────
+  //
+  // A cache, keyed on everything the draw depends on. The weights are a pure
+  // function of (seed, matrixGen.wiggleRoll, K), and all three can move at
+  // runtime — a reseed, the reroll button, a loaded file, one of the explorer's
+  // nine style syncs a second — so rather than hooking every one of those
+  // routes (and missing the tenth), the upload path re-derives whenever the key
+  // it was built from no longer matches. The draw is 64 hashes; the check is
+  // three integer comparisons per substep.
+
+  private wiggleDirs: Float32Array | null = null;
+  private wiggleSeed = -1;
+  private wiggleRoll = -1;
+  private wiggleK = -1;
+  /**
+   * Was the block last written to the GPU a displaced one? Exactly the "one dead
+   * frame" bookkeeping `uploadSplashes` does: when every envelope has decayed
+   * the matrix has to be written back *once* more, or the world keeps whatever
+   * the last hit left in it until something else happens to push θ.
+   */
+  private wiggleLive = false;
 
   // ── population lane state (CPU-owned; see `updatePopulation`) ───────────────
   //
@@ -1017,21 +1035,39 @@ export class PlifeSim implements Sim, ModTarget {
   // edit the tiles never see — which is exactly how the population sliders came
   // to do nothing while the grid was open.
 
+  /**
+   * The blocks of `PlifeConfig` that ride the extras channel, by reference.
+   *
+   * **This list is the schema.** `serializeExtras` clones what it returns and
+   * `applyExtras` reads back into the very same objects, so the two directions
+   * cannot disagree about which blocks exist, and — because both go through
+   * `readInto`, which walks the destination's own keys — they cannot disagree
+   * about which *fields* exist either. Adding a field to any block below costs
+   * nothing here; adding a whole new block costs one line, in one place.
+   *
+   * That is the fix for the recurring "my tweak didn't save": before this,
+   * serialisation picked fields by hand and restoration read them back by hand,
+   * so a new setting had to be remembered twice and was silently dropped if it
+   * was remembered neither time.
+   */
+  private extrasBlocks(): Record<string, object> {
+    return {
+      macros: this.config.macros,
+      matrixGen: this.config.matrixGen,
+      population: this.config.population,
+      field: this.config.field,
+      // The four SETTINGS only. `effectiveBudget` is not a field of this block
+      // and must never become one: it is a live measurement of this machine in
+      // this session, and a saved one would open every future run of this
+      // mapping at whatever the frame rate happened to be when it was written.
+      budget: this.config.budget,
+    };
+  }
+
   /** A plain snapshot of everything plife wants saved outside θ. */
   serializeExtras(): Record<string, unknown> {
-    const m = this.config.macros;
-    const g = this.config.matrixGen;
-    const p = this.config.population;
     return {
-      macros: { ...m },
-      matrixGen: { ...g, rMin: { ...g.rMin }, rMax: { ...g.rMax } },
-      population: { ...p, accent: { ...p.accent } },
-      field: { ...this.config.field },
-      // The four SETTINGS only. `effectiveBudget` is not in here and must never
-      // be: it is a live measurement of this machine in this session, and a saved
-      // one would open every future run of this mapping at whatever the frame
-      // rate happened to be when it was written.
-      budget: { ...this.config.budget },
+      ...structuredClone(this.extrasBlocks()),
       // Length K, index-aligned with `config.species`. A flat boolean array
       // rather than a list of names, because the species *are* their indices
       // everywhere else in this sim (the matrix, the palette, the stem map), and
@@ -1042,7 +1078,9 @@ export class PlifeSim implements Sim, ModTarget {
         .map((s) => s.enabled !== false),
       // θ, but the two slots excluded from modulation and owned by the look tab.
       // Saved here because nothing else persists θ, and a reload that reset the
-      // exposure you just dialled in is indistinguishable from a bug.
+      // exposure you just dialled in is indistinguishable from a bug. Not a
+      // config block of its own — these two live on the config root — which is
+      // why they are named individually here and nowhere else.
       look: { exposure: this.config.exposure, gamma: this.config.gamma },
     };
   }
@@ -1068,94 +1106,34 @@ export class PlifeSim implements Sim, ModTarget {
   applyExtras(raw: Record<string, unknown> | undefined): void {
     const o = (raw ?? {}) as Record<string, unknown>;
 
-    const m = this.config.macros;
-    // Pre-split files carry `agility` instead of `speed`/`drag` — see
-    // `migrateLegacyMacros`. Runs before the clamping walk so the migrated
-    // values are bounded by the same table as everything else.
-    const src = migrateLegacyMacros(plainObject(o['macros']));
-    const defM = defaultPlifeMacros();
-    for (const key of Object.keys(defM) as (keyof PlifeMacros)[]) {
-      const r = MACRO_RANGE[key];
-      m[key] = clampNum(src[key], defM[key], r.min, r.max);
+    // Every declared block, restored by walking its own live keys. A block is
+    // reset to its shipped defaults first so a *partial* saved block does not
+    // leave the untouched half at whatever the previous load or the explorer's
+    // last style sync happened to put there — `applyExtras` has to be a
+    // function of the blob, not of history, because the explorer calls it nine
+    // times a second against nine different tiles.
+    const blocks = this.extrasBlocks();
+    const defaults = defaultExtrasBlocks(this.config.maxParticles);
+    const rules = extrasRules(this.config.maxParticles);
+    for (const [name, live] of Object.entries(blocks)) {
+      // Two walks, both in place. `Object.assign` would not do: it would replace
+      // `population.accent` and `matrixGen.rMin` with fresh objects, and the
+      // panel's bindings hold those by reference.
+      readInto(live, defaults[name]);
+      // Pre-split files carry `agility` instead of `speed`/`drag` — see
+      // `migrateLegacyMacros`. It runs before the walk so the migrated values
+      // are bounded by the same table as everything else.
+      const src = name === 'macros' ? migrateLegacyMacros(plainObject(o[name])) : o[name];
+      readInto(live, src, rules[name]);
     }
 
-    const g = this.config.matrixGen;
-    const gs = plainObject(o['matrixGen']);
-    const defG = defaultMatrixGen();
-    g.sigma = clampNum(gs['sigma'], defG.sigma, 0, 4);
-    g.symmetry = clampNum(gs['symmetry'], defG.symmetry, 0, 1);
-    g.selfBias = clampNum(gs['selfBias'], defG.selfBias, -1, 1);
-    g.selfBiasAccent = clampNum(gs['selfBiasAccent'], defG.selfBiasAccent, -1, 1);
-    g.accentGain = clampNum(gs['accentGain'], defG.accentGain, 0, 2);
     // `lo <= hi` is enforced rather than assumed, because the generator draws
-    // uniformly between them and an inverted band would draw nonsense. The two
-    // ceilings differ: an outer radius may be drawn up to `MAX_REACH_BRUTE`
-    // (half the torus, the widest any mode can realise), while the hard core
-    // stays under `MAX_MIN_R` — it is a contact distance, not a reach.
-    readBand(gs['rMin'], g.rMin, defG.rMin, MAX_MIN_R);
-    readBand(gs['rMax'], g.rMax, defG.rMax, MAX_REACH_BRUTE);
-
-    // The reach block. `nearStencil` is rounded because it is a *cell count* —
-    // the shader indexes with it — and a slider that snapped visually to 2 while
-    // holding 2.4 would be a search window that disagreed with its own label.
-    const fl = this.config.field;
-    const fs = plainObject(o['field']);
-    const defF = defaultPlifeField();
-    // An unknown / absent / mistyped mode falls back to the default rather than
-    // throwing: this block is opaque to everything between the file and here, and
-    // the one thing a bad value must not do is put an O(N²) pass on screen by
-    // accident. Grid is the safe answer in both directions.
-    const mode = fs['pairSearch'];
-    fl.pairSearch = PAIR_SEARCH_MODES.includes(mode as PairSearch)
-      ? (mode as PairSearch)
-      : defF.pairSearch;
-    fl.nearStencil = Math.round(
-      clampNum(fs['nearStencil'], defF.nearStencil, 1, MAX_NEAR_STENCIL),
-    );
-    fl.farGain = clampNum(fs['farGain'], defF.farGain, FAR_GAIN_RANGE.min, FAR_GAIN_RANGE.max);
-    fl.farScale = clampNum(
-      fs['farScale'],
-      defF.farScale,
-      FAR_SCALE_RANGE.min,
-      FAR_SCALE_RANGE.max,
-    );
-
-    // The budget block. Written in place like everything else here (the panel's
-    // bindings hold `config.budget` by reference), and the cap is clamped to the
-    // live `maxParticles` rather than to whatever the file thought the pool was:
-    // a cap above the pool is not a bigger world, it is a clamp that never binds,
-    // and stating it as `maxParticles` keeps the slider honest.
-    const bu = this.config.budget;
-    const bs = plainObject(o['budget']);
-    const defB = defaultPlifeBudget(this.config.maxParticles);
-    bu.cap = Math.round(clampNum(bs['cap'], defB.cap, BUDGET_MIN, this.config.maxParticles));
-    bu.adaptive = readBool(bs['adaptive'], defB.adaptive);
-    bu.floorFps = clampNum(bs['floorFps'], defB.floorFps, BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max);
-    bu.idealFps = clampNum(bs['idealFps'], defB.idealFps, BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max);
-
-    // The population lane. Ranges are the panel's own (ui/plife-panel.ts, the
-    // "population · stems → colonies" folder), so a loaded value can never sit
-    // outside the slider meant to show it. Note the two floors that are not 0:
-    // `curve` is an exponent the lane raises a 0..1 level to, and `riseTau` /
-    // `fallTau` are divisors in the shader — both have a degenerate value at
-    // zero that the sliders already refuse to produce.
-    const p = this.config.population;
-    const ps = plainObject(o['population']);
-    const defP = defaultPlifePopulation();
-    p.followStems = readBool(ps['followStems'], defP.followStems);
-    p.floor = clampNum(ps['floor'], defP.floor, 0, 1);
-    p.curve = clampNum(ps['curve'], defP.curve, 0.2, 4);
-    p.smoothingMs = clampNum(ps['smoothingMs'], defP.smoothingMs, 100, 5000);
-    p.riseTau = clampNum(ps['riseTau'], defP.riseTau, 0.05, 3);
-    p.fallTau = clampNum(ps['fallTau'], defP.fallTau, 0.1, 8);
-
-    const a = p.accent;
-    const as = plainObject(ps['accent']);
-    const defA = defP.accent;
-    a.enabled = readBool(as['enabled'], defA.enabled);
-    a.floor = clampNum(as['floor'], defA.floor, 0, 1);
-    a.boost = clampNum(as['boost'], defA.boost, 0, 3);
-    a.smoothingMs = clampNum(as['smoothingMs'], defA.smoothingMs, 100, 5000);
+    // uniformly between them and an inverted band would draw nonsense. The walk
+    // above has already clamped both ends into the legal range; this only
+    // restores their order, which no per-field rule can express.
+    const g = this.config.matrixGen;
+    order(g.rMin);
+    order(g.rMax);
 
     // Per-species on/off. Written IN PLACE into the existing species objects for
     // the same reason the blocks above are — the panel's tweakpane bindings hold
@@ -1171,16 +1149,14 @@ export class PlifeSim implements Sim, ModTarget {
       if (sp) sp.enabled = readBool(flags[i], true);
     }
 
-    // Scene exposure / gamma. Bounds are the panel's own (ui/plife-panel.ts's
-    // `exposureRange` and the gamma slider), so a loaded value cannot sit off
-    // the slider meant to show it; absent keeps whatever the preset gave us.
-    const lk = plainObject(o['look']);
-    if (lk['exposure'] !== undefined) {
-      this.config.exposure = clampNum(lk['exposure'], this.config.exposure, 0.05, 4);
-    }
-    if (lk['gamma'] !== undefined) {
-      this.config.gamma = clampNum(lk['gamma'], this.config.gamma, 1, 3);
-    }
+    // Scene exposure / gamma. Not a config block — these two live on the config
+    // root — so they are read through a scratch object and copied back. Absent
+    // keeps whatever the preset gave us, which is why this does not reset first
+    // the way the declared blocks above do.
+    const look = { exposure: this.config.exposure, gamma: this.config.gamma };
+    readInto(look, o['look'], LOOK_RULES);
+    this.config.exposure = look.exposure;
+    this.config.gamma = look.gamma;
   }
 
   // ── stats / status ─────────────────────────────────────────────────────────
@@ -2322,6 +2298,9 @@ export class PlifeSim implements Sim, ModTarget {
     // uploadSpecies first: it is what computes `activeTotal`, which writeGlobals
     // then publishes. (Physarum writes globals first; it has no such dependency.)
     this.uploadSpecies();
+    // The wiggle, republished before the force pass reads the matrix. Cheap
+    // enough to sit unconditionally in the substep path — see `uploadAttraction`.
+    this.uploadAttraction();
     this.writeGlobals(pcgTick);
 
     const encoder = device.createCommandEncoder({ label: 'plife.step' });
@@ -2519,12 +2498,98 @@ export class PlifeSim implements Sim, ModTarget {
     const k = this.config.speciesCount;
     const kk = k * k;
     const d = this.interactionData;
+    // The attraction block goes through the wiggle path rather than being copied
+    // here, so there is exactly one definition of "what A looks like on the GPU
+    // right now" — otherwise a θ apply landing mid-hit would drop the live
+    // displacement and the matrix would visibly snap.
+    this.writeAttractionBlock();
     for (let i = 0; i < kk; i++) {
-      d[i] = this.config.attraction[i] ?? 0;
       d[kk + i] = Math.min(Math.max(this.config.maxR[i] ?? 0, MIN_R_FLOOR), MAX_REACH_BRUTE);
       d[2 * kk + i] = Math.min(Math.max(this.config.minR[i] ?? 0, MIN_R_FLOOR), MAX_MIN_R);
     }
     this.ctx.device.queue.writeBuffer(this.interactionBuf, 0, d);
+  }
+
+  /**
+   * The direction vectors, re-drawn only when their key has moved. See the
+   * fields' note for why this is a cache check rather than a set of hooks.
+   */
+  private ensureWiggleDirs(): Float32Array {
+    const k = this.config.speciesCount;
+    const roll = wiggleRollOf(this.config.matrixGen.wiggleRoll);
+    if (
+      this.wiggleDirs === null ||
+      this.wiggleSeed !== this.seed ||
+      this.wiggleRoll !== roll ||
+      this.wiggleK !== k
+    ) {
+      this.wiggleDirs = seedWiggleDirs(this.seed, roll, k);
+      this.wiggleSeed = this.seed;
+      this.wiggleRoll = roll;
+      this.wiggleK = k;
+    }
+    return this.wiggleDirs;
+  }
+
+  /**
+   * Fill `interactionData[0..K²)` with θ's matrix as the wiggle currently has
+   * it, and record whether anything moved.
+   *
+   * The depth is the macro × the per-kind depths the engine has already folded
+   * into its envelope, and the macro composes *outside* θ exactly like every
+   * other macro: the modulator owns the matrix, the impulse lane owns the
+   * deviation, and the deviation always decays back to zero.
+   *
+   * Not applied to the far lane's coefficients (`uploadFar`), deliberately: that
+   * field is a Gaussian-smoothed density at σ ≥ 0.04 world, re-splatted once per
+   * *tick*, and a transient in it would be an expensive way to smear something
+   * nobody can see. The near lane is where a hit has to land.
+   *
+   * seam: the matrix is the *first* target of the wiggle envelope, not the only
+   * possible one. The envelope itself (`ImpulseState.wiggle`) is per species and
+   * says nothing about what it drives, so pointing it at radius or friction as
+   * well is a few lines in `uploadSpecies` next to the three multiplicative
+   * lanes already composed there. Speed is deliberately *not* on that list: it
+   * was tried, and a velocity-ceiling lane is both perceptually weak (a swarm's
+   * heading reads, its speed does not) and a squatter on `Species.motion.z`,
+   * which is reserved for a third motion component if this ever goes 3D.
+   */
+  private writeAttractionBlock(): boolean {
+    const macro = this.config.macros.wiggle;
+    const depth = Number.isFinite(macro) ? Math.max(macro, 0) : 0;
+    const envelope = this.impulses?.wiggle ?? null;
+    const moved = wiggleAttraction(
+      this.interactionData,
+      this.config.attraction,
+      depth > 0 && envelope ? this.ensureWiggleDirs() : null,
+      envelope,
+      depth,
+      this.config.speciesCount,
+    );
+    this.wiggleLive = moved;
+    return moved;
+  }
+
+  /**
+   * The wiggle's own upload: the first K² floats of the interaction buffer, 256
+   * bytes at K = 8, written per substep while the lane is doing anything.
+   *
+   * Per substep rather than per tick, even though the envelope only moves once
+   * per tick: it is one `writeBuffer` of a quarter of a kilobyte next to a pass
+   * that tests millions of pairs, and paying it unconditionally means there is
+   * no ordering rule to get wrong when something else rewrites θ mid-tick.
+   */
+  private uploadAttraction(): void {
+    const wasLive = this.wiggleLive;
+    const live = this.writeAttractionBlock();
+    if (!live && !wasLive) return;
+    (this.ctx as GpuRuntimeContext).device.queue.writeBuffer(
+      this.interactionBuf,
+      0,
+      this.interactionData,
+      0,
+      this.config.speciesCount * this.config.speciesCount,
+    );
   }
 
   private writeGlobals(pcgTick: number): void {
@@ -2717,7 +2782,9 @@ export class PlifeSim implements Sim, ModTarget {
         Math.max(s.radiusScale, 0.05) * Math.max(macros.reach, 0) * Math.max(sensorMul, 0),
         MAX_RADIUS_SCALE,
       );
-      d[o + 10] = 1; // reserved
+      // Reserved, and staying that way: a 3D substrate wants this slot for a
+      // third motion component, so no lane may squat on it.
+      d[o + 10] = 1;
       d[o + 11] = 0;
       d[o + 12] = 0;
       d[o + 13] = 0;
@@ -2792,9 +2859,17 @@ function plainObject(v: unknown): Record<string, unknown> {
     : {};
 }
 
-function clampNum(v: unknown, fallback: number, lo: number, hi: number): number {
-  const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-  return Math.min(Math.max(n, lo), hi);
+/**
+ * The wiggle reroll counter as a non-negative integer, wrapped at
+ * `MAX_WIGGLE_ROLL`.
+ *
+ * Total, like the validators below it, and for one concrete reason: an export
+ * recipe written before this field existed carries a `matrixGen` block without
+ * it, and the recipe path builds its config straight out of that JSON. `undefined`
+ * has to mean "the shipped family", not `NaN` in a hash key.
+ */
+function wiggleRollOf(value: number): number {
+  return Number.isFinite(value) ? Math.abs(Math.trunc(value)) % MAX_WIGGLE_ROLL : 0;
 }
 
 /** Strict: only a real boolean counts, so `"false"` and `0` fall back rather than coerce. */
@@ -2802,16 +2877,9 @@ function readBool(v: unknown, fallback: boolean): boolean {
   return typeof v === 'boolean' ? v : fallback;
 }
 
-/** A radius band, clamped into `[MIN_R_FLOOR, cap]` with `lo <= hi` restored. */
-function readBand(
-  raw: unknown,
-  dst: { lo: number; hi: number },
-  def: { lo: number; hi: number },
-  cap: number,
-): void {
-  const o = plainObject(raw);
-  const lo = clampNum(o['lo'], def.lo, MIN_R_FLOOR, cap);
-  const hi = clampNum(o['hi'], def.hi, MIN_R_FLOOR, cap);
-  dst.lo = Math.min(lo, hi);
-  dst.hi = Math.max(lo, hi);
+/** Restore `lo <= hi` on a radius band the walk has already clamped end by end. */
+function order(band: { lo: number; hi: number }): void {
+  const { lo, hi } = band;
+  band.lo = Math.min(lo, hi);
+  band.hi = Math.max(lo, hi);
 }

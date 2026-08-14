@@ -97,10 +97,10 @@ function plifeRecipe(): ExportRecipe {
   authored.sim.applyTheta(excursion, registry.mask);
 
   const { render, ...simulation } = full;
-  const modulationWithRender = structuredClone(authored.modulator.config);
-  const { render: _render, ...modulation } = modulationWithRender;
+  const modulationWithShared = structuredClone(authored.modulator.config);
+  const { render: _render, impulses: _impulses, ...modulation } = modulationWithShared;
   return {
-    version: 4,
+    version: 5,
     rendererBuild: 'test',
     track: { id: 'test', contentVersion: 'test-v1' },
     sim: 'plife',

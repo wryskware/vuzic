@@ -91,6 +91,7 @@
  * your edits away and get a new creature.
  */
 import { hash3 } from '../sim/impulses.ts';
+import { mergePalette } from '../sim/palette.ts';
 import { mergeRenderConfig } from '../sim/render/config.ts';
 import type { FeaturesFrame, TimelineSampler } from '../timeline/sampler.ts';
 import type { Timeline } from '../timeline/types.ts';
@@ -638,18 +639,15 @@ export class Modulator {
     // The palette is one object shared with the live config: copy the loaded
     // values *into* it (so the panel's colour pickers keep their bindings) and
     // then re-share, so later edits land in the thing that gets serialised.
-    // Every v2 field is copied, not just the v1 three: a loaded arc that did not
-    // land here would leave the live palette in custom mode showing the arc's
-    // cached hexes, which is the same picture until the first arc edit and then
-    // silently the wrong one.
+    //
+    // `mergePalette` rather than a list of assignments, and that is a fix rather
+    // than a tidy-up: the list that used to be here was written when the palette
+    // had seven fields and never grew to nine, so `space` and `accentArc` were
+    // loaded from the file, parsed correctly, and then dropped right here. That
+    // was the reported "arc-mode settings for the accents do not survive a
+    // refresh" — three layers of correct persistence undone by one stale list.
     const live = this.target.config.palette;
-    live.colors = live.colors.map((c, i) => config.palette.colors[i] ?? c);
-    live.mode = config.palette.mode;
-    live.arc = { ...config.palette.arc };
-    live.hueShiftDeg = config.palette.hueShiftDeg;
-    live.hueRateDegPerSec = config.palette.hueRateDegPerSec;
-    live.saturation = config.palette.saturation;
-    live.brightness = config.palette.brightness;
+    mergePalette(live, config.palette);
     config.palette = live;
     // Same trick for the phase-7 render block.
     mergeRenderConfig(this.target.config.render, config.render);

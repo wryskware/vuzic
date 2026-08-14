@@ -34,8 +34,9 @@
  *   gamma) gets its **hard min/max**, because nothing else is ever going to
  *   write it and the whole authored range is usable.
  */
-import { Pane, type FolderApi } from 'tweakpane';
+import { Pane } from 'tweakpane';
 import { saveModulationLocal } from '../mapping/persist';
+import { createAutosave, persisting, type PersistedContainer } from './autosave';
 import type { ImpulseEngine } from '../sim/impulses';
 import {
   BUDGET_FPS_RANGE,
@@ -49,6 +50,7 @@ import {
   MAX_MIN_R,
   MAX_NEAR_STENCIL,
   MAX_REACH_BRUTE,
+  MAX_WIGGLE_ROLL,
   PAIR_SEARCH_MODES,
   PRIMARY_COUNT,
   R_CAP,
@@ -79,7 +81,6 @@ import { createSimFolder, type SimPanelHost } from './sim-panel';
 import { createTrackFolder, type TrackPanelHost } from './track-panel';
 import { createWorkbench, type WorkbenchHandle } from './workbench';
 
-type Folder = FolderApi;
 
 interface RunState {
   seed: string;
@@ -127,10 +128,17 @@ export function createPlifePanel(
     : null;
   /** θ slot names are the registry's, so a field's own name is the lookup key. */
   const slotOf = slotLookup(sim.registry().names);
+  const autosave = createAutosave(() => {
+    const wb = opts.workbench;
+    if (!wb) return;
+    wb.modulator.config.extras = sim.serializeExtras();
+    saveModulationLocal(wb.modulator.config, sim.simId);
+  });
+
   const tabs = createPanelTabs(pane, {
     explorer: opts.explorer !== undefined,
     workbench: opts.workbench !== undefined,
-  });
+  }, autosave);
 
   const state: RunState = {
     seed: String(sim.currentSeed),
@@ -177,26 +185,19 @@ export function createPlifePanel(
   // write localStorage on every pointer move.
   //
   // It re-serialises the *whole* block rather than the field that changed, which
-  // is why one saver covers three folders and why adding a fourth needs nothing
-  // here beyond an `.on('change', …)`.
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  const persistExtras = (): void => {
-    const wb = opts.workbench;
-    if (!wb) return;
-    if (saveTimer !== null) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      wb.modulator.config.extras = sim.serializeExtras();
-      saveModulationLocal(wb.modulator.config, sim.simId);
-    }, 400);
-  };
+  // is why one saver covers every folder below.
+  //
+  // The folders that hold extras are wrapped in `persisting`, so a widget added
+  // to any of them saves without anyone attaching anything to it. That replaced
+  // ~40 hand-written `.on('change', persistExtras)` calls, every one of which was
+  // a line you could forget on the forty-first — which is the bug this whole
+  // change exists to make unrepeatable.
+  const persistExtras = (): void => autosave.schedule();
 
-  const macros = tabs.play.addFolder({ title: 'macros · performance layer' });
+  const macros = persisting(tabs.play.addFolder({ title: 'macros · performance layer' }), autosave);
   for (const { key, label } of MACRO_LABELS) {
     const r = MACRO_RANGE[key];
-    macros
-      .addBinding(config.macros, key, { min: r.min, max: r.max, step: 0.01, label })
-      .on('change', persistExtras);
+    macros.addBinding(config.macros, key, { min: r.min, max: r.max, step: 0.01, label });
   }
   macros.addButton({ title: 'reset macros to 1' }).on('click', () => {
     Object.assign(config.macros, defaultPlifeMacros());
@@ -270,85 +271,68 @@ export function createPlifePanel(
   // is why every widget here binds directly with no mask or mode caveat: the
   // modulator never writes any of it, in either mode.
   //
-  // Every widget below persists through `persistExtras`, for the same reason the
-  // macros do: the lane now rides the mapping file's `extras` block, and an edit
-  // that only lived in memory would be lost on the next reload while the macro
-  // next to it survived.
-  const pop = tabs.map.addFolder({ title: 'population · stems → colonies', expanded: false });
-  pop
-    .addBinding(config.population, 'followStems', { label: 'follow stems (off = θ absolute)' })
-    .on('change', persistExtras);
-  pop
-    .addBinding(config.population, 'floor', {
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'floor (silent = this ×)',
-    })
-    .on('change', persistExtras);
-  pop
-    .addBinding(config.population, 'curve', {
-      min: 0.2,
-      max: 4,
-      step: 0.01,
-      label: 'curve (exponent)',
-    })
-    .on('change', persistExtras);
+  // The folder is wrapped in `persisting`, so every widget below — and every one
+  // added to it later — saves without being asked. The lane rides the mapping
+  // file's `extras` block, and an edit that only lived in memory would be lost on
+  // the next reload while the macro next to it survived.
+  const pop = persisting(
+    tabs.map.addFolder({ title: 'population · stems → colonies', expanded: false }),
+    autosave,
+  );
+  pop.addBinding(config.population, 'followStems', { label: 'follow stems (off = θ absolute)' });
+  pop.addBinding(config.population, 'floor', {
+    min: 0,
+    max: 1,
+    step: 0.01,
+    label: 'floor (silent = this ×)',
+  });
+  pop.addBinding(config.population, 'curve', {
+    min: 0.2,
+    max: 4,
+    step: 0.01,
+    label: 'curve (exponent)',
+  });
   // Deliberately allowed much slower than stem-follow's brightness smoothing: a
   // colony that sheds a third of its members every bar reads as flicker.
-  pop
-    .addBinding(config.population, 'smoothingMs', {
-      min: 100,
-      max: 5000,
-      step: 50,
-      label: 'smoothing (ms)',
-    })
-    .on('change', persistExtras);
-  pop
-    .addBinding(config.population, 'riseTau', {
-      min: 0.05,
-      max: 3,
-      step: 0.05,
-      label: 'rise τ (s)',
-    })
-    .on('change', persistExtras);
-  pop
-    .addBinding(config.population, 'fallTau', {
-      min: 0.1,
-      max: 8,
-      step: 0.1,
-      label: 'fall τ (s)',
-    })
-    .on('change', persistExtras);
+  pop.addBinding(config.population, 'smoothingMs', {
+    min: 100,
+    max: 5000,
+    step: 50,
+    label: 'smoothing (ms)',
+  });
+  pop.addBinding(config.population, 'riseTau', {
+    min: 0.05,
+    max: 3,
+    step: 0.05,
+    label: 'rise τ (s)',
+  });
+  pop.addBinding(config.population, 'fallTau', {
+    min: 0.1,
+    max: 8,
+    step: 0.1,
+    label: 'fall τ (s)',
+  });
 
   const accent = pop.addFolder({ title: 'accents · novelty', expanded: false });
-  accent
-    .addBinding(config.population.accent, 'enabled', { label: 'novelty → accents' })
-    .on('change', persistExtras);
-  accent
-    .addBinding(config.population.accent, 'floor', {
-      min: 0,
-      max: 1,
-      step: 0.01,
-      label: 'floor (plain section)',
-    })
-    .on('change', persistExtras);
-  accent
-    .addBinding(config.population.accent, 'boost', {
-      min: 0,
-      max: 3,
-      step: 0.01,
-      label: 'boost (headroom ×)',
-    })
-    .on('change', persistExtras);
-  accent
-    .addBinding(config.population.accent, 'smoothingMs', {
-      min: 100,
-      max: 5000,
-      step: 50,
-      label: 'smoothing (ms)',
-    })
-    .on('change', persistExtras);
+  accent.addBinding(config.population.accent, 'enabled', { label: 'novelty → accents' });
+  accent.addBinding(config.population.accent, 'floor', {
+    min: 0,
+    max: 1,
+    step: 0.01,
+    label: 'floor (plain section)',
+  });
+  accent.addBinding(config.population.accent, 'boost', {
+    min: 0,
+    max: 3,
+    step: 0.01,
+    label: 'boost (headroom ×)',
+  });
+  accent.addBinding(config.population.accent, 'smoothingMs', {
+    min: 100,
+    max: 5000,
+    step: 50,
+    label: 'smoothing (ms)',
+  });
 
   // Per-species readout of what the lane is actually doing: the integer target,
   // the stem multiplier behind it, and (accents only) the novelty multiplier.
@@ -365,7 +349,11 @@ export function createPlifePanel(
 
   let impulsePanel: ImpulsePanelHandle | null = null;
   if (opts.impulses) {
-    impulsePanel = createImpulsePanel(tabs.map, opts.impulses, (i) => config.species[i]?.name ?? `${i}`);
+    impulsePanel = createImpulsePanel(
+      persisting(tabs.map, autosave),
+      opts.impulses,
+      (i) => config.species[i]?.name ?? `${i}`,
+    );
   }
 
   // ── sim ────────────────────────────────────────────────────────────────────
@@ -399,7 +387,10 @@ export function createPlifePanel(
   // Costed rather than free: the search window is (2s+1)² cells, so 3 is 5.4× the
   // pair work of 1. The label says cells and world units; the frame counter says
   // the rest.
-  const reach = tabs.sim.addFolder({ title: 'reach  (structural — never modulated)' });
+  const reach = persisting(
+    tabs.sim.addFolder({ title: 'reach  (structural — never modulated)' }),
+    autosave,
+  );
   // The pair-search mode, first in the folder because it decides what every knob
   // under it means: in grid mode the stencil is the reach cap, in brute mode the
   // stencil is ignored entirely and the cap is half the torus.
@@ -473,7 +464,6 @@ export function createPlifePanel(
     modeBinding.label = pairSearchLabel();
     stencilBinding.label = stencilLabel();
     scaleBinding.label = farScaleLabel();
-    persistExtras();
   });
   stencilBinding.on('change', () => {
     // Both labels carry a derived number, and both only move when a slider does
@@ -482,14 +472,10 @@ export function createPlifePanel(
     // touches both, because it is σ1 and σ1 is σ2's floor.
     stencilBinding.label = stencilLabel();
     scaleBinding.label = farScaleLabel();
-    persistExtras();
   });
-  reach
-    .addBinding(config.field, 'farGain', { ...farGain, label: 'far gain  (0 = lane off)' })
-    .on('change', persistExtras);
+  reach.addBinding(config.field, 'farGain', { ...farGain, label: 'far gain  (0 = lane off)' });
   scaleBinding.on('change', () => {
     scaleBinding.label = farScaleLabel();
-    persistExtras();
   });
 
   // ── budget · the particle ceiling and its governor ─────────────────────────
@@ -504,43 +490,38 @@ export function createPlifePanel(
   // The brute lane is what makes this folder worth having: cost there is ∝ N², so
   // halving the budget quarters the frame time and the governor's ×0.85 step is a
   // ~28% cut in work per adjustment rather than 15%.
-  const budget = tabs.sim.addFolder({ title: 'budget  (structural — never modulated)' });
+  const budget = persisting(
+    tabs.sim.addFolder({ title: 'budget  (structural — never modulated)' }),
+    autosave,
+  );
   // Ceiling on Σ(all species targets), not a per-species number: the clamp scales
   // every species by one factor, so the mix you authored is what you keep.
-  budget
-    .addBinding(config.budget, 'cap', {
-      min: BUDGET_MIN,
-      max: config.maxParticles,
-      // All three commensurate on purpose — see BUDGET_MIN's note. A stepped
-      // tweakpane slider snaps to a grid anchored at one end, so a step that does
-      // not divide the span writes back a value neither end sits on.
-      step: BUDGET_STEP,
-      label: `particle cap  (Σ targets; pool ${config.maxParticles.toLocaleString()})`,
-    })
-    .on('change', persistExtras);
-  budget
-    .addBinding(config.budget, 'adaptive', { label: 'adaptive  (governor on)' })
-    .on('change', persistExtras);
+  budget.addBinding(config.budget, 'cap', {
+    min: BUDGET_MIN,
+    max: config.maxParticles,
+    // All three commensurate on purpose — see BUDGET_MIN's note. A stepped
+    // tweakpane slider snaps to a grid anchored at one end, so a step that does
+    // not divide the span writes back a value neither end sits on.
+    step: BUDGET_STEP,
+    label: `particle cap  (Σ targets; pool ${config.maxParticles.toLocaleString()})`,
+  });
+  budget.addBinding(config.budget, 'adaptive', { label: 'adaptive  (governor on)' });
   // Below floor the governor sheds fast; at or near ideal it grows slowly; in
   // between it holds. Both are sliders rather than readouts because the right
   // pair is a per-machine, per-display judgement — 60/120 is the author's panel,
   // not a universal truth.
-  budget
-    .addBinding(config.budget, 'floorFps', {
-      min: BUDGET_FPS_RANGE.min,
-      max: BUDGET_FPS_RANGE.max,
-      step: 1,
-      label: 'floor fps  (under this → shed)',
-    })
-    .on('change', persistExtras);
-  budget
-    .addBinding(config.budget, 'idealFps', {
-      min: BUDGET_FPS_RANGE.min,
-      max: BUDGET_FPS_RANGE.max,
-      step: 1,
-      label: 'ideal fps  (met → grow back)',
-    })
-    .on('change', persistExtras);
+  budget.addBinding(config.budget, 'floorFps', {
+    min: BUDGET_FPS_RANGE.min,
+    max: BUDGET_FPS_RANGE.max,
+    step: 1,
+    label: 'floor fps  (under this → shed)',
+  });
+  budget.addBinding(config.budget, 'idealFps', {
+    min: BUDGET_FPS_RANGE.min,
+    max: BUDGET_FPS_RANGE.max,
+    step: 1,
+    label: 'ideal fps  (met → grow back)',
+  });
   // Live state, never persisted. `effective` is what the clamp actually used this
   // frame and `alive` is what came out of it, so the pair reads as "the ceiling,
   // and whether it is binding" — when they are equal the budget is what is
@@ -548,66 +529,86 @@ export function createPlifePanel(
   budget.addBinding(budgetState, 'effective', { readonly: true, label: 'effective budget' });
   budget.addBinding(budgetState, 'alive', { readonly: true, label: '↳ alive (target)' });
 
-  const speciesRoot = tabs.sim.addFolder({
-    title: opts.workbench ? 'species  (blue band = where the music can take it)' : 'species',
-  });
+  const speciesRoot = persisting(
+    tabs.sim.addFolder({
+      title: opts.workbench ? 'species  (blue band = where the music can take it)' : 'species',
+    }),
+    autosave,
+  );
   // Each returns a title sync: the folders are collapsed by default, so without
   // it "which species are off" is only visible after expanding all eight.
   const speciesTitles: (() => void)[] = [];
   for (let i = 0; i < k; i++) {
     const s = config.species[i];
     if (!s) continue;
-    speciesTitles.push(addSpeciesFolder(speciesRoot, i, s, bands, slotOf, persistExtras));
+    speciesTitles.push(addSpeciesFolder(speciesRoot, i, s, bands, slotOf));
   }
 
   // How a seed *draws* the matrix below, rather than what is in it right now.
   // Nothing here is θ and nothing here is modulated: these act once, at reroll
   // time, in `genmatrix.ts`. Editing one changes nothing on screen until a new
   // draw happens — which is the entire reason the redraw button exists.
-  const gen = tabs.sim.addFolder({ title: 'matrix · seeded generation', expanded: false });
+  const gen = persisting(
+    tabs.sim.addFolder({ title: 'matrix · seeded generation', expanded: false }),
+    autosave,
+  );
   gen.addBinding(config.matrixGen, 'sigma', {
     min: 0,
     max: 1.2,
     step: 0.01,
     label: 'sigma (draw scale)',
-  }).on('change', persistExtras);
+  });
   gen.addBinding(config.matrixGen, 'symmetry', {
     min: 0,
     max: 1,
     step: 0.01,
     label: 'symmetry (1 = no chase)',
-  }).on('change', persistExtras);
+  });
   gen.addBinding(config.matrixGen, 'selfBiasAccent', {
     min: -1,
     max: 1,
     step: 0.01,
     label: 'accent self bias (− disperse)',
-  }).on('change', persistExtras);
+  });
   gen.addBinding(config.matrixGen, 'selfBias', {
     min: -1,
     max: 1,
     step: 0.01,
     label: 'self bias (− filigree)',
-  }).on('change', persistExtras);
+  });
   gen.addBinding(config.matrixGen, 'accentGain', {
     min: 0,
     max: 2,
     step: 0.01,
     label: 'accent gain ×',
-  }).on('change', persistExtras);
+  });
   // The hard-core band runs to MAX_MIN_R (0.05), not to the grid cell size. A
   // core is a *fraction of a reach*, and with brute mode's reaches an 0.02 core
   // inside an 0.3 tent is a pinhole — see MAX_MIN_R. Small values stay the norm;
   // the top of this slider is for large-radius worlds only.
-  gen.addBinding(config.matrixGen.rMin, 'lo', { min: 0.002, max: MAX_MIN_R, step: 0.0005, label: 'r-min lo' }).on('change', persistExtras);
-  gen.addBinding(config.matrixGen.rMin, 'hi', { min: 0.002, max: MAX_MIN_R, step: 0.0005, label: 'r-min hi' }).on('change', persistExtras);
+  gen.addBinding(config.matrixGen.rMin, 'lo', { min: 0.002, max: MAX_MIN_R, step: 0.0005, label: 'r-min lo' });
+  gen.addBinding(config.matrixGen.rMin, 'hi', { min: 0.002, max: MAX_MIN_R, step: 0.0005, label: 'r-min hi' });
   // The outer-radius band runs to the authored ceiling (half the torus), not to
   // any one mode's reach cap: this is the hand-tuning path to structures larger
   // than one filigree strand. Drawing above the *current* mode's cap is legal
   // and simply saturates — the shader truncates it — so in grid mode anything
   // over 0.06 does nothing and the mode dropdown above is what unlocks it.
-  gen.addBinding(config.matrixGen.rMax, 'lo', { min: 0.005, max: MAX_REACH_BRUTE, step: 0.0005, label: 'r-max lo' }).on('change', persistExtras);
-  gen.addBinding(config.matrixGen.rMax, 'hi', { min: 0.005, max: MAX_REACH_BRUTE, step: 0.0005, label: 'r-max hi' }).on('change', persistExtras);
+  gen.addBinding(config.matrixGen.rMax, 'lo', { min: 0.005, max: MAX_REACH_BRUTE, step: 0.0005, label: 'r-max lo' });
+  gen.addBinding(config.matrixGen.rMax, 'hi', { min: 0.005, max: MAX_REACH_BRUTE, step: 0.0005, label: 'r-max hi' });
+  // The impulse wiggle's direction vectors — *which way* each primary's row gets
+  // shoved by an event, not how hard (that is the `wiggle` macro and the per-kind
+  // depths in the events folder). Drawn from (seed, this counter), so pressing
+  // this is the only way to change them without changing the world: the matrix,
+  // the personality and the particles all stay exactly where they are and the
+  // hits start doing something else.
+  //
+  // No slider for the counter itself. Its value is meaningless — it is a key,
+  // not a quantity — and a draggable one would invite scrubbing through
+  // direction families at 60 Hz, which is not a gesture that means anything.
+  gen.addButton({ title: 'reroll wiggle directions' }).on('click', () => {
+    config.matrixGen.wiggleRoll = (config.matrixGen.wiggleRoll + 1) % MAX_WIGGLE_ROLL;
+    persistExtras();
+  });
   if (opts.workbench) {
     const modulator = opts.workbench.modulator;
     // A workbench *reroll* already draws a fresh matrix — a new seed is a new
@@ -673,17 +674,16 @@ export function createPlifePanel(
   // Static art direction, outside the modulation registry entirely (plan.md
   // Revision 2). Editing these edits the object the config file serialises.
   // Palette v2, in the folder builder every substrate's panel shares.
-  const refreshPalette = addPaletteFolder(tabs.look, {
+  const refreshPalette = addPaletteFolder(persisting(tabs.look, autosave), {
     palette: config.palette,
     speciesCount: k,
     // Four primaries then their four stem-keyed accents: two groups, two arcs.
     groupSize: Math.min(PRIMARY_COUNT, k),
     speciesName: (i) => config.species[i]?.name ?? '',
     invalidate: () => sim.invalidatePalette(),
-    onChange: persistExtras,
   });
 
-  const refreshRender = addRenderFolder(tabs.look, {
+  const refreshRender = addRenderFolder(persisting(tabs.look, autosave), {
     render: config.render,
     config,
     // The hard θ bound from plife/preset.ts's global table, not physarum's: a
@@ -693,7 +693,6 @@ export function createPlifePanel(
     renderPasses: () => sim.stats().renderPasses,
     autoExposureState: () => sim.post.autoExposureState,
     invalidatePalette: () => sim.invalidatePalette(),
-    onChange: persistExtras,
     // No soil field in this sim, so the ember underlay has nothing to draw from.
   });
 
@@ -752,11 +751,13 @@ export function createPlifePanel(
       pane.refresh();
     },
     dispose(): void {
-      if (saveTimer !== null) clearTimeout(saveTimer);
       impulsePanel?.dispose();
       // Unsubscribes only: an export already running is owned by the session and
       // survives this panel.
       exportFolder?.dispose();
+      // Before the pane goes: `dispose` flushes, so an edit made in the last
+      // debounce window survives a sim swap or a panel rebuild.
+      autosave.dispose();
       workbench?.dispose();
       explorer?.dispose();
       pane.dispose();
@@ -766,26 +767,26 @@ export function createPlifePanel(
 
 /** @returns a sync for the folder title, which carries the on/off state. */
 function addSpeciesFolder(
-  root: Folder,
+  root: PersistedContainer,
   index: number,
   s: PlifeSpeciesConfig,
   bands: ModBands | null,
   slotOf: (name: string) => number,
-  persistExtras: () => void,
 ): () => void {
   const title = (): string =>
     `${index} · ${s.name}${s.role === 'secondary' ? ' (accent)' : ''}${s.enabled ? '' : '  — off'}`;
   const f = root.addFolder({ title: title(), expanded: index === 0 });
   // First control in the folder, above every θ slider, because it decides
   // whether the rest of them matter. Outside θ entirely — it rides the `extras`
-  // block, hence `persistExtras` rather than the workbench's θ autosave — which
-  // is what makes "four primaries and one accent" survive a chorus, a reroll,
-  // an explorer pick and a reload. Switching it off drains the species over the
-  // population lane's fall-τ instead of blanking it, so the frame stays honest.
-  f.addBinding(s, 'enabled', { label: 'enabled (off = drains to 0)' }).on(
-    'change',
-    persistExtras,
-  );
+  // block rather than the workbench's θ autosave — which is what makes "four
+  // primaries and one accent" survive a chorus, a reroll, an explorer pick and a
+  // reload. Switching it off drains the species over the population lane's
+  // fall-τ instead of blanking it, so the frame stays honest.
+  //
+  // No save call here: `root` is a `persisting` container, so every binding this
+  // function adds — this one and the θ sliders below, now and whenever a tenth
+  // one is added — schedules the autosave by construction.
+  f.addBinding(s, 'enabled', { label: 'enabled (off = drains to 0)' });
   /**
    * One species θ slider plus its band. The registry names a species slot
    * `species<i>.<field>` and the field *is* the config key, so the slot lookup

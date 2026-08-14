@@ -26,36 +26,50 @@
  * v2 therefore renders bit-identically after loading — which is the whole
  * requirement, since the autosaves and the committed `modulation.json` files are
  * where this project's art direction actually lives.
+ *
+ * ## Reading is driven by the defaults, not by a written list
+ *
+ * Every scalar and nested block below is read by `readInto`, which walks the
+ * *defaults object* it is given and copies whatever the raw blob has for each of
+ * its keys. That is deliberate and load bearing: the write side is
+ * `JSON.stringify`, which is total, so a reader that enumerated fields by hand
+ * would drop any field a future feature added — silently, on the way back in,
+ * with nothing failing anywhere. That defect shipped at least once (the accents'
+ * arc), so the enumeration is gone.
+ *
+ * What is still hand-written, and why: `speciesCount` (it sizes allocations and
+ * must be checked before anything allocates from it), the version dispatch, and
+ * every **array** — `colors` is per species and re-derived in arc mode,
+ * `driverGains` is the track's driver count. Arrays have semantics a generic
+ * walker cannot know; scalars do not, which is why scalars are where the
+ * forgetting happened.
  */
-import { MODULATION_VERSION, type BoundaryOptions, type ModulationConfig } from './types.ts';
-import { MOD_GROUPS, type ModGroup } from './modspec.ts';
+import { defaultBoundary, MODULATION_VERSION, type ModulationConfig } from './types.ts';
+import type { ModGroup } from './modspec.ts';
+import { oneOf, range, readInto, type RuleTree } from './read-into.ts';
+import {
+  defaultImpulseConfig,
+  IMPULSE_RULES,
+  type ImpulseConfig,
+} from '../sim/impulses.ts';
 // The one constant the loader and the live slider must agree on: raising it in
 // one place only would clip loaded files below what the workbench allows.
 import { MAX_DRIVER_GAIN } from './modulation.ts';
-import { defaultStemFollow, type StemFollowConfig } from './stemfollow.ts';
+import { defaultStemFollow } from './stemfollow.ts';
 import {
-  defaultArc,
-  defaultAccentArc,
   PALETTE_SPACES,
-  type PaletteSpace,
   syncPaletteColors,
   FALLBACK_COLOR,
   MAX_HUE_RATE_DEG_PER_SEC,
   type Palette,
-  type PaletteArc,
 } from '../sim/palette.ts';
 // `defaultPalette` is physarum's shipped art direction and is the only thing
 // here that still knows a specific sim. It is the fallback a hand-trimmed file
 // falls back *to*, not something the format depends on; a second sim's loader
 // would want its own, and that is the next seam to cut if one appears.
 import { defaultPalette } from '../sim/physarum/config.ts';
-import {
-  defaultRenderConfig,
-  TONEMAPS,
-  type RenderConfig,
-  type ToneMap,
-} from '../sim/render/config.ts';
-import { DEFAULT_SLEW, type SlewRates } from './slew.ts';
+import { defaultRenderConfig, TONEMAPS, type RenderConfig } from '../sim/render/config.ts';
+import { DEFAULT_SLEW } from './slew.ts';
 
 /**
  * One autosave slot per sim. Physarum keeps the original unsuffixed key so every
@@ -117,9 +131,16 @@ export function defaultModulationConfig(
     // on setConfig and writes the real array back.
     driverGains: [],
     stemFollow: defaultStemFollow(),
+    // The event lane's tuning. Present here — rather than optional-and-absent
+    // like `extras` — because it is sim-agnostic and always exists: the engine
+    // is constructed for every substrate. `buildSimBundle` replaces this with
+    // the live engine's own object by reference immediately after construction,
+    // the same trick the palette and the render block use, so a panel edit is an
+    // edit to the thing that gets serialised with no sync step to forget.
+    impulses: defaultImpulseConfig(),
     responseSpeed: 1,
     slew: { ...DEFAULT_SLEW },
-    boundary: { enabled: true, snapFraction: 0.6, respawnFraction: 0.12 },
+    boundary: defaultBoundary(),
   };
 }
 
@@ -156,30 +177,28 @@ function count(v: unknown, what: string, max: number): number {
   return n;
 }
 
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.min(Math.max(v, lo), hi);
-}
-
 /**
- * The arc block is always written and always read, even in custom mode: an
- * optional sub-object would mean every consumer (this parser, the recipe
- * validator, the panel's bindings) carrying an "or the defaults" branch for a
- * block that costs four numbers.
+ * Bounds for the palette blocks that have them.
  *
- * Hue angles are not clamped — any real angle is a legal angle, and a file
- * saying 720 means the same wheel position as 0. S and L are clamped because
- * they are coordinates with ends, and a file with `light: 500` should render as
- * white rather than fail to load.
+ * Hue angles are absent on purpose — any real angle is a legal angle, and a file
+ * saying 720 means the same wheel position as 0. S and L are here because they
+ * are coordinates with ends, and a file with `light: 500` should render as white
+ * rather than fail to load.
  */
-function paletteArc(v: unknown, what: string, d: PaletteArc = defaultArc()): PaletteArc {
-  const o = (v ?? {}) as Record<string, unknown>;
-  return {
-    hueStartDeg: num(o['hueStartDeg'], `${what}.hueStartDeg`, d.hueStartDeg),
-    hueRangeDeg: num(o['hueRangeDeg'], `${what}.hueRangeDeg`, d.hueRangeDeg),
-    sat: clamp(num(o['sat'], `${what}.sat`, d.sat), 0, 100),
-    light: clamp(num(o['light'], `${what}.light`, d.light), 0, 100),
-  };
-}
+const ARC_RULES: RuleTree = { sat: range(0, 100), light: range(0, 100) };
+
+const PALETTE_RULES: RuleTree = {
+  mode: oneOf(['arc', 'custom']),
+  // An unknown or absent space falls back to HSLuv, which is what every palette
+  // written before the space was selectable meant.
+  space: oneOf(PALETTE_SPACES),
+  arc: ARC_RULES,
+  accentArc: ARC_RULES,
+  hueRateDegPerSec: range(-MAX_HUE_RATE_DEG_PER_SEC, MAX_HUE_RATE_DEG_PER_SEC),
+};
+
+/** The one render field with a closed vocabulary; the rest are free scalars. */
+const RENDER_RULES: RuleTree = { grade: { tonemap: oneOf(TONEMAPS) } };
 
 /**
  * Palette v2, and the v1 lift.
@@ -187,37 +206,27 @@ function paletteArc(v: unknown, what: string, d: PaletteArc = defaultArc()): Pal
  * A v4-and-earlier palette has no `mode`, so it reads as `custom` — which is
  * precisely what it was — with the two hue fields at zero. Nothing about how its
  * colours reach a pixel changes.
+ *
+ * Everything except `colors` is `readInto`'s: the arcs, the mode, the space and
+ * the four global scalars all round trip because they are in `defaultPalette`'s
+ * return value, and a field added to `Palette` tomorrow will too. `colors` stays
+ * bespoke because it is per species and, in arc mode, a derived cache.
  */
-function palette(v: unknown, speciesCount: number, what: string): Palette {
+function palette(v: unknown, speciesCount: number): Palette {
   const o = (v ?? {}) as Record<string, unknown>;
-  const raw = Array.isArray(o['colors']) ? (o['colors'] as unknown[]) : [];
   const fallback = defaultPalette(speciesCount);
-  const colors = fallback.colors.map((c, i) => (typeof raw[i] === 'string' ? (raw[i] as string) : c));
-  const out: Palette = {
-    mode: o['mode'] === 'arc' ? 'arc' : 'custom',
-    // Unknown or absent space falls back to HSLuv, which is what every palette
-    // written before the space was selectable meant.
-    space: PALETTE_SPACES.includes(o['space'] as PaletteSpace)
-      ? (o['space'] as PaletteSpace)
-      : 'hsluv',
-    arc: paletteArc(o['arc'], `${what}.arc`),
-    accentArc: paletteArc(o['accentArc'], `${what}.accentArc`, defaultAccentArc()),
-    colors,
-    hueShiftDeg: o['hueShiftDeg'] === undefined ? 0 : num(o['hueShiftDeg'], `${what}.hueShiftDeg`),
-    hueRateDegPerSec:
-      o['hueRateDegPerSec'] === undefined
-        ? 0
-        : clamp(
-            num(o['hueRateDegPerSec'], `${what}.hueRateDegPerSec`),
-            -MAX_HUE_RATE_DEG_PER_SEC,
-            MAX_HUE_RATE_DEG_PER_SEC,
-          ),
-    saturation: o['saturation'] === undefined ? 1 : num(o['saturation'], `${what}.saturation`),
-    brightness: o['brightness'] === undefined ? 1 : num(o['brightness'], `${what}.brightness`),
-  };
+  // `defaultPalette` is `customPalette`, i.e. mode custom, space hsluv, the two
+  // shipped arcs, and the four v2 scalars at their neutral values — which is
+  // field for field what the hand-written reader used to fall back to. So the
+  // walk below is not merely equivalent to it, it is the same numbers stated
+  // once instead of nine times.
+  const out = readInto(defaultPalette(speciesCount), o, PALETTE_RULES);
+
+  const raw = Array.isArray(o['colors']) ? (o['colors'] as unknown[]) : [];
+  out.colors = fallback.colors.map((c, i) => (typeof raw[i] === 'string' ? (raw[i] as string) : c));
   // In arc mode the stored hexes are a cache, and a hand-edited or stale one
   // must not survive the load. In custom mode this only pads a short list, which
-  // the `fallback.colors` map above has already done.
+  // the map above has already done.
   syncPaletteColors(out, speciesCount, (i) => fallback.colors[i] ?? FALLBACK_COLOR);
   return out;
 }
@@ -227,31 +236,8 @@ function palette(v: unknown, speciesCount: number, what: string): Palette {
  * default — the grade is art direction, so a file that predates it (or that a
  * human trimmed by hand) should adopt the current defaults rather than fail.
  */
-function renderBlock(v: unknown, what: string): RenderConfig {
-  const out = defaultRenderConfig();
-  const o = (v ?? {}) as Record<string, unknown>;
-  const pick = <T extends object>(dst: T, raw: unknown, label: string): void => {
-    const src = (raw ?? {}) as Record<string, unknown>;
-    for (const key of Object.keys(dst) as (keyof T & string)[]) {
-      const value = src[key];
-      if (value === undefined) continue;
-      const current = dst[key];
-      if (typeof current === 'number') {
-        (dst as Record<string, unknown>)[key] = num(value, `${label}.${key}`);
-      } else if (typeof current === 'boolean') {
-        (dst as Record<string, unknown>)[key] = value === true;
-      } else if (typeof value === 'string') {
-        (dst as Record<string, unknown>)[key] = value;
-      }
-    }
-  };
-  pick(out.grade, o['grade'], `${what}.grade`);
-  pick(out.bloom, o['bloom'], `${what}.bloom`);
-  pick(out.feedback, o['feedback'], `${what}.feedback`);
-  if (!TONEMAPS.includes(out.grade.tonemap)) {
-    out.grade.tonemap = defaultRenderConfig().grade.tonemap as ToneMap;
-  }
-  return out;
+function renderBlock(v: unknown): RenderConfig {
+  return readInto(defaultRenderConfig(), v, RENDER_RULES);
 }
 
 /** Warn about the legacy lift once per session, not once per load. */
@@ -307,15 +293,28 @@ function driverGains(v: unknown): number[] {
   );
 }
 
-function stemFollow(v: unknown): StemFollowConfig {
-  const o = (v ?? {}) as Record<string, unknown>;
-  const d = defaultStemFollow();
-  return {
-    enabled: o['enabled'] === undefined ? d.enabled : o['enabled'] !== false,
-    floor: Math.min(Math.max(num(o['floor'], 'stemFollow.floor', d.floor), 0), 1),
-    curve: Math.max(num(o['curve'], 'stemFollow.curve', d.curve), 0.01),
-    smoothingMs: Math.max(num(o['smoothingMs'], 'stemFollow.smoothingMs', d.smoothingMs), 1),
-  };
+const STEM_FOLLOW_RULES: RuleTree = {
+  floor: range(0, 1),
+  curve: range(0.01, Infinity),
+  smoothingMs: range(1, Infinity),
+};
+
+/**
+ * The impulse lane, persisted with the mapping since 2026-08-13.
+ *
+ * It was the largest block of settings in the workbench that had **no** save
+ * path at all: the events folder bound `ImpulseConfig` directly and nothing ever
+ * wrote it anywhere, so every splash radius and decay τ died on refresh. It
+ * belongs here rather than in the sim's `extras` because the engine is
+ * sim-agnostic — but the autosave slot is per sim, so each substrate still keeps
+ * its own event tuning, which is what you want when "deposit burst" means
+ * something in physarum and nothing in plife.
+ *
+ * Optional, like `extras`, so absent is simply "defaults" and no version bump is
+ * owed: a v5 file written before this exists loads with the shipped responses.
+ */
+function impulses(v: unknown): ImpulseConfig {
+  return readInto(defaultImpulseConfig(), v, IMPULSE_RULES);
 }
 
 /**
@@ -332,32 +331,27 @@ function extras(v: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function boundary(v: unknown): BoundaryOptions {
-  const o = (v ?? {}) as Record<string, unknown>;
-  return {
-    enabled: o['enabled'] !== false,
-    snapFraction: num(o['snapFraction'], 'boundary.snapFraction', 0.6),
-    respawnFraction: num(o['respawnFraction'], 'boundary.respawnFraction', 0.12),
-  };
-}
-
-function slewRates(v: unknown): SlewRates {
-  const o = (v ?? {}) as Record<string, unknown>;
-  return {
-    fast: num(o['fast'], 'slew.fast', DEFAULT_SLEW.fast),
-    medium: num(o['medium'], 'slew.medium', DEFAULT_SLEW.medium),
-    slow: num(o['slow'], 'slew.slow', DEFAULT_SLEW.slow),
-  };
-}
-
-function groupDepth(v: unknown): Record<ModGroup, number> {
-  const o = (v ?? {}) as Record<string, unknown>;
-  const out = defaultGroupDepth();
-  for (const g of MOD_GROUPS) {
-    if (o[g] !== undefined) out[g] = num(o[g], `groupDepth.${g}`);
-  }
-  return out;
-}
+/**
+ * The whole mapping's rule tree, mirroring `ModulationConfig`'s shape.
+ *
+ * Only fields that need a *bound* appear here. A field with no entry still round
+ * trips — it is read because it is a key of the defaults, not because it is
+ * named here — so this table is about clamping corrupt input, never about
+ * enrolling a field in persistence. That distinction is the whole point: there
+ * is no list you can forget to add a new setting to.
+ *
+ * `groupDepth` needs no entry at all: `defaultGroupDepth` is keyed by
+ * `MOD_GROUPS`, so walking its keys walks the group vocabulary — a group added
+ * to `modspec.ts` persists the moment it has a default, and a retired one (v3's
+ * `brightness`) is simply not a key here and so is never read back.
+ */
+const MODULATION_RULES: RuleTree = {
+  palette: PALETTE_RULES,
+  render: RENDER_RULES,
+  stemFollow: STEM_FOLLOW_RULES,
+  impulses: IMPULSE_RULES,
+  boundary: { snapFraction: range(0, 1), respawnFraction: range(0, 1) },
+};
 
 export function parseModulation(text: string): ModulationConfig {
   let raw: unknown;
@@ -377,25 +371,28 @@ export function parseModulation(text: string): ModulationConfig {
   // so an absent discriminator is not ambiguous — it is an answer.
   const sim = typeof o['sim'] === 'string' ? o['sim'] : 'physarum';
 
+  // The skeleton every branch below reads into. Its palette and render blocks are
+  // throwaway defaults that the walk will fill and the two lines after it will
+  // then replace outright: both need handling `readInto` cannot do — a per-species
+  // colour array, and `syncPaletteColors` re-deriving that array in arc mode —
+  // so they are built by their own readers and assigned over the walk's result.
+  const skeleton = (): ModulationConfig =>
+    defaultModulationConfig(
+      { speciesCount, palette: defaultPalette(speciesCount), render: defaultRenderConfig() },
+      sim,
+    );
+
   // v1/v2: everything except palette and render described the anchor system.
-  // Rebuild the rest from defaults rather than half-translating it.
+  // Rebuild the rest from defaults rather than half-translating it. `boundary` is
+  // the one block read from the file, because it outlived the anchors.
   if (version === 1 || version === 2) {
     warnLegacy(version);
-    return {
-      version: MODULATION_VERSION,
-      sim,
-      speciesCount,
-      palette: palette(o['palette'], speciesCount, 'palette'),
-      render: renderBlock(o['render'], 'render'),
-      enabled: true,
-      depth: 1,
-      groupDepth: defaultGroupDepth(),
-      driverGains: [],
-      stemFollow: defaultStemFollow(),
-      responseSpeed: 1,
-      slew: { ...DEFAULT_SLEW },
-      boundary: boundary(o['boundary']),
-    };
+    const legacy = skeleton();
+    readInto(legacy.boundary, o['boundary'], MODULATION_RULES['boundary'] as RuleTree);
+    legacy.palette = palette(o['palette'], speciesCount);
+    legacy.render = renderBlock(o['render']);
+    legacy.impulses = impulses(o['impulses']);
+    return legacy;
   }
 
   // v3 → v4 keeps everything. The only fields it cannot have are the two new
@@ -404,26 +401,33 @@ export function parseModulation(text: string): ModulationConfig {
   if (version === 3) warnV3();
   if (version === 4) warnV4();
 
+  // One recursive walk covers every scalar and every nested block there is:
+  // `enabled`, `depth`, `responseSpeed`, `groupDepth`, `slew`, `stemFollow`,
+  // `boundary` and `impulses`. Adding a field to `ModulationConfig` — which
+  // forces it into `defaultModulationConfig` — is all it takes to persist it.
+  const cfg = readInto(skeleton(), o, MODULATION_RULES);
+
+  // The five exceptions, and every one of them is an exception for a stated
+  // reason rather than by omission.
+  //
+  // `version` because the walk copies the *file's* number and this parser's
+  // output is always current; `speciesCount` because it sizes allocations and
+  // was validated up front; `palette` and `render` per the skeleton note; and
+  // `driverGains` because it is an array whose length is the track's driver
+  // count, not the config's business.
+  cfg.version = MODULATION_VERSION;
+  cfg.speciesCount = speciesCount;
+  cfg.palette = palette(o['palette'], speciesCount);
+  cfg.render = renderBlock(o['render']);
+  cfg.driverGains = driverGains(o['driverGains']);
+
+  // Omitted rather than written as `undefined`: `extras` is optional and the
+  // absent case has to stay absent, so a sim with nothing to store never adds
+  // a null key to every file it saves.
   const extra = extras(o['extras']);
-  return {
-    // Omitted rather than written as `undefined`: `extras` is optional and the
-    // absent case has to stay absent, so a sim with nothing to store never adds
-    // a null key to every file it saves.
-    ...(extra === undefined ? {} : { extras: extra }),
-    version: MODULATION_VERSION,
-    sim,
-    speciesCount,
-    palette: palette(o['palette'], speciesCount, 'palette'),
-    render: renderBlock(o['render'], 'render'),
-    enabled: o['enabled'] !== false,
-    depth: num(o['depth'], 'depth', 1),
-    groupDepth: groupDepth(o['groupDepth']),
-    driverGains: driverGains(o['driverGains']),
-    stemFollow: stemFollow(o['stemFollow']),
-    responseSpeed: num(o['responseSpeed'], 'responseSpeed', 1),
-    slew: slewRates(o['slew']),
-    boundary: boundary(o['boundary']),
-  };
+  if (extra === undefined) delete cfg.extras;
+  else cfg.extras = extra;
+  return cfg;
 }
 
 /**

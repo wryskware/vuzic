@@ -10,7 +10,7 @@
  * here is the same instrument whoever is playing it.
  */
 import { MAX_BLOOM_LEVELS, TONEMAPS, type RenderConfig, type ToneMap } from '../sim/render/config';
-import type { PanelContainer } from './panel';
+import type { PersistedContainer } from './autosave';
 
 export interface RenderFolderHost {
   render: RenderConfig;
@@ -32,7 +32,6 @@ export interface RenderFolderHost {
    * without it a look edit lives only in memory and the next reload comes back
    * with the shipped defaults. The callers hand it their debounced autosave.
    */
-  onChange?(): void;
   /** physarum's soil-underlay controls; omit for sims with no soil */
   soil?: boolean;
 }
@@ -44,19 +43,19 @@ export interface RenderFolderHost {
  * Ordered the way the pixels flow — scene exposure, adaptation, bloom, tone,
  * grade, feedback — so scrolling down the folder walks the pipeline.
  */
-export function addRenderFolder(container: PanelContainer, host: RenderFolderHost): () => void {
+export function addRenderFolder(
+  container: PersistedContainer,
+  host: RenderFolderHost,
+): () => void {
   const config = host.config;
   const r = host.render;
   const readout = { passes: '—', adapt: '—' };
 
   const root = container.addFolder({ title: 'render · HDR chain', expanded: true });
-  const passesBinding = root.addBinding(readout, 'passes', {
-    readonly: true,
-    label: 'render passes',
-  });
+  root.addBinding(readout, 'passes', { readonly: true, label: 'render passes' });
   // The measured HDR mean is the number to aim `target mean` at; the gain is
   // where the controller has settled. Both are one or two frames stale.
-  const adaptBinding = root.addBinding(readout, 'adapt', { readonly: true, label: 'gain / mean' });
+  root.addBinding(readout, 'adapt', { readonly: true, label: 'gain / mean' });
   // One handler for the whole folder: tweakpane bubbles a binding's change up
   // through its ancestor containers, so every widget below is covered without a
   // per-binding `.on('change', …)` — **except the two readouts above**, which
@@ -68,12 +67,10 @@ export function addRenderFolder(container: PanelContainer, host: RenderFolderHos
   // squeaked past a 400 ms debounce; on a 240 Hz display the panel refreshes
   // every ~125 ms and look edits were silently never persisted — found live,
   // as "my exposure settings are lost on reload".
-  if (host.onChange) {
-    const monitors = new Set<unknown>([passesBinding, adaptBinding]);
-    root.on('change', (ev) => {
-      if (!monitors.has(ev.target)) host.onChange?.();
-    });
-  }
+  // Nothing to wire: `container` is a `PersistedContainer`, so every binding
+  // below — including any added later, at any depth — schedules a save on
+  // change, and the two readouts above are skipped from their own `readonly`
+  // flag rather than from a maintained exclusion set.
 
   // Scene exposure and gamma are in θ but **excluded from modulation** — see the
   // exclusion note in the owning sim's preset registry. They are yours, always.

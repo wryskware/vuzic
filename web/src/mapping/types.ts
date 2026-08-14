@@ -1,3 +1,4 @@
+import type { ImpulseConfig } from '../sim/impulses.ts';
 import type { Palette } from '../sim/palette.ts';
 import type { RenderConfig } from '../sim/render/config.ts';
 import type { ModGroup } from './modspec.ts';
@@ -15,6 +16,16 @@ export interface BoundaryOptions {
   snapFraction: number;
   /** fraction of agents respawned at a section change (0..1) */
   respawnFraction: number;
+}
+
+/**
+ * Shipped boundary behaviour. A function rather than a literal spread at the two
+ * call sites, because `parseModulation` reads a saved file by walking the keys of
+ * a defaults object — so "has a defaults function" is what makes a block
+ * persistable, and a block whose defaults were inlined would not be.
+ */
+export function defaultBoundary(): BoundaryOptions {
+  return { enabled: true, snapFraction: 0.6, respawnFraction: 0.12 };
 }
 
 /**
@@ -69,6 +80,24 @@ export interface ModulationConfig {
    * mode and with every driver muted.
    */
   stemFollow: StemFollowConfig;
+  /**
+   * The event lane's tuning — global enable/gain plus a per-kind response.
+   *
+   * Persisted with the mapping since 2026-08-13. It had no save path at all
+   * before that: the workbench's events folder bound the engine's config
+   * directly and nothing ever wrote it anywhere, so every splash radius, decay τ
+   * and flash depth was lost on refresh.
+   *
+   * It lives here rather than in `extras` because the impulse engine is
+   * sim-agnostic — but the autosave slot is per sim, so each substrate still
+   * keeps its own event tuning, which is what you want when "deposit burst"
+   * means something in physarum and nothing in plife.
+   *
+   * Shared by reference with the live `ImpulseEngine.config` (see
+   * `buildSimBundle`), exactly like `palette` and `render` are shared with the
+   * sim's config.
+   */
+  impulses: ImpulseConfig;
   /** multiplier on the slew clock; 2 = everything reacts twice as fast */
   responseSpeed: number;
   slew: SlewRates;

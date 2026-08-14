@@ -303,12 +303,23 @@ interface Bound {
   mod: ModSpec | null;
 }
 
+/**
+ * The hard rail on one attraction cell — what a slider, a draw, a file or the
+ * impulse wiggle may put there, in either direction.
+ *
+ * Exported because the wiggle lane composes *outside* θ (`genmatrix.ts`'s
+ * `wiggleAttraction`) and still has to land inside the same interval: the lane
+ * is allowed to be dramatic, and it is not allowed to reach somewhere the panel
+ * could not. Two literals that had to agree would eventually not.
+ */
+export const ATTRACTION_LIMIT = 2;
+
 /** Attraction, for a coupled cell. Uncoupled cells share the bounds and get `mod: null`. */
 const ATTRACTION_BOUND: Bound = {
   name: 'A',
   cls: CLASS_SLOW,
-  min: -2,
-  max: 2,
+  min: -ATTRACTION_LIMIT,
+  max: ATTRACTION_LIMIT,
   mod: add('matrix', -1.2, 1.2, 0.45, 0.35),
 };
 

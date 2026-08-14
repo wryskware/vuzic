@@ -22,7 +22,7 @@ import {
   type PaletteSpace,
 } from '../sim/palette.ts';
 import { PALETTE_CATALOG, applyPaletteEntry, paletteCatalogEntry } from '../sim/palettes.ts';
-import type { PanelContainer } from './panel.ts';
+import { saveNow, type PersistedContainer } from './autosave.ts';
 
 export interface PaletteFolderHost {
   /** the live object, shared by reference with the mapping config */
@@ -38,11 +38,6 @@ export interface PaletteFolderHost {
   speciesName(index: number): string;
   /** the substrate's `invalidatePalette` — the cache is not polled */
   invalidate(): void;
-  /**
-   * Fired for every widget here. The palette is not modulated, so without it a
-   * look edit lives only in memory. Callers hand it their debounced autosave.
-   */
-  onChange?(): void;
 }
 
 /**
@@ -57,7 +52,10 @@ const SPACE_LABELS: Record<PaletteSpace, string> = {
 };
 
 /** Returns the panel's refresh hook: pulls proxy state and visibility back in. */
-export function addPaletteFolder(container: PanelContainer, host: PaletteFolderHost): () => void {
+export function addPaletteFolder(
+  container: PersistedContainer,
+  host: PaletteFolderHost,
+): () => void {
   const p = host.palette;
   const k = Math.max(1, host.speciesCount);
   const groupSize = Math.max(1, Math.min(host.groupSize ?? k, k));
@@ -78,7 +76,6 @@ export function addPaletteFolder(container: PanelContainer, host: PaletteFolderH
   root.on('change', () => {
     if (refreshing) return;
     host.invalidate();
-    host.onChange?.();
   });
 
   // ── catalog ────────────────────────────────────────────────────────────────
@@ -146,7 +143,7 @@ export function addPaletteFolder(container: PanelContainer, host: PaletteFolderH
    * arcs — nothing here derives one from the other — because a single arc spread
    * across all K put each accent on its primary's complement.
    */
-  const addArcControls = (folder: PanelContainer, arc: typeof p.arc): void => {
+  const addArcControls = (folder: PersistedContainer, arc: typeof p.arc): void => {
     folder
       .addBinding(arc, 'hueStartDeg', { label: 'start (°)', min: 0, max: 360, step: 1 })
       .on('change', arcChanged);
@@ -202,7 +199,10 @@ export function addPaletteFolder(container: PanelContainer, host: PaletteFolderH
     harmonizePalette(p, k);
     syncColorProxy();
     host.invalidate();
-    host.onChange?.();
+    // A button is not a binding, so the container's wrapper does not see it —
+    // this is the one place in the folder that has to ask for a save by hand,
+    // and it is conspicuous rather than forgettable.
+    saveNow(container);
   });
 
   // ── global ─────────────────────────────────────────────────────────────────

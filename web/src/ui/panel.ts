@@ -1,5 +1,6 @@
 import { Pane, type FolderApi, type TabPageApi } from 'tweakpane';
 import { saveModulationLocal } from '../mapping/persist';
+import { createAutosave, persisting, type Autosave, type PersistedContainer } from './autosave';
 import type { PhysarumSim } from '../sim/physarum/physarum';
 import {
   defaultPhysarumMacros,
@@ -32,7 +33,6 @@ import { createSimFolder, type SimPanelHost } from './sim-panel';
 import { createTrackFolder, type TrackPanelHost } from './track-panel';
 import { createWorkbench, type WorkbenchHandle, type WorkbenchHost } from './workbench';
 
-type Folder = FolderApi;
 
 export interface PanelHandle {
   refresh(): void;
@@ -49,7 +49,21 @@ export interface PanelHandle {
  * is what lets one builder mount into a tab page, a folder, or a subfolder
  * without knowing which it got.
  */
-export type PanelContainer = Pick<FolderApi, 'addFolder' | 'addBinding' | 'addButton'>;
+export interface PanelContainer {
+  /**
+   * Returns `PanelContainer` rather than `FolderApi`, which is what lets a
+   * *persisted* container be one: `PersistedContainer.addFolder` hands back a
+   * persisted folder, and if this returned the concrete `FolderApi` that would
+   * make the branded type unassignable to the plain one. Nothing in the panel
+   * layer needs a folder's private surface anyway — a builder that thinks it
+   * does is a builder reaching past the seam.
+   */
+  addFolder(params: Parameters<FolderApi['addFolder']>[0]): PanelContainer;
+  addBinding: FolderApi['addBinding'];
+  addButton: FolderApi['addButton'];
+  /** Panels tear their own folders down on a sim swap. */
+  dispose: FolderApi['dispose'];
+}
 
 /**
  * The six task surfaces the panel is organised into. They are tasks, not
@@ -63,12 +77,12 @@ export type PanelContainer = Pick<FolderApi, 'addFolder' | 'addBinding' | 'addBu
  * never created rather than created and left empty.
  */
 export interface PanelTabs {
-  play: TabPageApi;
-  explore: TabPageApi | null;
-  map: TabPageApi;
-  sim: TabPageApi;
-  look: TabPageApi;
-  data: TabPageApi | null;
+  play: PersistedContainer<TabPageApi>;
+  explore: PersistedContainer<TabPageApi> | null;
+  map: PersistedContainer<TabPageApi>;
+  sim: PersistedContainer<TabPageApi>;
+  look: PersistedContainer<TabPageApi>;
+  data: PersistedContainer<TabPageApi> | null;
 }
 
 /**
@@ -80,6 +94,7 @@ export interface PanelTabs {
 export function createPanelTabs(
   pane: Pane,
   present: { explorer: boolean; workbench: boolean },
+  autosave: Autosave,
 ): PanelTabs {
   const keys: string[] = ['play'];
   if (present.explorer) keys.push('explore');
@@ -92,19 +107,25 @@ export function createPanelTabs(
     const page = tab.pages[i];
     if (page) byKey.set(key, page);
   });
-  const need = (key: string): TabPageApi => {
-    const page = byKey.get(key);
+  // Wrapped HERE and nowhere else, which is the whole point: a panel cannot get
+  // at an unpersisted surface, so every folder and every widget any panel adds —
+  // today's and the ones added later — is on the save path by construction. The
+  // only escape is a button, which emits no change and must say `saveNow`.
+  const wrap = (page: TabPageApi | undefined): PersistedContainer<TabPageApi> | null =>
+    page ? persisting(page, autosave) : null;
+  const need = (key: string): PersistedContainer<TabPageApi> => {
+    const page = wrap(byKey.get(key));
     if (!page) throw new Error(`panel tab "${key}" was not created`);
     return page;
   };
 
   return {
     play: need('play'),
-    explore: byKey.get('explore') ?? null,
+    explore: wrap(byKey.get('explore')),
     map: need('map'),
     sim: need('sim'),
     look: need('look'),
-    data: byKey.get('data') ?? null,
+    data: wrap(byKey.get('data')),
   };
 }
 
@@ -164,10 +185,17 @@ export function createPanel(
     : null;
   /** θ slot names are the registry's, so a field's own name is the lookup key. */
   const slotOf = slotLookup(sim.registry().names);
+  const autosave = createAutosave(() => {
+    const wb = opts.workbench;
+    if (!wb) return;
+    wb.modulator.config.extras = sim.serializeExtras();
+    saveModulationLocal(wb.modulator.config, sim.simId);
+  });
+
   const tabs = createPanelTabs(pane, {
     explorer: opts.explorer !== undefined,
     workbench: opts.workbench !== undefined,
-  });
+  }, autosave);
 
   const state: RunState = {
     seed: String(sim.currentSeed),
@@ -219,17 +247,7 @@ export function createPanel(
   // It re-serialises the *whole* block rather than the field that changed, which
   // is why one saver covers three folders and why adding a fourth needs nothing
   // here beyond an `.on('change', …)`.
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  const persistExtras = (): void => {
-    const wb = opts.workbench;
-    if (!wb) return;
-    if (saveTimer !== null) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      wb.modulator.config.extras = sim.serializeExtras();
-      saveModulationLocal(wb.modulator.config, sim.simId);
-    }, 400);
-  };
+  const persistExtras = (): void => autosave.schedule();
 
   const macros = tabs.play.addFolder({ title: 'macros · performance layer' });
   for (const { key, label } of PHYSARUM_MACRO_LABELS) {
@@ -320,7 +338,11 @@ export function createPanel(
 
   let impulsePanel: ImpulsePanelHandle | null = null;
   if (opts.impulses) {
-    impulsePanel = createImpulsePanel(tabs.map, opts.impulses, (i) => config.species[i]?.name ?? `${i}`);
+    impulsePanel = createImpulsePanel(
+      persisting(tabs.map, autosave),
+      opts.impulses,
+      (i) => config.species[i]?.name ?? `${i}`,
+    );
   }
 
   // ── sim ────────────────────────────────────────────────────────────────────
@@ -424,17 +446,16 @@ export function createPanel(
   // instrument in every substrate's panel. `persistExtras` re-serialises the
   // whole mapping config, and the palette is shared by reference with it, so a
   // colour edit now reaches the autosave the same way a macro edit does.
-  const refreshPalette = addPaletteFolder(tabs.look, {
+  const refreshPalette = addPaletteFolder(persisting(tabs.look, autosave), {
     palette: config.palette,
     speciesCount: k,
     speciesName: (i) => config.species[i]?.name ?? '',
     invalidate: () => sim.invalidatePalette(),
-    onChange: persistExtras,
   });
 
   // The HDR chain is shared with every other substrate's panel; physarum's only
   // additions to it are the soil underlay and its own scene-exposure bound.
-  const refreshRender = addRenderFolder(tabs.look, {
+  const refreshRender = addRenderFolder(persisting(tabs.look, autosave), {
     render: config.render,
     config,
     // min matches the θ bound in mapping/preset.ts
@@ -442,7 +463,6 @@ export function createPanel(
     renderPasses: () => sim.stats().renderPasses,
     autoExposureState: () => sim.post.autoExposureState,
     invalidatePalette: () => sim.invalidatePalette(),
-    onChange: persistExtras,
     soil: true,
   });
 
@@ -473,7 +493,8 @@ export function createPanel(
       pane.refresh();
     },
     dispose(): void {
-      if (saveTimer !== null) clearTimeout(saveTimer);
+      // Flushes any pending write before the panel goes.
+      autosave.dispose();
       impulsePanel?.dispose();
       // Unsubscribes only: an export already running is owned by the session and
       // survives this panel.
@@ -486,7 +507,7 @@ export function createPanel(
 }
 
 function addSpeciesFolder(
-  root: Folder,
+  root: PanelContainer,
   index: number,
   s: SpeciesConfig,
   bands: ModBands | null,
@@ -546,7 +567,7 @@ function addSpeciesFolder(
  * place (mapping/preset.ts) rather than restated here.
  */
 function addTriple(
-  parent: Folder,
+  parent: PanelContainer,
   label: string,
   slotPrefix: string,
   t: AdaptiveTriple,

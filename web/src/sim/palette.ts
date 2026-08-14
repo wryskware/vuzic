@@ -37,6 +37,7 @@
  * the colour in the first place, in whichever space `Palette.space` names. They
  * are different knobs and the names must not converge.
  */
+import { readInto } from '../mapping/read-into.ts';
 import { hsluvToRgb, rgbToHsluv } from './hsluv.ts';
 import { oklchRelToRgb, relChromaOf, rgbToOklch } from './oklch.ts';
 
@@ -231,6 +232,29 @@ export function arcForIndex(
  * uses, and the shape a v1 file lifts to losslessly. Everything the v1 renderer
  * did is reproduced exactly: mode `custom`, zero shift, zero rate.
  */
+/**
+ * Copy a loaded palette *into* the live one, the same trick and the same reason
+ * as `mergeRenderConfig`: the panel's colour pickers and arc sliders are bound
+ * to the live object by reference, so a load has to mutate it rather than
+ * replace it.
+ *
+ * Driven by `readInto`, which walks the destination's own keys, and that is not
+ * a stylistic choice. This merge was written as a hand-listed sequence of
+ * assignments, and by the time palette v2 shipped its two newest fields —
+ * `space` and `accentArc` — were missing from the list. The result was the
+ * reported bug: the accents' arc was saved correctly and parsed correctly, and
+ * then dropped here, one layer below where anyone thought to look. A walker
+ * cannot be out of date with the type it walks.
+ *
+ * `colors` is the one field still handled by hand, because it is per species and
+ * the live array's length is the live K — a loaded palette authored at another K
+ * must pad rather than resize the thing the sim is indexing.
+ */
+export function mergePalette(live: Palette, loaded: Palette): void {
+  live.colors = live.colors.map((c, i) => loaded.colors[i] ?? c);
+  readInto(live, loaded);
+}
+
 export function customPalette(colors: string[]): Palette {
   return {
     mode: 'custom',

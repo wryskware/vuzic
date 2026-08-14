@@ -111,7 +111,7 @@ struct Splash {
 //              particles per segment. Not the live count: what is actually
 //              present is the set with energy > 0, which eases toward this.
 //   geom       size, stretch, forceScale, friction
-//   motion     wander, radiusScale, reserved (written 1), unused
+//   motion     wander, radiusScale, reserved (written 1; kept free for 3D), unused
 //   pad        unused; keeps the struct at 4 vec4f so the stride is obvious
 struct Species {
   color: vec4f,

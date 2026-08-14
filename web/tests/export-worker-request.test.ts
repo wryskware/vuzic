@@ -20,12 +20,16 @@ import type { ExportRecipe } from '../src/runtime/recipe.ts';
 
 function recipe(): ExportRecipe {
   const { render, ...simulation } = defaultPlifeConfig();
-  const { render: _sharedRender, ...modulation } = defaultModulationConfig(
-    { ...simulation, render },
-    'plife',
-  );
+  // `render` and `impulses` are both live objects the recipe encodes once, at
+  // its top level, so the modulation block carries neither. See
+  // `RecipeModulationConfig`.
+  const {
+    render: _sharedRender,
+    impulses: _sharedImpulses,
+    ...modulation
+  } = defaultModulationConfig({ ...simulation, render }, 'plife');
   return {
-    version: 4,
+    version: 5,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',

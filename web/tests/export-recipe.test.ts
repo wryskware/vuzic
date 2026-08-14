@@ -16,12 +16,16 @@ import {
 
 function recipe(): ExportRecipe {
   const { render, ...simulation } = defaultPlifeConfig();
-  const { render: _sharedRender, ...modulation } = defaultModulationConfig(
-    { ...simulation, render },
-    'plife',
-  );
+  // `render` and `impulses` are both live objects the recipe encodes once, at
+  // its top level, so the modulation block carries neither. See
+  // `RecipeModulationConfig`.
+  const {
+    render: _sharedRender,
+    impulses: _sharedImpulses,
+    ...modulation
+  } = defaultModulationConfig({ ...simulation, render }, 'plife');
   return {
-    version: 4,
+    version: 5,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',
@@ -181,9 +185,9 @@ test('HDR luminance policy is explicit, bounded, and internally ordered', () => 
   assert.throws(() => validateExportRecipe(implausibleWhite), /paperWhiteNits.*80\.\.1000/);
 });
 
-// ── palette v2 / recipe v4 ───────────────────────────────────────────────────
+// ── palette v2 / recipe v4+ ──────────────────────────────────────────────────
 
-test('recipe v4 validates the palette v2 shape strictly, field by field', () => {
+test('the recipe validates the palette v2 shape strictly, field by field', () => {
   // The whole shape round-trips as-is.
   assert.doesNotThrow(() => validateExportRecipe(recipe()));
 
@@ -209,7 +213,7 @@ test('recipe v4 validates the palette v2 shape strictly, field by field', () => 
   assert.throws(() => validateExportRecipe(wildRate), /palette\.hueRateDegPerSec/);
 });
 
-test('a v4 recipe carrying a v1 palette block is rejected, not defaulted', () => {
+test('a current recipe carrying a v1 palette block is rejected, not defaulted', () => {
   const legacyBlock = recipe() as unknown as { simulation: { palette: unknown } };
   legacyBlock.simulation.palette = { colors: ['#ffffff'], saturation: 1, brightness: 1 };
   assert.throws(
@@ -244,11 +248,19 @@ test('the sim/modulation palette agreement covers every v2 field', () => {
   }
 });
 
+/** Strip the fields a v4 sidecar could not have carried: the wiggle depths. */
+function asV4(value: Record<string, unknown>): Record<string, unknown> {
+  const impulses = value['impulses'] as { responses: Record<string, Record<string, unknown>> };
+  for (const response of Object.values(impulses.responses)) delete response['wiggle'];
+  value['version'] = 4;
+  return value;
+}
+
 test('a v3 recipe still parses: the palette lift preserves its meaning exactly', () => {
-  // A real v3 recipe is this one with the palette blocks written the old way and
-  // the embedded modulation config still at v4 — the exact bytes the previous
-  // build wrote into a sidecar.
-  const value = recipe() as unknown as Record<string, unknown>;
+  // A real v3 recipe is this one with the palette blocks written the old way, no
+  // wiggle depths, and the embedded modulation config still at v4 — the exact
+  // bytes the previous build wrote into a sidecar.
+  const value = asV4(recipe() as unknown as Record<string, unknown>);
   value['version'] = 3;
   const v1Palette = {
     colors: (value['simulation'] as { palette: { colors: string[] } }).palette.colors.slice(),
@@ -261,7 +273,7 @@ test('a v3 recipe still parses: the palette lift preserves its meaning exactly',
   modulation['version'] = 4;
 
   const parsed = parseExportRecipe(JSON.stringify(value));
-  assert.equal(parsed.version, 4);
+  assert.equal(parsed.version, 5, 'a v3 sidecar lifts all the way through v4');
   assert.equal(parsed.modulation.version, 5);
   for (const palette of [parsed.simulation.palette, parsed.modulation.palette]) {
     assert.equal(palette.mode, 'custom', 'a v1 palette was always a custom one');
@@ -276,8 +288,11 @@ test('a v3 recipe still parses: the palette lift preserves its meaning exactly',
 });
 
 test('the v3 lift touches nothing but the palette', () => {
-  const v4 = recipe();
-  const v3 = structuredClone(v4) as unknown as Record<string, unknown>;
+  // The expectation is the current recipe with every wiggle depth at 0: that is
+  // what the v4 → v5 hop fills in, and it is the *only* thing it fills in.
+  const expected = recipe();
+  for (const response of Object.values(expected.impulses.responses)) response.wiggle = 0;
+  const v3 = asV4(structuredClone(expected) as unknown as Record<string, unknown>);
   v3['version'] = 3;
   const strip = (block: Record<string, unknown>): void => {
     const p = block['palette'] as Record<string, unknown>;
@@ -293,5 +308,27 @@ test('the v3 lift touches nothing but the palette', () => {
   mod['version'] = 4;
 
   const parsed = parseExportRecipe(JSON.stringify(v3));
-  assert.deepEqual(parsed, v4, 'a v3 recipe lifts to exactly the v4 it would have been');
+  assert.deepEqual(parsed, expected, 'a v3 recipe lifts to exactly the recipe it would have been');
+});
+
+test('the v4 lift fills the wiggle lane with 0, not with the shipped default', () => {
+  // The reproduction-contract rule, pinned: a recipe written before the lane
+  // existed describes a render that had no wiggle in it, so replaying it must
+  // not acquire one. `defaultImpulseConfig()` ships non-zero depths, which is
+  // what makes this assertion able to fail.
+  const authored = recipe();
+  assert.ok(
+    Object.values(authored.impulses.responses).some((r) => r.wiggle > 0),
+    'the shipped responses must have a non-zero wiggle for this test to mean anything',
+  );
+
+  const v4 = asV4(structuredClone(authored) as unknown as Record<string, unknown>);
+  const parsed = parseExportRecipe(JSON.stringify(v4));
+  assert.equal(parsed.version, 5);
+  for (const [kind, response] of Object.entries(parsed.impulses.responses)) {
+    assert.equal(response.wiggle, 0, `${kind} acquired a wiggle it was never rendered with`);
+  }
+  // And nothing else moved on the way through.
+  const stripped = structuredClone(parsed) as unknown as Record<string, unknown>;
+  assert.deepEqual(asV4(stripped), { ...v4, version: 4 });
 });

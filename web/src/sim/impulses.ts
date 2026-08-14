@@ -5,10 +5,10 @@
  *                              │
  *                       per-kind envelope: instant attack, exponential decay
  *                              │
- *              ┌───────────────┼──────────────┬────────────────┐
- *          deposit          brightness      sensor          radial
- *           burst            flash           pop            splash
- *              └───────────────┴──────────────┴────────────────┘
+ *              ┌───────────┬───────┴──────┬───────────┬────────┐
+ *          deposit    brightness       sensor       rule      radial
+ *           burst        flash          pop        wiggle     splash
+ *              └───────────┴──────────────┴───────────┴────────┘
  *                              │
  *                    ImpulseState, read by the sim every tick
  *
@@ -32,12 +32,26 @@
  */
 import { EVENT_KINDS, type EventKind, type TimelineEvent } from '../timeline/types.ts';
 import { EventCursor } from '../timeline/sampler.ts';
+import { range, readInto, type RuleTree } from '../mapping/read-into.ts';
 
 /** GPU-side cap. Overflow drops the weakest active splash, never the newest. */
 export const MAX_SPLASHES = 32;
 
 /** Below this the envelope contributes nothing visible; the splash is retired. */
 const SPLASH_CUTOFF = 0.01;
+
+/**
+ * Ceiling on one kind's `wiggle` depth, and the top of its slider.
+ *
+ * The depth is in units of the matrix's own scale (see `wiggleAttraction`), so 8
+ * means "displace this row by eight times the strongest interaction in the
+ * world" — far past the point where the perturbation dominates the row it is
+ * perturbing. Measured, the heading change it buys flattens out around 4-8: the
+ * displaced row converges on the direction vector itself, and there is nothing
+ * left for more magnitude to rotate. The slider goes to 8 anyway, because a
+ * plateau is a better place to stop than a rail somebody can feel.
+ */
+export const MAX_WIGGLE = 8;
 
 /**
  * What one event kind does. Every field is data — the whole point is that the
@@ -55,6 +69,21 @@ export interface ResponseConfig {
   flash: number;
   /** sensor distance *= 1 + sensor·env */
   sensor: number;
+  /**
+   * How hard this kind turns the sim's *interaction rules* inside out — the
+   * wiggle lane, and the one that changes what the field is *doing* rather than
+   * how it looks.
+   *
+   * Unlike the three above it is not a multiplier on a quantity; it is a
+   * displacement depth that idles at 0, and what it displaces is the substrate's
+   * business. In particle life it shoves the target species' matrix row along a
+   * seeded random direction (`genmatrix.ts`'s `wiggleAttraction`), measured in
+   * multiples of the matrix's own strongest cell — so **1 is a perturbation the
+   * size of the whole matrix**, and the shipped depths of 3-4 put the row
+   * several times further out than that. Physarum and vizfx have no interaction
+   * matrix and ignore the lane.
+   */
+  wiggle: number;
   /** hotspot discs spawned per event; 0 disables the splash entirely */
   splashCount: number;
   /** disc radius as a fraction of min(gridW, gridH) */
@@ -96,6 +125,14 @@ export interface ImpulseState {
   depositMul: Float32Array;
   brightMul: Float32Array;
   sensorMul: Float32Array;
+  /**
+   * Length K, **0.0 = untouched**. The odd one out on purpose: the three above
+   * scale a quantity the sim already has, so their identity is 1, while this one
+   * is a signed excursion *added* to something (an interaction-matrix row, in
+   * plife) and its identity is 0. A lane that idled at 1 would have to be
+   * decremented at every consumer, and one consumer would eventually forget.
+   */
+  wiggle: Float32Array;
   splashes: readonly ImpulseSplash[];
 }
 
@@ -113,6 +150,7 @@ function response(over: Partial<ResponseConfig> = {}): ResponseConfig {
     deposit: 0,
     flash: 0,
     sensor: 0,
+    wiggle: 0,
     splashCount: 0,
     splashRadius: 0.18,
     splashPush: 4,
@@ -125,6 +163,14 @@ function response(over: Partial<ResponseConfig> = {}): ResponseConfig {
  * Defaults biased toward LEGIBLE, not subtle — the first build read as too subtle
  * and plan.md Revision 2 item 3 makes reactivity depth an explicit tuning target.
  * Species indices follow the stem keying: 0 bass, 1 drums, 2 vocals, 3 other.
+ *
+ * The `wiggle` depths sit at 3-4, which is where the measured heading change
+ * starts to plateau — the row is then displaced several times further than its
+ * own strongest cell, so what the species wants during a hit is mostly the
+ * direction vector rather than the matrix. They are trimmed by how *sustained*
+ * each kind is: a 90 ms hat gets 1.5 (a flick) where a 240 ms kick gets 4.
+ * Nothing targets species 3 out of the box, because no shipped event kind is
+ * keyed to the "other" stem — the `species` slider is how you point one at it.
  */
 export function defaultImpulseConfig(): ImpulseConfig {
   return {
@@ -133,13 +179,14 @@ export function defaultImpulseConfig(): ImpulseConfig {
     responses: {
       // kick → the bass species blooms and lights up. No splash: the low end
       // should feel like the whole field swelling, not like something hitting it.
-      kick: response({ species: 0, decayMs: 240, deposit: 3, flash: 1.6 }),
+      kick: response({ species: 0, decayMs: 240, deposit: 3, flash: 1.6, wiggle: 4 }),
       // snare → the visible one. Two discs of drum agents thrown outward.
       snare: response({
         species: 1,
         decayMs: 200,
         deposit: 1,
         flash: 1,
+        wiggle: 3.5,
         splashCount: 2,
         splashRadius: 0.2,
         // 9 cells/tick at full envelope ≈ 30 cells of outward travel over the
@@ -149,10 +196,17 @@ export function defaultImpulseConfig(): ImpulseConfig {
         splashSwirl: 0.35,
       }),
       // hat → fast small flashes on the same fine, fast-decaying species.
-      hat: response({ species: 1, decayMs: 90, deposit: 0.5, flash: 1 }),
+      hat: response({ species: 1, decayMs: 90, deposit: 0.5, flash: 1, wiggle: 1.5 }),
       // bass note → sensor pop: the species reaches further for a moment, so its
       // network visibly re-organises rather than just getting brighter.
-      bass: response({ species: 0, decayMs: 320, deposit: 0.5, flash: 0.3, sensor: 1.2 }),
+      bass: response({
+        species: 0,
+        decayMs: 320,
+        deposit: 0.5,
+        flash: 0.3,
+        sensor: 1.2,
+        wiggle: 3,
+      }),
       // vocal → a slow wide pulse; one soft disc, low push, long decay.
       vocal: response({
         species: 2,
@@ -160,6 +214,7 @@ export function defaultImpulseConfig(): ImpulseConfig {
         deposit: 1.4,
         flash: 1.8,
         sensor: 0.3,
+        wiggle: 3,
         splashCount: 1,
         splashRadius: 0.34,
         splashPush: 2,
@@ -167,6 +222,51 @@ export function defaultImpulseConfig(): ImpulseConfig {
       }),
     },
   };
+}
+
+/**
+ * Bounds a loaded `ImpulseConfig` is clamped into — the panel's own slider
+ * ranges (`ui/impulses-panel.ts`), stated once so a saved value can never sit
+ * outside the widget that is supposed to show it.
+ *
+ * Built from `EVENT_KINDS` rather than written out five times, so a new event
+ * kind arrives with its bounds already attached. The table only *clamps*: a
+ * field with no entry here still round trips, because `readInto` enrols fields by
+ * walking `defaultImpulseConfig()`, not by consulting this.
+ *
+ * `species` is a species index and is clamped rather than validated against the
+ * live K, because K is not known here — negative still means "all of them", and
+ * an index past the end is answered by the engine, which already skips species
+ * it does not have.
+ */
+const RESPONSE_RULES: RuleTree = {
+  species: range(-1, 63, { int: true }),
+  decayMs: range(20, 1500),
+  deposit: range(0, 6),
+  flash: range(0, 4),
+  sensor: range(0, 3),
+  wiggle: range(0, MAX_WIGGLE),
+  splashCount: range(0, MAX_SPLASHES, { int: true }),
+  splashRadius: range(0.02, 0.8),
+  splashPush: range(0, 20),
+  splashSwirl: range(-2, 2),
+};
+
+export const IMPULSE_RULES: RuleTree = {
+  gain: range(0, 3),
+  responses: Object.fromEntries(EVENT_KINDS.map((kind) => [kind, RESPONSE_RULES])),
+};
+
+/**
+ * Copy authored responses into a live engine config, **in place**.
+ *
+ * In place because the workbench's events folder binds `engine.config` and each
+ * `config.responses[kind]` by reference — replacing either would leave the panel
+ * editing an object nothing fires from. Same constraint, and same solution, as
+ * `mergeRenderConfig` and the sims' `applyExtras`.
+ */
+export function applyImpulseConfig(live: ImpulseConfig, authored: unknown): ImpulseConfig {
+  return readInto(live, authored, IMPULSE_RULES);
 }
 
 // ── deterministic hashing, mirroring common.wgsl ──────────────────────────────
@@ -217,6 +317,13 @@ export class ImpulseEngine {
   private live: LiveSplash[] = [];
   /** walks so repeated test-fires of one kind are not identical splashes */
   private testCounter = 0;
+  /**
+   * The kind whose envelope is pinned open, or null. See `setHold` — this is
+   * the tuning surface's answer to "is this lane doing anything at all", and it
+   * is runtime state on purpose: nothing serialises it, so a held lane cannot
+   * come back after a reload as a world that is permanently mid-hit.
+   */
+  private held: EventKind | null = null;
 
   readonly state: ImpulseState;
 
@@ -236,6 +343,8 @@ export class ImpulseEngine {
       depositMul: new Float32Array(this.speciesCount).fill(1),
       brightMul: new Float32Array(this.speciesCount).fill(1),
       sensorMul: new Float32Array(this.speciesCount).fill(1),
+      // Not filled: 0 is this lane's identity. See the field's note above.
+      wiggle: new Float32Array(this.speciesCount),
       splashes: this.live,
     };
   }
@@ -251,6 +360,32 @@ export class ImpulseEngine {
 
   get activeSplashes(): number {
     return this.live.length;
+  }
+
+  /**
+   * Pin one kind's envelope open at full strength, or release it (`null`).
+   *
+   * The isolation tool. A response is five lanes riding one 90–380 ms envelope,
+   * which makes "is the wiggle doing anything, or am I looking at the flash?"
+   * genuinely hard to answer by eye — every lane fires and decays together, and
+   * the whole thing is over before you can compare. Holding turns the transient
+   * into a **state**: the field settles into what that response *means*, you
+   * zero the lanes you are not asking about, and toggling the hold is then a
+   * clean A/B against the same world.
+   *
+   * Splashes are deliberately not re-fired while held. They are discrete
+   * objects rather than a level, and a held kind would spawn a fresh disc every
+   * tick until the 32-slot buffer was nothing but this one kind.
+   */
+  setHold(kind: EventKind | null): void {
+    this.held = kind;
+    if (kind === null) return;
+    this.levels[kindIndex(kind)] = Math.max(this.config.gain, 0);
+    this.writeState();
+  }
+
+  get heldKind(): EventKind | null {
+    return this.held;
   }
 
   /** A reseed re-keys every hotspot, so the world's splashes move with it. */
@@ -272,6 +407,11 @@ export class ImpulseEngine {
    */
   update(tick: number, dt: number): void {
     this.decay(dt);
+
+    // Re-open the held envelope after the decay and before the state write, so
+    // a hold is exactly "this kind never stops arriving" — same envelope, same
+    // consumers, nothing special-cased downstream.
+    if (this.held !== null) this.levels[kindIndex(this.held)] = Math.max(this.config.gain, 0);
 
     if (this.config.enabled) {
       const { start, end } = this.cursor.advance(tick);
@@ -366,10 +506,11 @@ export class ImpulseEngine {
   }
 
   private writeState(): void {
-    const { depositMul, brightMul, sensorMul } = this.state;
+    const { depositMul, brightMul, sensorMul, wiggle } = this.state;
     depositMul.fill(1);
     brightMul.fill(1);
     sensorMul.fill(1);
+    wiggle.fill(0);
     if (!this.config.enabled) return;
 
     for (let k = 0; k < EVENT_KINDS.length; k++) {
@@ -385,6 +526,11 @@ export class ImpulseEngine {
         depositMul[sp] = (depositMul[sp] as number) + r.deposit * env;
         brightMul[sp] = (brightMul[sp] as number) + r.flash * env;
         sensorMul[sp] = (sensorMul[sp] as number) + r.sensor * env;
+        // Summed across kinds like the others, so a kick and a bass note landing
+        // on the same species on the same tick shove its row twice as far rather
+        // than one of them winning — which is the arithmetic that makes the
+        // downbeat of a bar read as bigger than the events either side of it.
+        wiggle[sp] = (wiggle[sp] as number) + r.wiggle * env;
       }
     }
   }

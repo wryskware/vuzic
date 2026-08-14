@@ -33,8 +33,9 @@
  * the shared HDR folder already binds them, and two widgets on one number is a
  * bug waiting for a drag.
  */
-import { Pane, type FolderApi } from 'tweakpane';
+import { Pane } from 'tweakpane';
 import { saveModulationLocal } from '../mapping/persist';
+import { createAutosave, persisting } from './autosave';
 import type { ImpulseEngine } from '../sim/impulses';
 import { ENERGY_RANGE, MAX_EMITTERS_PER_LAYER } from '../sim/vizfx/config';
 import type { VizSlot } from '../sim/vizfx/slots';
@@ -95,10 +96,17 @@ export function createVizFxPanel(
     : null;
   /** θ slot names are the registry's, and the registry's names are the table's. */
   const slotOf = slotLookup(sim.registry().names);
+  const autosave = createAutosave(() => {
+    const wb = opts.workbench;
+    if (!wb) return;
+    wb.modulator.config.extras = sim.serializeExtras();
+    saveModulationLocal(wb.modulator.config, sim.simId);
+  });
+
   const tabs = createPanelTabs(pane, {
     explorer: opts.explorer !== undefined,
     workbench: opts.workbench !== undefined,
-  });
+  }, autosave);
 
   const state: RunState = { seed: String(sim.currentSeed), field: '—', steps: '—' };
 
@@ -148,17 +156,7 @@ export function createVizFxPanel(
   // these are sliders and a drag would otherwise write localStorage on every
   // pointer move. It re-serialises the *whole* block rather than the field that
   // changed, which is why one saver covers three folders.
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  const persistExtras = (): void => {
-    const wb = opts.workbench;
-    if (!wb) return;
-    if (saveTimer !== null) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      wb.modulator.config.extras = sim.serializeExtras();
-      saveModulationLocal(wb.modulator.config, sim.simId);
-    }, 400);
-  };
+  const persistExtras = (): void => autosave.schedule();
 
   // Multipliers that compose outside θ, exactly where stem-follow and the impulse
   // lanes do — which is the whole reason the modulator can never write over them.
@@ -282,7 +280,7 @@ export function createVizFxPanel(
   let impulsePanel: ImpulsePanelHandle | null = null;
   if (opts.impulses) {
     impulsePanel = createImpulsePanel(
-      tabs.map,
+      persisting(tabs.map, autosave),
       opts.impulses,
       (i) => config.species[i]?.name ?? `${i}`,
     );
@@ -306,7 +304,7 @@ export function createVizFxPanel(
   // One folder per distinct `folder` string, in first-mention order — so the
   // table's own grouping is the panel's, and adding a slot to a new folder needs
   // nothing here.
-  const folders = new Map<string, FolderApi>();
+  const folders = new Map<string, PanelContainer>();
   for (const slot of visual.globalSlots) {
     if (slot.folder === undefined) continue;
     let f = folders.get(slot.folder);
@@ -332,19 +330,18 @@ export function createVizFxPanel(
   // Static art direction, outside the modulation registry entirely. Editing these
   // edits the object the config file serialises.
   // Palette v2, in the folder builder every substrate's panel shares.
-  const refreshPalette = addPaletteFolder(tabs.look, {
+  const refreshPalette = addPaletteFolder(persisting(tabs.look, autosave), {
     palette: config.palette,
     speciesCount: k,
     speciesName: (i) => config.species[i]?.name ?? '',
     invalidate: () => sim.invalidatePalette(),
-    onChange: persistExtras,
   });
 
   // `exposure` and `gamma` are θ slots with no `folder`, so nothing above bound
   // them; this is their one widget. The range comes from the table rather than
   // from a literal here, so the slider and the hard θ bound cannot drift apart.
   const exposureSlot = visual.globalSlots.find((s) => s.key === 'exposure');
-  const refreshRender = addRenderFolder(tabs.look, {
+  const refreshRender = addRenderFolder(persisting(tabs.look, autosave), {
     render: config.render,
     // `params` carries `exposure` and `gamma` as ordinary own properties (the
     // store is keyed by slot name), so it satisfies the host's shape directly and
@@ -359,9 +356,6 @@ export function createVizFxPanel(
     renderPasses: () => sim.stats().renderPasses,
     autoExposureState: () => sim.post.autoExposureState,
     invalidatePalette: () => sim.invalidatePalette(),
-    // The render block is shared by reference with the mapping config and
-    // exposure/gamma ride `extras`, so this one call persists the whole folder.
-    onChange: persistExtras,
     // No soil field in this substrate, so the ember underlay has nothing to
     // draw from.
   });
@@ -395,7 +389,8 @@ export function createVizFxPanel(
       pane.refresh();
     },
     dispose(): void {
-      if (saveTimer !== null) clearTimeout(saveTimer);
+      // Flushes any pending write before the panel goes.
+      autosave.dispose();
       impulsePanel?.dispose();
       // Unsubscribes only: an export already running is owned by the session and
       // survives this panel.

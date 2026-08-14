@@ -112,7 +112,7 @@ test('browser capture reads current live identity, authored base, extras, and ou
   const f = fixture();
   const recipe = f.capture();
 
-  assert.equal(recipe.version, 4);
+  assert.equal(recipe.version, 5);
   assert.deepEqual(recipe.track, { id: 'pink-loop', contentVersion: 'sha256-track' });
   assert.equal(recipe.sim, 'plife');
   assert.equal(recipe.seed, 42);

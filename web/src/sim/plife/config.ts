@@ -40,6 +40,7 @@
  */
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
 import { customPalette, type Palette } from '../palette.ts';
+import { oneOf, range, type RuleTree } from '../../mapping/read-into.ts';
 
 /** Sim substeps one clock tick may expand into; folded into the PCG tick key. */
 export const MAX_SUBSTEPS = 4;
@@ -327,6 +328,17 @@ export interface PlifeMacros {
   drag: number;
   /** × every species' wander */
   chaos: number;
+  /**
+   * × the impulse lane's **wiggle** depth — how far an event displaces its
+   * species' row of the interaction matrix (`genmatrix.ts`'s
+   * `wiggleAttraction`). 0 turns the lane off outright; the per-kind depths in
+   * the events folder are what it multiplies, and they already carry the scale.
+   *
+   * Ranged 0..4 rather than 0..2 like the trims because it is a feature knob,
+   * and because the lane's own rail (`WIGGLE_LIMIT`) sits four times above θ's,
+   * so there is real range above the shipped depths to push into.
+   */
+  wiggle: number;
   /** secondaries only: × population target and × intensity */
   accents: number;
   /** × render.feedback.amount (clamped ≤ 0.97) */
@@ -341,6 +353,7 @@ export function defaultPlifeMacros(): PlifeMacros {
     speed: 1,
     drag: 1,
     chaos: 1,
+    wiggle: 1,
     accents: 1,
     trails: 1,
   };
@@ -368,6 +381,7 @@ export const MACRO_RANGE: Readonly<Record<keyof PlifeMacros, { min: number; max:
   // so the clamp moved to `MAX_EFFECTIVE_FRICTION` and this followed it up.
   drag: { min: 0, max: 16 },
   chaos: { min: 0, max: 2 },
+  wiggle: { min: 0, max: 4 },
   accents: { min: 0, max: 2 },
   trails: { min: 0, max: 1.5 },
 };
@@ -408,6 +422,7 @@ export const MACRO_LABELS: readonly { key: keyof PlifeMacros; label: string }[] 
   { key: 'speed', label: 'speed  (× velocity ceiling)' },
   { key: 'drag', label: 'drag  (× friction)' },
   { key: 'chaos', label: 'chaos  (× wander)' },
+  { key: 'wiggle', label: 'wiggle  (× impulse → matrix rows)' },
   { key: 'accents', label: 'accents  (× accent pop + glow)' },
   { key: 'trails', label: 'trails  (× echo persistence)' },
 ];
@@ -653,6 +668,22 @@ export interface MatrixGenConfig {
   selfBiasAccent: number;
   /** multiplier on the drawn value in every secondary-coupled cell (the accents' edges) */
   accentGain: number;
+  /**
+   * Which family of **impulse-wiggle direction vectors** this world uses —
+   * the reroll counter, not a strength.
+   *
+   * The directions are drawn from `(seed, wiggleRoll)` in `seedWiggleDirs`, so a
+   * pinned seed reproduces them and the workbench's reroll button (which just
+   * increments this) asks for a different set of things that hits *do* to the
+   * matrix while leaving the matrix itself, the personality and the world alone.
+   *
+   * It lives in this block rather than in a block of its own because this block
+   * is exactly "what the seed draws, and how" — the wiggle directions are a
+   * seeded draw over the same matrix — and because a new top-level config block
+   * is a schema event for the export recipe (`PLIFE_KEYS`) while a new field in
+   * an existing one is not.
+   */
+  wiggleRoll: number;
   /** uniform band the per-pair inner (hard-core) radius is drawn from, world units */
   rMin: { lo: number; hi: number };
   /** uniform band the per-pair outer radius is drawn from, world units */
@@ -668,6 +699,13 @@ export interface MatrixGenConfig {
  * cohesive enough to clump at all, since a zero-mean draw would leave half the
  * diagonals self-repulsive and those species would never form anything.
  */
+/**
+ * Where `matrixGen.wiggleRoll` wraps. Nothing is special about 2^20 beyond being
+ * far past any number of times a person will press a button and small enough
+ * that it stays an exact integer everywhere it is mixed.
+ */
+export const MAX_WIGGLE_ROLL = 1 << 20;
+
 export function defaultMatrixGen(): MatrixGenConfig {
   return {
     sigma: 0.45,
@@ -675,10 +713,111 @@ export function defaultMatrixGen(): MatrixGenConfig {
     selfBias: 0.15,
     selfBiasAccent: -0.2,
     accentGain: 1.0,
+    wiggleRoll: 0,
     rMin: { lo: 0.003, hi: 0.005 },
     rMax: { lo: 0.008, hi: 0.014 },
   };
 }
+
+/**
+ * The extras channel's schema, in one place: defaults on one side, clamps on the
+ * other, keyed identically. `PlifeSim.serializeExtras` snapshots the live blocks
+ * these describe and `applyExtras` reads back into them with `readInto`, which
+ * walks each block's own keys — so a field added to `PlifeMacros`,
+ * `MatrixGenConfig`, `PlifePopulationConfig`, `PlifeFieldConfig` or
+ * `PlifeBudgetConfig` round trips the moment its defaults function knows it.
+ *
+ * The rule tables below only *bound* values. A field with no entry still
+ * persists; it is simply unclamped, which is right for the ones whose legal
+ * range is "any real number". Nothing is enrolled in persistence by being named
+ * here, which is the property that makes the pair impossible to forget half of.
+ */
+export function defaultExtrasBlocks(maxParticles: number): Record<string, object> {
+  return {
+    macros: defaultPlifeMacros(),
+    matrixGen: defaultMatrixGen(),
+    population: defaultPlifePopulation(),
+    field: defaultPlifeField(),
+    budget: defaultPlifeBudget(maxParticles),
+  };
+}
+
+/**
+ * Ranges are the panel's own (`ui/plife-panel.ts`), so a loaded value can never
+ * sit outside the slider meant to show it.
+ *
+ * The non-obvious floors: `population.curve` is an exponent a 0..1 level is
+ * raised to, and `riseTau` / `fallTau` are divisors in the shader — all three
+ * have a degenerate value at zero that the sliders already refuse to produce.
+ * `nearStencil` is an integer because the shader indexes with it, and a slider
+ * that snapped visually to 2 while holding 2.4 would be a search window
+ * disagreeing with its own label. The radius bands share `MIN_R_FLOOR` as a
+ * floor but not a ceiling: an outer radius may reach `MAX_REACH_BRUTE` (half the
+ * torus), while the hard core stays under `MAX_MIN_R` — it is a contact
+ * distance, not a reach.
+ *
+ * `budget.cap` is bounded by the *live* pool rather than by whatever the file
+ * thought it was: a cap above the pool is not a bigger world, it is a clamp that
+ * never binds, and stating it as `maxParticles` keeps the slider honest.
+ */
+export function extrasRules(maxParticles: number): Record<string, RuleTree> {
+  const band = (cap: number): RuleTree => ({
+    lo: range(MIN_R_FLOOR, cap),
+    hi: range(MIN_R_FLOOR, cap),
+  });
+  return {
+    macros: Object.fromEntries(
+      (Object.keys(MACRO_RANGE) as (keyof PlifeMacros)[]).map((key) => {
+        const r = MACRO_RANGE[key];
+        return [key, range(r.min, r.max)];
+      }),
+    ),
+    matrixGen: {
+      sigma: range(0, 4),
+      symmetry: range(0, 1),
+      selfBias: range(-1, 1),
+      selfBiasAccent: range(-1, 1),
+      accentGain: range(0, 2),
+      // A counter, not a quantity: any non-negative integer is a legal family of
+      // wiggle directions, and the ceiling is only here so a corrupt file cannot
+      // hand `Math.imul` something absurd. Wrapped rather than clamped by the
+      // panel — see the reroll button.
+      wiggleRoll: range(0, MAX_WIGGLE_ROLL, { int: true }),
+      rMin: band(MAX_MIN_R),
+      rMax: band(MAX_REACH_BRUTE),
+    },
+    population: {
+      floor: range(0, 1),
+      curve: range(0.2, 4),
+      smoothingMs: range(100, 5000),
+      riseTau: range(0.05, 3),
+      fallTau: range(0.1, 8),
+      accent: {
+        floor: range(0, 1),
+        boost: range(0, 3),
+        smoothingMs: range(100, 5000),
+      },
+    },
+    field: {
+      // An unknown / absent / mistyped mode falls back to the default rather
+      // than throwing: this block is opaque to everything between the file and
+      // the sim, and the one thing a bad value must not do is put an O(N²) pass
+      // on screen by accident. Grid is the safe answer in both directions.
+      pairSearch: oneOf(PAIR_SEARCH_MODES),
+      nearStencil: range(1, MAX_NEAR_STENCIL, { int: true }),
+      farGain: range(FAR_GAIN_RANGE.min, FAR_GAIN_RANGE.max),
+      farScale: range(FAR_SCALE_RANGE.min, FAR_SCALE_RANGE.max),
+    },
+    budget: {
+      cap: range(BUDGET_MIN, Math.max(maxParticles, BUDGET_MIN), { int: true }),
+      floorFps: range(BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max),
+      idealFps: range(BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max),
+    },
+  };
+}
+
+/** Scene exposure / gamma — θ slots the look tab owns, hoisted out of θ's vector. */
+export const LOOK_RULES: RuleTree = { exposure: range(0.05, 4), gamma: range(1, 3) };
 
 export interface PlifeConfig {
   /** phase-7 render chain. Structural (outside θ) but saved with the mapping. */

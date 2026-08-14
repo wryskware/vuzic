@@ -25,7 +25,12 @@ import type { VizFxConfig } from '../sim/vizfx/config.ts';
 import { isVizFxId } from '../sim/vizfx/ids.ts';
 import { EVENT_KINDS } from '../timeline/types.ts';
 
-export const EXPORT_RECIPE_VERSION = 4 as const;
+/**
+ * 5: the impulse lane grew a `wiggle` depth per event kind (the matrix-row
+ * perturbation, roadmap phase 1 item 2). See `liftExportRecipe` for why a v4
+ * recipe lifts to `wiggle: 0` rather than to the shipped default.
+ */
+export const EXPORT_RECIPE_VERSION = 5 as const;
 
 /**
  * Additive within recipe v3 for the SDR debug profiles: a v3 recipe naming one
@@ -60,7 +65,14 @@ export type SimulationBaseConfig =
   | Omit<VizFxConfig, 'render'>;
 
 /** ModulationConfig also shares render in the live app; the recipe does not. */
-export type RecipeModulationConfig = Omit<ModulationConfig, 'render'>;
+/**
+ * `impulses` joins `render` in being omitted: both are one live object in the
+ * browser but appear once at the recipe's top level, and duplicating either
+ * inside the modulation block would create a second copy the validator would
+ * then have to prove equal to the first (the problem `palettesEqual` already
+ * exists to solve). One encoding, at `$.impulses`.
+ */
+export type RecipeModulationConfig = Omit<ModulationConfig, 'render' | 'impulses'>;
 
 export interface ExportRecipeV4 {
   version: typeof EXPORT_RECIPE_VERSION;
@@ -293,7 +305,7 @@ function validateImpulse(value: unknown, path: string): void {
   const responses = object(impulses['responses'], `${path}.responses`);
   keysExactly(responses, EVENT_KINDS, `${path}.responses`);
   const responseKeys = [
-    'enabled', 'species', 'decayMs', 'deposit', 'flash', 'sensor', 'splashCount',
+    'enabled', 'species', 'decayMs', 'deposit', 'flash', 'sensor', 'wiggle', 'splashCount',
     'splashRadius', 'splashPush', 'splashSwirl',
   ] as const;
   for (const kind of EVENT_KINDS) {
@@ -305,6 +317,7 @@ function validateImpulse(value: unknown, path: string): void {
     finiteNumber(response['deposit'], `${path}.responses.${kind}.deposit`, -1000, 1000);
     finiteNumber(response['flash'], `${path}.responses.${kind}.flash`, -1000, 1000);
     finiteNumber(response['sensor'], `${path}.responses.${kind}.sensor`, -1000, 1000);
+    finiteNumber(response['wiggle'], `${path}.responses.${kind}.wiggle`, -1000, 1000);
     integer(response['splashCount'], `${path}.responses.${kind}.splashCount`, 0, 32);
     finiteNumber(response['splashRadius'], `${path}.responses.${kind}.splashRadius`, 0, 1);
     finiteNumber(response['splashPush'], `${path}.responses.${kind}.splashPush`, -1000, 1000);
@@ -692,17 +705,12 @@ function liftPaletteBlock(value: unknown): unknown {
  * preserves meaning exactly and an old export replays to the same pixels.
  *
  * Anything that is not the palette is untouched: v3 and v4 differ in nothing
- * else. A recipe at any other version falls through unchanged and is rejected by
- * `validateExportRecipe`.
+ * else.
  */
-export function liftExportRecipe(value: unknown): unknown {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
-  const recipe = value as Record<string, unknown>;
-  if (recipe['version'] !== 3) return value;
-
+function liftV3toV4(recipe: Record<string, unknown>): Record<string, unknown> {
   const simulation = recipe['simulation'];
   const modulation = recipe['modulation'];
-  const lifted: Record<string, unknown> = { ...recipe, version: EXPORT_RECIPE_VERSION };
+  const lifted: Record<string, unknown> = { ...recipe, version: 4 };
   if (simulation !== null && typeof simulation === 'object' && !Array.isArray(simulation)) {
     lifted['simulation'] = {
       ...(simulation as Record<string, unknown>),
@@ -721,6 +729,59 @@ export function liftExportRecipe(value: unknown): unknown {
     };
   }
   return lifted;
+}
+
+/**
+ * v4 → v5: the impulse lane's new `wiggle` depth, filled in at **0** and not at
+ * the shipped default.
+ *
+ * This is the same rule the palette lift follows, applied to a case where the
+ * two candidate answers differ. A recipe is a reproduction contract, and the
+ * render a v4 recipe describes was produced by a build with no wiggle lane at
+ * all — so the value that preserves its meaning is the one that does nothing.
+ * Defaulting it to the new 0.6 would silently re-render an old export with an
+ * effect it never had, which is exactly the "makes an old recipe lie" failure
+ * the profile rename above refuses to commit.
+ *
+ * `matrixGen.wiggleRoll` needs no lift for the same reason it is not validated:
+ * it is a key for a draw that only matters when the depth is non-zero, and at
+ * `wiggle: 0` every family of directions produces the same matrix.
+ */
+function liftV4toV5(recipe: Record<string, unknown>): Record<string, unknown> {
+  const lifted: Record<string, unknown> = { ...recipe, version: EXPORT_RECIPE_VERSION };
+  const impulses = recipe['impulses'];
+  if (impulses === null || typeof impulses !== 'object' || Array.isArray(impulses)) return lifted;
+  const src = impulses as Record<string, unknown>;
+  const responses = src['responses'];
+  if (responses === null || typeof responses !== 'object' || Array.isArray(responses)) {
+    return lifted;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [kind, response] of Object.entries(responses as Record<string, unknown>)) {
+    out[kind] =
+      response !== null && typeof response === 'object' && !Array.isArray(response)
+        ? { wiggle: 0, ...(response as Record<string, unknown>) }
+        : response;
+  }
+  lifted['impulses'] = { ...src, responses: out };
+  return lifted;
+}
+
+/**
+ * Bring an older recipe up to the current schema, one hop at a time.
+ *
+ * Chained rather than branched: a v3 sidecar has to arrive at v5 through the
+ * same v4 the v4 sidecars go through, or the two paths would eventually
+ * disagree about what a v3 recipe means. A recipe at any other version falls
+ * through unchanged and is rejected by `validateExportRecipe`.
+ */
+export function liftExportRecipe(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  let recipe = value as Record<string, unknown>;
+  if (recipe['version'] !== 3 && recipe['version'] !== 4) return value;
+  if (recipe['version'] === 3) recipe = liftV3toV4(recipe);
+  if (recipe['version'] === 4) recipe = liftV4toV5(recipe);
+  return recipe;
 }
 
 export function parseExportRecipe(text: string): ExportRecipe {

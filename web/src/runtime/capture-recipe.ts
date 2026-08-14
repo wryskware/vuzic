@@ -54,8 +54,10 @@ export function captureExportRecipe(state: ExportRecipeCaptureState): ExportReci
   const extras = state.serializeExtras?.();
   if (extras === undefined) delete clonedModulation.extras;
   else clonedModulation.extras = structuredClone(extras);
-  const { render: _sharedRender, ...modulation } = clonedModulation;
+  // Both are shared live objects that the recipe encodes once, at its top level.
+  const { render: _sharedRender, impulses: _sharedImpulses, ...modulation } = clonedModulation;
   void _sharedRender;
+  void _sharedImpulses;
 
   const recipe: ExportRecipe = {
     version: EXPORT_RECIPE_VERSION,

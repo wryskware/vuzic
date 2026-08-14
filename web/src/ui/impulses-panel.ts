@@ -7,10 +7,9 @@
  * A test fire goes through exactly the same path as a timeline event (same
  * envelope, same hashed hotspots), so what you tune is what you get.
  */
-import type { FolderApi } from 'tweakpane';
-import type { ImpulseEngine, ResponseConfig } from '../sim/impulses';
+import { MAX_WIGGLE, type ImpulseEngine, type ResponseConfig } from '../sim/impulses';
 import { EVENT_KINDS, type EventKind } from '../timeline/types';
-import type { PanelContainer } from './panel';
+import type { PersistedContainer } from './autosave';
 
 export interface ImpulsePanelHandle {
   refresh(): void;
@@ -25,8 +24,16 @@ const SPECIES_HINT: Record<EventKind, string> = {
   vocal: 'wide pulse',
 };
 
+/**
+ * The container is a `PersistedContainer` and that is not a convention — it is
+ * the type. Every binding below saves because the container makes it save, and
+ * a caller cannot pass a folder that does not, which is what this folder's own
+ * history argues for: until 2026-08-13 it bound the live `ImpulseConfig` and
+ * nothing ever wrote it anywhere, so every splash radius and decay τ tuned here
+ * died on refresh.
+ */
 export function createImpulsePanel(
-  container: PanelContainer,
+  container: PersistedContainer,
   engine: ImpulseEngine,
   speciesName: (index: number) => string,
 ): ImpulsePanelHandle {
@@ -34,11 +41,17 @@ export function createImpulsePanel(
   const ui = {
     status: '—',
     levels: '—',
+    /** '' = nothing held; otherwise the kind whose envelope is pinned open. */
+    hold: '',
   };
 
   // Collapsed by default now that it shares the map tab with the driver bank:
   // six folders' worth of per-kind tuning under an expanded header pushed
   // everything else off the bottom of the pane.
+  // Wrapped, so every binding below saves by construction — including the two
+  // readonly readouts' neighbours, and including whatever a future event kind
+  // adds. The readouts themselves are skipped by `persisting` from their own
+  // `readonly` flag, which matters: `refresh()` rewrites both every frame.
   const root = container.addFolder({ title: 'events (impulse lane)', expanded: false });
   root.addBinding(ui, 'status', { readonly: true, label: '' });
   root.addBinding(cfg, 'enabled', { label: 'impulses on' });
@@ -47,6 +60,29 @@ export function createImpulsePanel(
   root.addButton({ title: 'test: fire all kinds' }).on('click', () => {
     for (const kind of EVENT_KINDS) engine.testFire(kind);
   });
+
+  // The isolation control, and the answer to "is this lane doing anything?".
+  //
+  // Every lane of a response rides one 90–380 ms envelope, so by eye they are
+  // one event and you cannot tell the flash from the wiggle from the splash.
+  // Holding a kind pins its envelope open: the transient becomes a state the
+  // field settles into, the per-lane depths below become a mixing desk you can
+  // solo (zero the ones you are not asking about), and switching the hold off
+  // is a clean A/B against the world you are looking at.
+  //
+  // Runtime only — deliberately not in `ImpulseConfig`, so no reload can bring
+  // back a world stuck permanently mid-hit.
+  root
+    .addBinding(ui, 'hold', {
+      label: 'hold (isolate)',
+      options: {
+        off: '',
+        ...Object.fromEntries(EVENT_KINDS.map((k) => [k, k])),
+      } as Record<string, string>,
+    })
+    .on('change', (ev) => {
+      engine.setHold(ev.value === '' ? null : (ev.value as EventKind));
+    });
 
   for (const kind of EVENT_KINDS) {
     const r = cfg.responses[kind];
@@ -68,7 +104,12 @@ export function createImpulsePanel(
   return {
     refresh(): void {
       const n = engine.eventCount;
+      const held = engine.heldKind;
       ui.status = n === 0 ? 'timeline has no events' : `${n} events · ${engine.activeSplashes} splashes live`;
+      // Loud, because a held envelope is a world that is not what the music is
+      // doing, and forgetting one open is exactly how "the sim looks wrong" gets
+      // reported against a build that is fine.
+      if (held) ui.status = `⏸ HOLDING "${held}" · ${ui.status}`;
       ui.levels = EVENT_KINDS.map((k) => `${k[0]}${engine.levelOf(k).toFixed(2)}`).join(' ');
     },
     dispose(): void {
@@ -77,10 +118,21 @@ export function createImpulsePanel(
   };
 }
 
-function addDepths(parent: FolderApi, r: ResponseConfig): void {
+function addDepths(parent: PersistedContainer, r: ResponseConfig): void {
   parent.addBinding(r, 'deposit', { min: 0, max: 6, step: 0.05, label: 'deposit burst ×' });
   parent.addBinding(r, 'flash', { min: 0, max: 4, step: 0.05, label: 'brightness flash ×' });
   parent.addBinding(r, 'sensor', { min: 0, max: 3, step: 0.05, label: 'sensor pop ×' });
+  // The wiggle lane. The depth is in multiples of the matrix's own strongest
+  // cell, so 1 already displaces the row by as much as the whole matrix is
+  // worth, and the shipped depths are 3-4. The plife macro `wiggle` scales all
+  // of them at once; this is the per-kind share, and it does nothing in
+  // substrates with no interaction matrix.
+  parent.addBinding(r, 'wiggle', {
+    min: 0,
+    max: MAX_WIGGLE,
+    step: 0.05,
+    label: 'matrix wiggle  (x max|A|)',
+  });
 
   const s = parent.addFolder({ title: 'radial splash', expanded: false });
   s.addBinding(r, 'splashCount', { min: 0, max: 8, step: 1, label: 'discs / event' });

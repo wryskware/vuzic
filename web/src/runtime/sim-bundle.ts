@@ -1,6 +1,6 @@
 import { type DriverBank, Modulator } from '../mapping/modulation';
 import type { ModulationConfig } from '../mapping/types';
-import { ImpulseEngine, type ImpulseConfig } from '../sim/impulses';
+import { applyImpulseConfig, ImpulseEngine, type ImpulseConfig } from '../sim/impulses';
 import { defaultConfig, type PhysarumConfig } from '../sim/physarum/config';
 import { PhysarumSim } from '../sim/physarum/physarum';
 import { defaultPlifeConfig, type PlifeConfig } from '../sim/plife/config';
@@ -109,16 +109,20 @@ function runtimeStateFromRecipe(recipe: ExportRecipe): RecipeRuntimeState {
   const render = structuredClone(recipe.render);
   const simulationConfig = { ...base, render } as RuntimeSimulationConfig;
   const savedModulation = structuredClone(recipe.modulation) as RecipeModulationConfig;
+  const impulseConfig = structuredClone(recipe.impulses);
   const modulationConfig: ModulationConfig = {
     ...savedModulation,
     palette: simulationConfig.palette,
     render: simulationConfig.render,
+    // Re-shared for the same reason palette and render are: the recipe encodes
+    // the event lane once, at its top level, and the runtime wants one object.
+    impulses: impulseConfig,
   };
   return {
     id: recipe.sim,
     seed: recipe.seed,
     simulationConfig,
-    impulseConfig: structuredClone(recipe.impulses),
+    impulseConfig,
     modulationConfig,
     modulationBase: recipe.modulationBase.slice(),
   };
@@ -173,6 +177,18 @@ export function buildSimBundle(options: BuildSimBundleOptions): SimBundle {
   sim.setImpulses(impulses.state);
 
   const modConfig = resolveModulationConfig(sim);
+  // The event lane is persisted inside the mapping, so a host that resolved one
+  // from storage or a recipe is carrying the authored responses — push them into
+  // the live engine, then re-share the engine's object by reference. From here on
+  // the panel edits, the autosave and the recipe capture are all looking at one
+  // object, which is the same arrangement the palette and the render block use
+  // and for the same reason: a copy is a sync step somebody eventually forgets.
+  //
+  // Ordering: this runs *after* the engine is constructed, so an explicitly
+  // supplied `impulseConfig` (the recipe path) has already been applied and this
+  // is a no-op against it rather than a second opinion.
+  if (!impulseConfig) applyImpulseConfig(impulses.config, modConfig.impulses);
+  modConfig.impulses = impulses.config;
   const modulator = new Modulator(sim, sampler, drivers, modConfig, seed);
   // Construction rewires the seed internally but has not written it to the
   // target yet. A recipe replaces that internal centre before the one and only
