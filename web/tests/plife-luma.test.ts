@@ -27,7 +27,8 @@ import {
   particleWhiteMix,
   type PlifeLumaConfig,
 } from '../src/sim/plife/luma.ts';
-import { defaultExtrasBlocks, extrasRules } from '../src/sim/plife/config.ts';
+import { defaultPlifeConfig, PLIFE_BLOCKS } from '../src/sim/plife/config.ts';
+import { blockRules, persistedBlockDecls } from '../src/mapping/blocks.ts';
 
 const src = (relative: string): string =>
   fileURLToPath(new URL(`../src/${relative}`, import.meta.url));
@@ -226,14 +227,15 @@ test('jitter is a fraction of the span, symmetric about no change', () => {
 // ── persistence wiring ───────────────────────────────────────────────────────
 
 test('the luma block is registered for persistence, with a rule per knob', () => {
-  const blocks = defaultExtrasBlocks(1024);
-  assert.ok(blocks['luma'], 'defaultExtrasBlocks must declare the luma block');
-  assert.deepEqual(Object.keys(blocks['luma'] as object).sort(), Object.keys(LUMA_RANGE).sort());
+  const decl = new Map(persistedBlockDecls(PLIFE_BLOCKS)).get('luma');
+  assert.ok(decl, 'PLIFE_BLOCKS must declare the luma block as persisted');
+  const config = defaultPlifeConfig();
+  assert.deepEqual(Object.keys(decl.defaults(config)).sort(), Object.keys(LUMA_RANGE).sort());
   // Defaults enrol a field in persistence and rules only clamp it — but an
   // unclamped knob here means a hand-edited file can hand the shader an
   // exponent of 0, so this block wants both, keyed identically.
   assert.deepEqual(
-    Object.keys(extrasRules(1024)['luma'] as object).sort(),
+    Object.keys(blockRules(decl, config)).sort(),
     Object.keys(LUMA_RANGE).sort(),
   );
   assert.deepEqual(Object.keys(lumaRules()).sort(), Object.keys(LUMA_RANGE).sort());

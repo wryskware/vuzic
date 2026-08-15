@@ -281,6 +281,9 @@ test('the persisted block set is what shipped, per sim', () => {
     'population',
     'field',
     'budget',
+    // Joined 2026-08-15 with the brightness-range lane (recipe v6 carries it;
+    // `liftV5toV6` fills it for older sidecars).
+    'luma',
   ]);
   assert.deepEqual(persistedBlocks(PHYSARUM_BLOCKS), ['macros', 'soil']);
   assert.deepEqual(persistedBlocks(VIZFX_BLOCKS), ['macros', 'energy']);
@@ -375,6 +378,7 @@ test('the serialized extras shape is exactly what shipped before the registry', 
     'population',
     'field',
     'budget',
+    'luma',
     'speciesEnabled',
     'look',
   ]);
