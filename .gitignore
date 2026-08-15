@@ -39,3 +39,4 @@ data/**/embedding.json
 # from audio.wav by the pipeline, and the spectrogram alone is 20 MB per track.
 data/**/allin1/
 data/**/spec/
+.claude/worktrees/

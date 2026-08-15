@@ -32,6 +32,8 @@
 import { customPalette, type Palette } from '../palette.ts';
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
 import { defaultMacros, defaultParams, type VizFxVisual } from './slots.ts';
+import { range, type RuleTree } from '../../mapping/read-into.ts';
+import { persisted, persistedElsewhere, type BlockTable } from '../../mapping/blocks.ts';
 
 /**
  * Stems → per-layer presence.
@@ -86,6 +88,57 @@ export const MACRO_RANGE = { min: 0, max: 2 } as const;
 
 /** Hard bound on `emittersPerLayer`; the emitter buffer is sized to it. */
 export const MAX_EMITTERS_PER_LAYER = 6;
+
+const ENERGY_RULES: RuleTree = {
+  floor: range(ENERGY_RANGE.floor.min, ENERGY_RANGE.floor.max),
+  curve: range(ENERGY_RANGE.curve.min, ENERGY_RANGE.curve.max),
+  smoothingMs: range(ENERGY_RANGE.smoothingMs.min, ENERGY_RANGE.smoothingMs.max),
+};
+
+/**
+ * **Which blocks of `VizFxConfig` are saved.** Same mechanism and the same
+ * guarantee as plife's `PLIFE_BLOCKS` and physarum's `PHYSARUM_BLOCKS`: the table
+ * is exhaustive over the config's object-valued keys, so a block added here is a
+ * compile error until it is declared, and declaring it is all its registration
+ * takes.
+ *
+ * `macros` is the one block in the repo whose *keys* are not fixed — they are the
+ * visual's own macro list — so its defaults and rules are functions of the live
+ * config rather than tables. That works for exactly the reason the whole design
+ * works: the reader walks the destination, and the destination already has the
+ * right keys.
+ *
+ * `emittersPerLayer` and the transport are scalars on the config root rather than
+ * blocks, so they stay in `VizFxSim.serializeExtras` by hand.
+ */
+export const VIZFX_BLOCKS: BlockTable<VizFxConfig> = {
+  macros: persisted(
+    (cfg) => Object.fromEntries(Object.keys(cfg.macros).map((key) => [key, 1])),
+    {
+      rules: (cfg) =>
+        Object.fromEntries(
+          Object.keys(cfg.macros).map((key) => [key, range(MACRO_RANGE.min, MACRO_RANGE.max)]),
+        ),
+    },
+  ),
+  energy: persisted(defaultEnergy, { rules: ENERGY_RULES }),
+
+  render: persistedElsewhere(
+    'the mapping file owns the render chain: `ModulationConfig.render` IS this ' +
+      'object, shared by reference, and `parseModulation` reads it.',
+  ),
+  palette: persistedElsewhere(
+    'same as render — `ModulationConfig.palette` is this object by reference, and ' +
+      'it needs a reader `readInto` cannot be. See `parseModulation`.',
+  ),
+  params: persistedElsewhere(
+    'θ. Reproduced from (seed, preset, modulation) on every load rather than ' +
+      'stored — the seed is what persists, and a saved θ would be overwritten by ' +
+      'the first modulator tick anyway. The two slots the look tab owns and the ' +
+      'modulator excludes are the exception, and they ride the bespoke `look` key ' +
+      'in `VizFxSim.serializeExtras`.',
+  ),
+};
 
 /**
  * Substeps one 60 Hz model tick may expand into. The warp is a per-*model-tick* operation

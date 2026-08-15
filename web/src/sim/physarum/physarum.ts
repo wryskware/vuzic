@@ -20,18 +20,16 @@ import { advanceStepCadence, smoothDtFrames } from '../step-cadence';
 import {
   defaultConfig,
   defaultPaletteColor,
-  defaultPhysarumMacros,
-  defaultSoil,
   MAX_BRIGHTNESS,
   MAX_DEPOSIT,
   MAX_EFFECTIVE_DEPOSIT,
   MAX_SPECIES_SCALE,
   MIN_SPECIES_SCALE,
-  PHYSARUM_MACRO_RANGE,
+  PHYSARUM_BLOCKS,
   type PhysarumConfig,
-  type PhysarumMacros,
   type SpeciesConfig,
 } from './config';
+import { applyBlocks, serializeBlocks } from '../../mapping/blocks';
 
 import commonWgsl from './shaders/common.wgsl?raw';
 import agentsWgsl from './shaders/agents.wgsl?raw';
@@ -382,20 +380,19 @@ export class PhysarumSim implements Sim, ModTarget {
   // outside both θ and extras is an edit the tiles never see — which is exactly
   // how the soil sliders came to do nothing while the grid was open.
 
-  /** A plain snapshot of everything physarum wants saved outside θ. */
+  /**
+   * A plain snapshot of everything physarum wants saved outside θ.
+   *
+   * The blocks come from `PHYSARUM_BLOCKS`, which is exhaustive over
+   * `PhysarumConfig`'s own object-valued keys — so a block saves because it was
+   * *declared*, not because it was remembered here (roadmap phase 1 item 5).
+   * `soil.debugView` is absent because the declaration says it is session-only,
+   * which is also where the reason is written. What is left below is the state
+   * that is not a block: two scalars on the config root, and the look pair.
+   */
   serializeExtras(): Record<string, unknown> {
-    const s = this.config.soil;
     return {
-      macros: { ...this.config.macros },
-      // `debugView` is deliberately absent: it is a transient "show me the
-      // field" toggle, and a saved one would come back on a later load as a
-      // world rendered in the wrong channel with no obvious cause.
-      soil: {
-        decay: s.decay,
-        accum: s.accum,
-        depositBias: s.depositBias,
-        senseBias: s.senseBias,
-      },
+      ...serializeBlocks(this.config, PHYSARUM_BLOCKS),
       stemDrive: this.config.stemDrive,
       stemGain: this.config.stemGain,
       // θ, but the two slots excluded from modulation and owned by the look tab.
@@ -414,31 +411,17 @@ export class PhysarumSim implements Sim, ModTarget {
    * Runs on load (`Modulator.setConfig`) and, nine times over, on every explorer
    * style sync. Both callers depend on it writing **in place**: the panel's
    * tweakpane bindings hold `config.soil` by reference, so replacing the object
-   * would leave every soil slider bound to an orphan.
+   * would leave every soil slider bound to an orphan. `applyBlocks` guarantees
+   * that, and it walks each block's own live keys, so a field added to
+   * `SoilConfig` or `PhysarumMacros` round trips the moment its defaults function
+   * knows about it — no reader to update, and no way to half-update one.
+   *
+   * `soil.debugView` is lifted over both walks (the reset and the read) by its
+   * `sessionOnlyFields` declaration, so whatever the panel currently has stays.
    */
   applyExtras(raw: Record<string, unknown> | undefined): void {
     const o = (raw ?? {}) as Record<string, unknown>;
-    const m = this.config.macros;
-    const src = plainObject(o['macros']);
-    const def = defaultPhysarumMacros();
-    for (const key of Object.keys(def) as (keyof PhysarumMacros)[]) {
-      const r = PHYSARUM_MACRO_RANGE[key];
-      m[key] = clampNum(src[key], def[key], r.min, r.max);
-    }
-
-    // Ranges are the panel's own (ui/panel.ts, the "soil · track-scale memory"
-    // folder), so a loaded value can never sit outside the slider meant to show
-    // it. `decay` is floored at 0.99 rather than 0 because below that the field
-    // forgets inside a second and stops being track-scale memory at all.
-    const s = this.config.soil;
-    const ss = plainObject(o['soil']);
-    const defS = defaultSoil();
-    s.decay = clampNum(ss['decay'], defS.decay, 0.99, 0.99999);
-    s.accum = clampNum(ss['accum'], defS.accum, 0, 0.02);
-    s.depositBias = clampNum(ss['depositBias'], defS.depositBias, 0, 3);
-    s.senseBias = clampNum(ss['senseBias'], defS.senseBias, 0, 4);
-    // `debugView` is not read back — see `serializeExtras`. Whatever the panel
-    // currently has stays.
+    applyBlocks(this.config, PHYSARUM_BLOCKS, o);
 
     // Defaults stated as literals rather than pulled from `defaultConfig()`:
     // this runs nine times a sync and `defaultConfig` allocates a whole K²

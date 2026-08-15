@@ -41,6 +41,7 @@
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
 import { customPalette, type Palette } from '../palette.ts';
 import { oneOf, range, type RuleTree } from '../../mapping/read-into.ts';
+import { persisted, persistedElsewhere, type BlockTable } from '../../mapping/blocks.ts';
 
 /** Sim substeps one clock tick may expand into; folded into the PCG tick key. */
 export const MAX_SUBSTEPS = 4;
@@ -720,31 +721,15 @@ export function defaultMatrixGen(): MatrixGenConfig {
 }
 
 /**
- * The extras channel's schema, in one place: defaults on one side, clamps on the
- * other, keyed identically. `PlifeSim.serializeExtras` snapshots the live blocks
- * these describe and `applyExtras` reads back into them with `readInto`, which
- * walks each block's own keys — so a field added to `PlifeMacros`,
- * `MatrixGenConfig`, `PlifePopulationConfig`, `PlifeFieldConfig` or
- * `PlifeBudgetConfig` round trips the moment its defaults function knows it.
- *
- * The rule tables below only *bound* values. A field with no entry still
- * persists; it is simply unclamped, which is right for the ones whose legal
- * range is "any real number". Nothing is enrolled in persistence by being named
- * here, which is the property that makes the pair impossible to forget half of.
- */
-export function defaultExtrasBlocks(maxParticles: number): Record<string, object> {
-  return {
-    macros: defaultPlifeMacros(),
-    matrixGen: defaultMatrixGen(),
-    population: defaultPlifePopulation(),
-    field: defaultPlifeField(),
-    budget: defaultPlifeBudget(maxParticles),
-  };
-}
-
-/**
  * Ranges are the panel's own (`ui/plife-panel.ts`), so a loaded value can never
  * sit outside the slider meant to show it.
+ *
+ * The rule tables only *bound* values. A field with no entry still persists; it
+ * is simply unclamped, which is right for the ones whose legal range is "any real
+ * number". Nothing is enrolled in persistence by being named here — enrolment is
+ * the defaults function's job (see `readInto`) one level down and the block
+ * declaration's job (see `PLIFE_BLOCKS`) one level up, which is what makes these
+ * tables safe to leave incomplete.
  *
  * The non-obvious floors: `population.curve` is an exponent a 0..1 level is
  * raised to, and `riseTau` / `fallTau` are divisors in the shader — all three
@@ -755,66 +740,122 @@ export function defaultExtrasBlocks(maxParticles: number): Record<string, object
  * floor but not a ceiling: an outer radius may reach `MAX_REACH_BRUTE` (half the
  * torus), while the hard core stays under `MAX_MIN_R` — it is a contact
  * distance, not a reach.
- *
- * `budget.cap` is bounded by the *live* pool rather than by whatever the file
- * thought it was: a cap above the pool is not a bigger world, it is a clamp that
- * never binds, and stating it as `maxParticles` keeps the slider honest.
  */
-export function extrasRules(maxParticles: number): Record<string, RuleTree> {
-  const band = (cap: number): RuleTree => ({
-    lo: range(MIN_R_FLOOR, cap),
-    hi: range(MIN_R_FLOOR, cap),
-  });
-  return {
-    macros: Object.fromEntries(
-      (Object.keys(MACRO_RANGE) as (keyof PlifeMacros)[]).map((key) => {
-        const r = MACRO_RANGE[key];
-        return [key, range(r.min, r.max)];
-      }),
-    ),
-    matrixGen: {
-      sigma: range(0, 4),
-      symmetry: range(0, 1),
-      selfBias: range(-1, 1),
-      selfBiasAccent: range(-1, 1),
-      accentGain: range(0, 2),
-      // A counter, not a quantity: any non-negative integer is a legal family of
-      // wiggle directions, and the ceiling is only here so a corrupt file cannot
-      // hand `Math.imul` something absurd. Wrapped rather than clamped by the
-      // panel — see the reroll button.
-      wiggleRoll: range(0, MAX_WIGGLE_ROLL, { int: true }),
-      rMin: band(MAX_MIN_R),
-      rMax: band(MAX_REACH_BRUTE),
-    },
-    population: {
-      floor: range(0, 1),
-      curve: range(0.2, 4),
-      smoothingMs: range(100, 5000),
-      riseTau: range(0.05, 3),
-      fallTau: range(0.1, 8),
-      accent: {
-        floor: range(0, 1),
-        boost: range(0, 3),
-        smoothingMs: range(100, 5000),
-      },
-    },
-    field: {
-      // An unknown / absent / mistyped mode falls back to the default rather
-      // than throwing: this block is opaque to everything between the file and
-      // the sim, and the one thing a bad value must not do is put an O(N²) pass
-      // on screen by accident. Grid is the safe answer in both directions.
-      pairSearch: oneOf(PAIR_SEARCH_MODES),
-      nearStencil: range(1, MAX_NEAR_STENCIL, { int: true }),
-      farGain: range(FAR_GAIN_RANGE.min, FAR_GAIN_RANGE.max),
-      farScale: range(FAR_SCALE_RANGE.min, FAR_SCALE_RANGE.max),
-    },
-    budget: {
-      cap: range(BUDGET_MIN, Math.max(maxParticles, BUDGET_MIN), { int: true }),
-      floorFps: range(BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max),
-      idealFps: range(BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max),
-    },
-  };
-}
+const MACRO_RULES: RuleTree = Object.fromEntries(
+  (Object.keys(MACRO_RANGE) as (keyof PlifeMacros)[]).map((key) => {
+    const r = MACRO_RANGE[key];
+    return [key, range(r.min, r.max)];
+  }),
+);
+
+const band = (cap: number): RuleTree => ({
+  lo: range(MIN_R_FLOOR, cap),
+  hi: range(MIN_R_FLOOR, cap),
+});
+
+const MATRIX_GEN_RULES: RuleTree = {
+  sigma: range(0, 4),
+  symmetry: range(0, 1),
+  selfBias: range(-1, 1),
+  selfBiasAccent: range(-1, 1),
+  accentGain: range(0, 2),
+  // A counter, not a quantity: any non-negative integer is a legal family of
+  // wiggle directions, and the ceiling is only here so a corrupt file cannot hand
+  // `Math.imul` something absurd. Wrapped rather than clamped by the panel — see
+  // the reroll button.
+  wiggleRoll: range(0, MAX_WIGGLE_ROLL, { int: true }),
+  rMin: band(MAX_MIN_R),
+  rMax: band(MAX_REACH_BRUTE),
+};
+
+const POPULATION_RULES: RuleTree = {
+  floor: range(0, 1),
+  curve: range(0.2, 4),
+  smoothingMs: range(100, 5000),
+  riseTau: range(0.05, 3),
+  fallTau: range(0.1, 8),
+  accent: {
+    floor: range(0, 1),
+    boost: range(0, 3),
+    smoothingMs: range(100, 5000),
+  },
+};
+
+const FIELD_RULES: RuleTree = {
+  // An unknown / absent / mistyped mode falls back to the default rather than
+  // throwing: this block is opaque to everything between the file and the sim,
+  // and the one thing a bad value must not do is put an O(N²) pass on screen by
+  // accident. Grid is the safe answer in both directions.
+  pairSearch: oneOf(PAIR_SEARCH_MODES),
+  nearStencil: range(1, MAX_NEAR_STENCIL, { int: true }),
+  farGain: range(FAR_GAIN_RANGE.min, FAR_GAIN_RANGE.max),
+  farScale: range(FAR_SCALE_RANGE.min, FAR_SCALE_RANGE.max),
+};
+
+/**
+ * `cap` is bounded by the *live* pool rather than by whatever the file thought it
+ * was: a cap above the pool is not a bigger world, it is a clamp that never
+ * binds, and stating it as `maxParticles` keeps the slider honest. Hence a
+ * function of the live config rather than a flat table.
+ */
+const budgetRules = (cfg: PlifeConfig): RuleTree => ({
+  cap: range(BUDGET_MIN, Math.max(cfg.maxParticles, BUDGET_MIN), { int: true }),
+  floorFps: range(BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max),
+  idealFps: range(BUDGET_FPS_RANGE.min, BUDGET_FPS_RANGE.max),
+});
+
+/**
+ * **Which blocks of `PlifeConfig` are saved — and declaring one here is all it
+ * takes to save it.**
+ *
+ * This is the roadmap's phase 1 item 5, and the shape is `mapping/blocks.ts`'s:
+ * the table is exhaustive over the *config's own* object-valued keys, so adding
+ * `foo: FooConfig` to `PlifeConfig` is a compile error until `foo` is declared
+ * here, and one `persisted(defaultFoo)` enrols it in serialize, restore **and**
+ * clamp at once. Before this, a new block had to be remembered in three separate
+ * places (`PlifeSim.extrasBlocks()`, a defaults table and a rules table) and
+ * nothing failed if it was remembered in none of them — the block simply never
+ * saved, and the report arrived weeks later as "my tweak didn't save".
+ *
+ * Order is the serialized key order, and is the order that shipped before this
+ * table existed, so an autosave written by an older build still diffs cleanly
+ * against a newer one.
+ *
+ * Two blocks are declared *not* saved here, which is the other half of the
+ * design: an opt-out is a sentence somebody wrote and somebody reviewed, and
+ * `unpersistedBlocks()` puts every one of them under an exhaustive CI assertion.
+ */
+export const PLIFE_BLOCKS: BlockTable<PlifeConfig> = {
+  macros: persisted(defaultPlifeMacros, {
+    rules: MACRO_RULES,
+    // Pre-split files carry `agility` instead of `speed`/`drag`. It runs before
+    // the walk so the migrated values are bounded by the same table as the rest.
+    migrate: migrateLegacyMacros,
+  }),
+  matrixGen: persisted(defaultMatrixGen, { rules: MATRIX_GEN_RULES }),
+  population: persisted(defaultPlifePopulation, { rules: POPULATION_RULES }),
+  field: persisted(defaultPlifeField, { rules: FIELD_RULES }),
+  // The four SETTINGS of the budget block, and only those. The governor's own
+  // state (`PlifeSim.governorBudget`, surfaced as `effectiveBudget`) is
+  // deliberately not a field of this block and must never become one: it is a
+  // live measurement of this machine in this session, and a saved one would open
+  // every future run of this mapping at whatever the frame rate happened to be
+  // when it was written. It lives on the sim, outside the config entirely, which
+  // is the structural way of saying the same thing — and `plife-extras` pins it.
+  budget: persisted((cfg) => defaultPlifeBudget(cfg.maxParticles), { rules: budgetRules }),
+
+  render: persistedElsewhere(
+    'the mapping file owns the render chain: `ModulationConfig.render` IS this ' +
+      'object, shared by reference, and `parseModulation` reads it. A second copy ' +
+      'in `extras` would be two encodings of one block for a loader to disagree ' +
+      'about.',
+  ),
+  palette: persistedElsewhere(
+    'same as render — `ModulationConfig.palette` is this object by reference, and ' +
+      'the palette needs a reader `readInto` cannot be (per-species colours, ' +
+      're-derived from the arcs in arc mode). See `parseModulation`.',
+  ),
+};
 
 /** Scene exposure / gamma — θ slots the look tab owns, hoisted out of θ's vector. */
 export const LOOK_RULES: RuleTree = { exposure: range(0.05, 4), gamma: range(1, 3) };

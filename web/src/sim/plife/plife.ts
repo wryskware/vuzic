@@ -73,15 +73,12 @@ import type { RenderFrame, Sim } from '../types';
 import { advanceStepCadence, smoothDtFrames } from '../step-cadence';
 import {
   BUDGET_MIN,
-  defaultExtrasBlocks,
   defaultPlifeConfig,
   defaultPlifePaletteColor,
-  extrasRules,
   FAR_SCALE_MIN_RATIO,
   FAR_SCALE_RANGE,
   FAR_SCALE_REF,
   LOOK_RULES,
-  migrateLegacyMacros,
   MAX_BRIGHTNESS,
   MAX_EFFECTIVE_FRICTION,
   MAX_MIN_R,
@@ -93,12 +90,14 @@ import {
   MAX_SUBSTEPS,
   MAX_WIGGLE_ROLL,
   MIN_R_FLOOR,
+  PLIFE_BLOCKS,
   PRIMARY_COUNT,
   R_CAP,
   type PairSearch,
   type PlifeConfig,
 } from './config';
 import { readInto } from '../../mapping/read-into';
+import { applyBlocks, serializeBlocks } from '../../mapping/blocks';
 import { seedMatrixBase, seedWiggleDirs, wiggleAttraction } from './genmatrix';
 import {
   applyVector,
@@ -597,9 +596,15 @@ export class PlifeSim implements Sim, ModTarget {
    * governor that had eagerly copied it would keep an untouched world pinned at
    * whatever the cap was at construction. `effectiveBudget` composes the two.
    *
-   * Session-only, deliberately: it is never serialised, never restored, and
-   * `applyExtras` cannot reach it. What a machine could sustain in another tab,
-   * at another window size, an hour ago is not a fact about this run.
+   * **Session-only, deliberately, and structurally.** What a machine could
+   * sustain in another tab, at another window size, an hour ago is not a fact
+   * about this run — so this lives on the sim rather than in `PlifeBudgetConfig`,
+   * which is what puts it outside the block registry's reach entirely: `budget`
+   * is a declared persisted block (`PLIFE_BLOCKS`) and every field of it round
+   * trips, so the only way to keep the governor out of the file is for it not to
+   * be a field of it. Promoting it into that interface would persist it
+   * immediately and silently; `block-registry.test.ts` searches the serialised
+   * extras by name so that promotion fails CI instead of shipping.
    */
   private governorBudget = Number.POSITIVE_INFINITY;
   /** `performance.now()` of the last adjustment; the cadence gate reads it */
@@ -1021,12 +1026,18 @@ export class PlifeSim implements Sim, ModTarget {
 
   // ── ModTarget: the opaque per-sim extras block ─────────────────────────────
   //
-  // Three blocks of plife's config are outside θ *and* outside everything the
+  // Several blocks of plife's config are outside θ *and* outside everything the
   // mapping layer knows how to carry: the macro rig, the matrix generation
-  // settings, and the population lane. None belongs in `ModulationConfig`'s
-  // schema — that file describes a mapping, not a substrate — so they travel in
-  // the opaque `extras` channel and this pair is the only code that understands
-  // their shape.
+  // settings, the population lane, the field and the budget. None belongs in
+  // `ModulationConfig`'s schema — that file describes a mapping, not a substrate
+  // — so they travel in the opaque `extras` channel.
+  //
+  // *Which* blocks those are is no longer stated here. `PLIFE_BLOCKS` (config.ts)
+  // is an exhaustive table over `PlifeConfig`'s object-valued keys, so the answer
+  // is derived from the config itself and a new block cannot be left out of it
+  // without failing to compile. This pair is now only the two things that are not
+  // blocks — the per-species enable flags and the look scalars — plus the radius
+  // band ordering, which no per-field rule can express.
   //
   // The channel has two consumers, and the second is why `population` is here at
   // all. The first is persistence (autosave / `modulation.json`). The second is
@@ -1036,38 +1047,20 @@ export class PlifeSim implements Sim, ModTarget {
   // to do nothing while the grid was open.
 
   /**
-   * The blocks of `PlifeConfig` that ride the extras channel, by reference.
+   * A plain snapshot of everything plife wants saved outside θ.
    *
-   * **This list is the schema.** `serializeExtras` clones what it returns and
-   * `applyExtras` reads back into the very same objects, so the two directions
-   * cannot disagree about which blocks exist, and — because both go through
-   * `readInto`, which walks the destination's own keys — they cannot disagree
-   * about which *fields* exist either. Adding a field to any block below costs
-   * nothing here; adding a whole new block costs one line, in one place.
-   *
-   * That is the fix for the recurring "my tweak didn't save": before this,
-   * serialisation picked fields by hand and restoration read them back by hand,
-   * so a new setting had to be remembered twice and was silently dropped if it
-   * was remembered neither time.
+   * There is no list of blocks here any more, and that is the point (roadmap
+   * phase 1 item 5). `PLIFE_BLOCKS` is exhaustive over `PlifeConfig`'s own
+   * object-valued keys, so a block persists because it was *declared*, not
+   * because somebody remembered to name it in this method — which is how the
+   * accent arcs, the impulse lane and the population folder each came to be
+   * saved by nothing. The two things below are not config blocks and so are
+   * still spelled out: an array keyed to the live K, and two scalars on the
+   * config root.
    */
-  private extrasBlocks(): Record<string, object> {
-    return {
-      macros: this.config.macros,
-      matrixGen: this.config.matrixGen,
-      population: this.config.population,
-      field: this.config.field,
-      // The four SETTINGS only. `effectiveBudget` is not a field of this block
-      // and must never become one: it is a live measurement of this machine in
-      // this session, and a saved one would open every future run of this
-      // mapping at whatever the frame rate happened to be when it was written.
-      budget: this.config.budget,
-    };
-  }
-
-  /** A plain snapshot of everything plife wants saved outside θ. */
   serializeExtras(): Record<string, unknown> {
     return {
-      ...structuredClone(this.extrasBlocks()),
+      ...serializeBlocks(this.config, PLIFE_BLOCKS),
       // Length K, index-aligned with `config.species`. A flat boolean array
       // rather than a list of names, because the species *are* their indices
       // everywhere else in this sim (the matrix, the palette, the stem map), and
@@ -1106,26 +1099,14 @@ export class PlifeSim implements Sim, ModTarget {
   applyExtras(raw: Record<string, unknown> | undefined): void {
     const o = (raw ?? {}) as Record<string, unknown>;
 
-    // Every declared block, restored by walking its own live keys. A block is
-    // reset to its shipped defaults first so a *partial* saved block does not
-    // leave the untouched half at whatever the previous load or the explorer's
-    // last style sync happened to put there — `applyExtras` has to be a
-    // function of the blob, not of history, because the explorer calls it nine
-    // times a second against nine different tiles.
-    const blocks = this.extrasBlocks();
-    const defaults = defaultExtrasBlocks(this.config.maxParticles);
-    const rules = extrasRules(this.config.maxParticles);
-    for (const [name, live] of Object.entries(blocks)) {
-      // Two walks, both in place. `Object.assign` would not do: it would replace
-      // `population.accent` and `matrixGen.rMin` with fresh objects, and the
-      // panel's bindings hold those by reference.
-      readInto(live, defaults[name]);
-      // Pre-split files carry `agility` instead of `speed`/`drag` — see
-      // `migrateLegacyMacros`. It runs before the walk so the migrated values
-      // are bounded by the same table as everything else.
-      const src = name === 'macros' ? migrateLegacyMacros(plainObject(o[name])) : o[name];
-      readInto(live, src, rules[name]);
-    }
+    // Every declared block, reset to its shipped defaults and then read back
+    // into by walking its own live keys — in place, because the panel's
+    // tweakpane bindings hold `config.population` and `config.matrixGen.rMin` by
+    // reference. The reset is why `applyExtras` is a function of the blob and
+    // not of history, which the explorer depends on: it fans one serialised
+    // block out to nine tiles twice a second, and a partial block must not leave
+    // the untouched half at whatever the previous tile put there.
+    applyBlocks(this.config, PLIFE_BLOCKS, o);
 
     // `lo <= hi` is enforced rather than assumed, because the generator draws
     // uniformly between them and an inverted band would draw nonsense. The walk
@@ -2852,12 +2833,6 @@ function emaAlpha(dt: number, smoothingMs: number, snap: boolean): number {
 // Deliberately total functions: `applyExtras` is handed whatever was in the
 // file, and the contract is that it never throws — a broken block loses its
 // values to the defaults, not the whole load.
-
-function plainObject(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-}
 
 /**
  * The wiggle reroll counter as a non-negative integer, wrapped at

@@ -38,7 +38,21 @@ export function createImpulsePanel(
   speciesName: (index: number) => string,
 ): ImpulsePanelHandle {
   const cfg = engine.config;
-  const ui = {
+  /**
+   * **Session-only, by declaration.** These three are bound to *this* object and
+   * not to `ImpulseConfig`, and that is the opt-out: nothing serialises this
+   * object, so nothing can restore it. Said here rather than by being quietly
+   * absent from a save list — the same rule `mapping/blocks.ts` enforces one
+   * level up for whole config blocks, and `block-registry.test.ts` asserts that
+   * `hold` never appears in `defaultImpulseConfig()`.
+   *
+   * `status` and `levels` are readouts `refresh()` rewrites every frame.
+   * `hold` is a tuning *stance*, not a setting: it pins one kind's envelope open
+   * so the lane can be judged as a state rather than as a 200 ms transient, and a
+   * reload that restored it would bring back a world stuck permanently mid-hit
+   * with nothing on screen to explain it.
+   */
+  const sessionOnly = {
     status: '—',
     levels: '—',
     /** '' = nothing held; otherwise the kind whose envelope is pinned open. */
@@ -53,10 +67,10 @@ export function createImpulsePanel(
   // adds. The readouts themselves are skipped by `persisting` from their own
   // `readonly` flag, which matters: `refresh()` rewrites both every frame.
   const root = container.addFolder({ title: 'events (impulse lane)', expanded: false });
-  root.addBinding(ui, 'status', { readonly: true, label: '' });
+  root.addBinding(sessionOnly, 'status', { readonly: true, label: '' });
   root.addBinding(cfg, 'enabled', { label: 'impulses on' });
   root.addBinding(cfg, 'gain', { min: 0, max: 3, step: 0.05, label: 'global gain' });
-  root.addBinding(ui, 'levels', { readonly: true, label: 'env' });
+  root.addBinding(sessionOnly, 'levels', { readonly: true, label: 'env' });
   root.addButton({ title: 'test: fire all kinds' }).on('click', () => {
     for (const kind of EVENT_KINDS) engine.testFire(kind);
   });
@@ -70,10 +84,9 @@ export function createImpulsePanel(
   // solo (zero the ones you are not asking about), and switching the hold off
   // is a clean A/B against the world you are looking at.
   //
-  // Runtime only — deliberately not in `ImpulseConfig`, so no reload can bring
-  // back a world stuck permanently mid-hit.
+  // Runtime only — deliberately not in `ImpulseConfig`; see `sessionOnly` above.
   root
-    .addBinding(ui, 'hold', {
+    .addBinding(sessionOnly, 'hold', {
       label: 'hold (isolate)',
       options: {
         off: '',
@@ -105,12 +118,12 @@ export function createImpulsePanel(
     refresh(): void {
       const n = engine.eventCount;
       const held = engine.heldKind;
-      ui.status = n === 0 ? 'timeline has no events' : `${n} events · ${engine.activeSplashes} splashes live`;
+      sessionOnly.status = n === 0 ? 'timeline has no events' : `${n} events · ${engine.activeSplashes} splashes live`;
       // Loud, because a held envelope is a world that is not what the music is
       // doing, and forgetting one open is exactly how "the sim looks wrong" gets
       // reported against a build that is fine.
-      if (held) ui.status = `⏸ HOLDING "${held}" · ${ui.status}`;
-      ui.levels = EVENT_KINDS.map((k) => `${k[0]}${engine.levelOf(k).toFixed(2)}`).join(' ');
+      if (held) sessionOnly.status = `⏸ HOLDING "${held}" · ${sessionOnly.status}`;
+      sessionOnly.levels = EVENT_KINDS.map((k) => `${k[0]}${engine.levelOf(k).toFixed(2)}`).join(' ');
     },
     dispose(): void {
       root.dispose();

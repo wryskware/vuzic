@@ -62,8 +62,9 @@ const [
   { defaultRenderConfig },
   { defaultArc, defaultAccentArc, mergePalette },
   { defaultPalette },
-  { defaultExtrasBlocks, defaultPlifeConfig, extrasRules, MACRO_RANGE },
+  { defaultPlifeConfig, MACRO_RANGE, PLIFE_BLOCKS },
   { PlifeSim },
+  { blockRules, persistedBlockDecls },
 ] = await Promise.all([
   import('../src/mapping/persist.ts'),
   import('../src/mapping/read-into.ts'),
@@ -74,7 +75,15 @@ const [
   import('../src/sim/physarum/config.ts'),
   import('../src/sim/plife/config.ts'),
   import('../src/sim/plife/plife.ts'),
+  import('../src/mapping/blocks.ts'),
 ]);
+
+/** A declared block's shipped defaults, by name — the schema that block persists. */
+function plifeBlockDefaults(name: string): object {
+  const found = persistedBlockDecls(PLIFE_BLOCKS).find(([key]) => key === name);
+  assert.ok(found, `"${name}" is not a persisted block of PLIFE_BLOCKS`);
+  return found[1].defaults(defaultPlifeConfig());
+}
 
 // ── the perturber ────────────────────────────────────────────────────────────
 
@@ -337,11 +346,18 @@ const EXTRAS_EXCEPTIONS = ['look', 'speciesEnabled'];
 
 test("every field of plife's extras block survives serialize → apply", () => {
   const authored = new PlifeSim(1234, defaultPlifeConfig());
-  const rules = extrasRules(authored.config.maxParticles);
-  for (const [name, live] of Object.entries(defaultExtrasBlocks(authored.config.maxParticles))) {
+  // Driven by the block table rather than by a list written here: a block
+  // declared in `PLIFE_BLOCKS` is under this sweep the moment it is declared,
+  // which is the same property one level up that `readInto` gives fields.
+  for (const [name, decl] of persistedBlockDecls(PLIFE_BLOCKS)) {
+    const rules = blockRules(decl, authored.config);
     const block = (authored.config as unknown as Record<string, object>)[name];
     assert.ok(block, `extras block "${name}" is not on the config`);
-    readInto(block, perturb(live, rules[name] as Record<string, unknown>), rules[name]);
+    readInto(
+      block,
+      perturb(decl.defaults(authored.config), rules as Record<string, unknown>),
+      rules,
+    );
   }
   // The band ordering the loader restores would otherwise be the one legitimate
   // difference between what we authored and what comes back.
@@ -356,7 +372,7 @@ test("every field of plife's extras block survives serialize → apply", () => {
   const restored = new PlifeSim(9999, defaultPlifeConfig());
   restored.applyExtras(saved);
 
-  for (const name of Object.keys(defaultExtrasBlocks(authored.config.maxParticles))) {
+  for (const [name] of persistedBlockDecls(PLIFE_BLOCKS)) {
     if (EXTRAS_EXCEPTIONS.includes(name)) continue;
     const before = (authored.config as unknown as Record<string, object>)[name];
     const after = (restored.config as unknown as Record<string, object>)[name];
@@ -478,14 +494,14 @@ test('the blocks with defaults functions are the blocks that persist', () => {
     ['render', defaultRenderConfig()],
     ['arc', defaultArc()],
     ['accentArc', defaultAccentArc()],
-    ['macros', defaultExtrasBlocks(1024)['macros']],
+    ['macros', plifeBlockDefaults('macros')],
   ] as const) {
     assert.ok(Object.keys(value as object).length > 0, `${what} has no fields to persist`);
   }
   // The macro rig's rule table and its defaults must name the same knobs, or a
   // macro is either unclamped or clamped against a knob that does not exist.
   assert.deepEqual(
-    Object.keys(defaultExtrasBlocks(1024)['macros'] as object).sort(),
+    Object.keys(plifeBlockDefaults('macros')).sort(),
     Object.keys(MACRO_RANGE).sort(),
   );
 });

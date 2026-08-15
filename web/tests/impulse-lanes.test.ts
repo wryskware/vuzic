@@ -33,10 +33,11 @@ import {
   defaultMatrixGen,
   defaultPlifeConfig,
   defaultPlifeMacros,
-  extrasRules,
   MACRO_RANGE,
+  PLIFE_BLOCKS,
   PRIMARY_COUNT,
 } from '../src/sim/plife/config.ts';
+import { blockRules, persistedBlockDecls } from '../src/mapping/blocks.ts';
 import {
   defaultImpulseConfig,
   ImpulseEngine,
@@ -377,8 +378,10 @@ test('the wiggle depth and the direction roll are saved settings', () => {
 
   assert.ok('wiggle' in defaultPlifeMacros(), 'the macro is not in the defaults, so it cannot save');
   assert.equal(defaultMatrixGen().wiggleRoll, 0);
+  const matrixGen = persistedBlockDecls(PLIFE_BLOCKS).find(([name]) => name === 'matrixGen');
+  assert.ok(matrixGen, 'matrixGen is not declared as a persisted block, so it cannot save');
   assert.ok(
-    extrasRules(1 << 18)['matrixGen']?.['wiggleRoll'],
+    blockRules(matrixGen[1], defaultPlifeConfig())['wiggleRoll'],
     'the roll has no clamp rule, so a corrupt file reaches the hash',
   );
 });

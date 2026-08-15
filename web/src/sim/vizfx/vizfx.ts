@@ -74,15 +74,14 @@ import { HDR_FORMAT, PostFx } from '../render/postfx.ts';
 import type { RenderFrame, Sim } from '../types.ts';
 import { advanceStepCadence } from '../step-cadence.ts';
 import {
-  defaultEnergy,
   defaultVizFxColor,
   defaultVizFxConfig,
-  ENERGY_RANGE,
-  MACRO_RANGE,
   MAX_EMITTERS_PER_LAYER,
   MAX_SUBSTEPS,
+  VIZFX_BLOCKS,
   type VizFxConfig,
 } from './config.ts';
+import { applyBlocks, serializeBlocks } from '../../mapping/blocks.ts';
 import {
   applyVector,
   effectiveTheta,
@@ -448,10 +447,15 @@ export class VizFxSim implements Sim, ModTarget {
   // tiles twice a second. Anything outside both θ and extras is a panel edit the
   // tiles never see.
 
+  /**
+   * The blocks come from `VIZFX_BLOCKS`, which is exhaustive over `VizFxConfig`'s
+   * own object-valued keys — so a block saves because it was *declared*, not
+   * because it was remembered here (roadmap phase 1 item 5). What is left below
+   * is the state that is not a block: the emitter count, and the look pair.
+   */
   serializeExtras(): Record<string, unknown> {
     return {
-      macros: { ...this.config.macros },
-      energy: { ...this.config.energy },
+      ...serializeBlocks(this.config, VIZFX_BLOCKS),
       emittersPerLayer: this.emitPerLayer,
       // θ slots, but the two that are excluded from modulation and owned by the
       // look tab — so they are art direction in practice, and nothing else saves
@@ -472,28 +476,14 @@ export class VizFxSim implements Sim, ModTarget {
    * Every write is **in place** into the existing sub-objects, which is load
    * bearing rather than incidental: the panel's tweakpane bindings hold
    * `config.macros` and `config.energy` by reference, so replacing either object
-   * would leave the panel editing something nothing runs.
+   * would leave the panel editing something nothing runs. `applyBlocks`
+   * guarantees that, and it walks each block's own live keys, so a field added to
+   * `VizFxEnergyConfig` — or a macro added to a visual's slot table — round trips
+   * the moment the config knows about it, with no reader to update.
    */
   applyExtras(raw: Record<string, unknown> | undefined): void {
     const o = (raw ?? {}) as Record<string, unknown>;
-
-    const src = plainObject(o['macros']);
-    for (const m of this.visual.macros) {
-      this.config.macros[m.key] = clampNum(src[m.key], 1, MACRO_RANGE.min, MACRO_RANGE.max);
-    }
-
-    const e = this.config.energy;
-    const es = plainObject(o['energy']);
-    const defE = defaultEnergy();
-    e.followStems = readBool(es['followStems'], defE.followStems);
-    e.floor = clampNum(es['floor'], defE.floor, ENERGY_RANGE.floor.min, ENERGY_RANGE.floor.max);
-    e.curve = clampNum(es['curve'], defE.curve, ENERGY_RANGE.curve.min, ENERGY_RANGE.curve.max);
-    e.smoothingMs = clampNum(
-      es['smoothingMs'],
-      defE.smoothingMs,
-      ENERGY_RANGE.smoothingMs.min,
-      ENERGY_RANGE.smoothingMs.max,
-    );
+    applyBlocks(this.config, VIZFX_BLOCKS, o);
 
     // Rounded because it is a *count* the shader indexes with, and a slider that
     // snapped visually to 3 while holding 3.4 would be a constellation that
@@ -1363,8 +1353,4 @@ function plainObject(v: unknown): Record<string, unknown> {
 function clampNum(v: unknown, fallback: number, min: number, max: number): number {
   const x = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
   return x < min ? min : x > max ? max : x;
-}
-
-function readBool(v: unknown, fallback: boolean): boolean {
-  return typeof v === 'boolean' ? v : fallback;
 }

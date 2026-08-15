@@ -1,5 +1,7 @@
 import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
 import { customPalette, rotateHue, type Palette } from '../palette.ts';
+import { range, type RuleTree } from '../../mapping/read-into.ts';
+import { persisted, persistedElsewhere, type BlockTable } from '../../mapping/blocks.ts';
 
 // Colour machinery moved to `sim/palette.ts` when the mapping layer stopped
 // depending on physarum concretely: it is shared by every sim, whereas the
@@ -396,6 +398,64 @@ export function defaultSoil(): SoilConfig {
     debugView: false,
   };
 }
+
+/**
+ * Bounds only, and the panel's own (`ui/panel.ts`, the "soil · track-scale
+ * memory" folder), so a loaded value can never sit outside the slider meant to
+ * show it. `decay` is floored at 0.99 rather than 0 because below that the field
+ * forgets inside a second and stops being track-scale memory at all.
+ *
+ * A field with no entry still round trips — enrolment is `defaultSoil`'s job, not
+ * this table's. See `readInto`.
+ */
+const SOIL_RULES: RuleTree = {
+  decay: range(0.99, 0.99999),
+  accum: range(0, 0.02),
+  depositBias: range(0, 3),
+  senseBias: range(0, 4),
+};
+
+const PHYSARUM_MACRO_RULES: RuleTree = Object.fromEntries(
+  (Object.keys(PHYSARUM_MACRO_RANGE) as (keyof PhysarumMacros)[]).map((key) => {
+    const r = PHYSARUM_MACRO_RANGE[key];
+    return [key, range(r.min, r.max)];
+  }),
+);
+
+/**
+ * **Which blocks of `PhysarumConfig` are saved.** Same mechanism, same
+ * guarantees, and the same reason as plife's `PLIFE_BLOCKS`: the table is
+ * exhaustive over the config's object-valued keys, so a block added to
+ * `PhysarumConfig` is a compile error until it is declared, and declaring it is
+ * the whole of its registration.
+ *
+ * Physarum has no `matrixGen` — its M is authored, not drawn from the seed — and
+ * `stemDrive` / `stemGain` / `exposure` / `gamma` are scalars on the config root
+ * rather than blocks, so they stay in `PhysarumSim.serializeExtras` by hand.
+ */
+export const PHYSARUM_BLOCKS: BlockTable<PhysarumConfig> = {
+  macros: persisted(defaultPhysarumMacros, { rules: PHYSARUM_MACRO_RULES }),
+  soil: persisted(defaultSoil, {
+    rules: SOIL_RULES,
+    sessionOnlyFields: {
+      debugView:
+        'a transient "show me the field" toggle. A saved one comes back on a ' +
+        'later load as a world rendered in the wrong channel with no obvious ' +
+        'cause, so it is neither written nor read back and whatever the panel ' +
+        'currently has stays.',
+    },
+  }),
+
+  render: persistedElsewhere(
+    'the mapping file owns the render chain: `ModulationConfig.render` IS this ' +
+      'object, shared by reference, and `parseModulation` reads it.',
+  ),
+  palette: persistedElsewhere(
+    'same as render — `ModulationConfig.palette` is this object by reference, and ' +
+      'it needs a reader `readInto` cannot be (per-species colours, re-derived ' +
+      'from the arcs in arc mode). See `parseModulation`.',
+  ),
+};
 
 export function defaultConfig(speciesCount = 4): PhysarumConfig {
   const k = Math.max(1, Math.floor(speciesCount));
