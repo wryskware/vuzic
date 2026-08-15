@@ -7,6 +7,7 @@ import { defaultPlifeConfig } from '../src/sim/plife/config.ts';
 import { requiredEncoder } from '../src/export/profiles.ts';
 import {
   EXPORT_PROFILES,
+  EXPORT_RECIPE_VERSION,
   MAX_RECIPE_PARTICLE_BUDGET,
   parseExportRecipe,
   serializeExportRecipe,
@@ -25,7 +26,7 @@ function recipe(): ExportRecipe {
     ...modulation
   } = defaultModulationConfig({ ...simulation, render }, 'plife');
   return {
-    version: 5,
+    version: EXPORT_RECIPE_VERSION,
     rendererBuild: 'test-build',
     track: { id: 'pink-loop', contentVersion: 'sha256-deadbeef' },
     sim: 'plife',
@@ -249,8 +250,18 @@ test('the sim/modulation palette agreement covers every v2 field', () => {
 });
 
 /** Strip the fields a v4 sidecar could not have carried: the wiggle depths. */
+/** The v5 form of a current recipe: no `simulation.luma` block. */
+function asV5(value: Record<string, unknown>): Record<string, unknown> {
+  delete (value['simulation'] as Record<string, unknown>)['luma'];
+  value['version'] = 5;
+  return value;
+}
+
+/** …and the v4 form: v5's, minus the per-kind wiggle depths. */
 function asV4(value: Record<string, unknown>): Record<string, unknown> {
-  const impulses = value['impulses'] as { responses: Record<string, Record<string, unknown>> };
+  const impulses = asV5(value)['impulses'] as {
+    responses: Record<string, Record<string, unknown>>;
+  };
   for (const response of Object.values(impulses.responses)) delete response['wiggle'];
   value['version'] = 4;
   return value;
@@ -273,7 +284,11 @@ test('a v3 recipe still parses: the palette lift preserves its meaning exactly',
   modulation['version'] = 4;
 
   const parsed = parseExportRecipe(JSON.stringify(value));
-  assert.equal(parsed.version, 5, 'a v3 sidecar lifts all the way through v4');
+  assert.equal(
+    parsed.version,
+    EXPORT_RECIPE_VERSION,
+    'a v3 sidecar lifts all the way through every intermediate hop',
+  );
   assert.equal(parsed.modulation.version, 5);
   for (const palette of [parsed.simulation.palette, parsed.modulation.palette]) {
     assert.equal(palette.mode, 'custom', 'a v1 palette was always a custom one');
@@ -292,6 +307,8 @@ test('the v3 lift touches nothing but the palette', () => {
   // what the v4 → v5 hop fills in, and it is the *only* thing it fills in.
   const expected = recipe();
   for (const response of Object.values(expected.impulses.responses)) response.wiggle = 0;
+  // …and the luminance lane off, which is what the v5 → v6 hop fills in.
+  expected.simulation.luma.depth = 0;
   const v3 = asV4(structuredClone(expected) as unknown as Record<string, unknown>);
   v3['version'] = 3;
   const strip = (block: Record<string, unknown>): void => {
@@ -324,11 +341,49 @@ test('the v4 lift fills the wiggle lane with 0, not with the shipped default', (
 
   const v4 = asV4(structuredClone(authored) as unknown as Record<string, unknown>);
   const parsed = parseExportRecipe(JSON.stringify(v4));
-  assert.equal(parsed.version, 5);
+  assert.equal(parsed.version, EXPORT_RECIPE_VERSION);
   for (const [kind, response] of Object.entries(parsed.impulses.responses)) {
     assert.equal(response.wiggle, 0, `${kind} acquired a wiggle it was never rendered with`);
   }
   // And nothing else moved on the way through.
   const stripped = structuredClone(parsed) as unknown as Record<string, unknown>;
   assert.deepEqual(asV4(stripped), { ...v4, version: 4 });
+});
+
+test('the v5 lift fills the luminance lane at depth 0, not at the shipped default', () => {
+  // Same reproduction-contract rule as the wiggle lift one hop below: a recipe
+  // written before the lane existed describes a render made of flat-brightness
+  // species, so replaying it must not acquire a brightness spread it never had.
+  // `defaultPlifeLuma()` ships depth 3, which is what lets this fail.
+  const authored = recipe();
+  assert.ok(authored.simulation.luma.depth > 0, 'the shipped depth must be non-zero here');
+
+  const v5 = asV5(structuredClone(authored) as unknown as Record<string, unknown>);
+  const parsed = parseExportRecipe(JSON.stringify(v5));
+  assert.equal(parsed.version, EXPORT_RECIPE_VERSION);
+  assert.equal(parsed.simulation.luma.depth, 0);
+  // The other five are inert at depth 0 but must still be present and finite —
+  // `runtimeStateFromRecipe` clones this block straight onto the config with no
+  // defaulting step, so a hole here reaches the shader as a NaN uniform.
+  for (const [key, value] of Object.entries(parsed.simulation.luma)) {
+    assert.ok(Number.isFinite(value), `luma.${key} did not survive the lift as a number`);
+  }
+  // And nothing else moved on the way through.
+  const stripped = structuredClone(parsed) as unknown as Record<string, unknown>;
+  assert.deepEqual(asV5(stripped), { ...v5, version: 5 });
+});
+
+test('a v4 sidecar reaches the current version through every intermediate hop', () => {
+  // The chain property, pinned because it has already broken once: `liftV4toV5`
+  // stamped `EXPORT_RECIPE_VERSION` rather than a literal 5, so the moment that
+  // constant moved to 6 a v4 recipe arrived labelled "v6" without ever meeting
+  // the v6 lift — i.e. missing the very block v6 requires. Each hop must land on
+  // the version it is named for.
+  const v4 = asV4(structuredClone(recipe()) as unknown as Record<string, unknown>);
+  const parsed = parseExportRecipe(JSON.stringify(v4));
+  assert.equal(parsed.version, EXPORT_RECIPE_VERSION);
+  assert.equal(parsed.simulation.luma.depth, 0, 'the v4 → v5 hop skipped the v5 → v6 hop');
+  for (const response of Object.values(parsed.impulses.responses)) {
+    assert.equal(response.wiggle, 0);
+  }
 });

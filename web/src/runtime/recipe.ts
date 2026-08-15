@@ -26,11 +26,15 @@ import { isVizFxId } from '../sim/vizfx/ids.ts';
 import { EVENT_KINDS } from '../timeline/types.ts';
 
 /**
+ * 6: particle life grew a `luma` block — per-particle brightness dynamic range
+ * driven by speed, roadmap phase 1 item 3. See `liftExportRecipe` for why a v5
+ * recipe lifts to `depth: 0` rather than to the shipped default.
+ *
  * 5: the impulse lane grew a `wiggle` depth per event kind (the matrix-row
  * perturbation, roadmap phase 1 item 2). See `liftExportRecipe` for why a v4
  * recipe lifts to `wiggle: 0` rather than to the shipped default.
  */
-export const EXPORT_RECIPE_VERSION = 5 as const;
+export const EXPORT_RECIPE_VERSION = 6 as const;
 
 /**
  * Additive within recipe v3 for the SDR debug profiles: a v3 recipe naming one
@@ -436,10 +440,23 @@ const PHYSARUM_KEYS = [
 ] as const;
 
 const PLIFE_KEYS = [
-  'macros', 'population', 'matrixGen', 'field', 'budget', 'speciesCount', 'maxParticles',
+  'macros', 'population', 'matrixGen', 'field', 'budget', 'luma', 'speciesCount', 'maxParticles',
   'forceGain', 'maxSpeed', 'exposure', 'gamma', 'speed', 'paused', 'palette', 'species',
   'attraction', 'minR', 'maxR',
 ] as const;
+
+/**
+ * The per-particle luminance lane, validated field by field rather than left to
+ * the generic JSON walk.
+ *
+ * `runtimeStateFromRecipe` clones `$.simulation` straight onto a `PlifeConfig`
+ * with no defaulting step, so a missing or non-numeric field here does not
+ * become the shipped default — it becomes `undefined`, and `lumaUniforms` turns
+ * that into a NaN uniform, which takes out every particle's *position* as well
+ * as its colour. A block that reaches a shader unmediated has to be checked
+ * where it enters.
+ */
+const LUMA_KEYS = ['depth', 'curve', 'mid', 'hdrBudget', 'whitePeak', 'jitter'] as const;
 
 const VIZFX_KEYS = [
   'speciesCount', 'species', 'palette', 'params', 'macros', 'energy', 'emittersPerLayer',
@@ -488,6 +505,13 @@ function validateSimulation(
     const cap = integer(budget['cap'], '$.simulation.budget.cap', 1, MAX_RECIPE_PARTICLE_BUDGET);
     if (particleBudget !== cap) fail('$.particleBudget', 'must match $.simulation.budget.cap');
     boolean(budget['adaptive'], '$.simulation.budget.adaptive');
+    const luma = object(simulation['luma'], '$.simulation.luma');
+    keysExactly(luma, LUMA_KEYS, '$.simulation.luma');
+    // Bounded generously rather than to the panel's ranges: this layer's job is
+    // to refuse what a shader cannot survive, and `lumaUniforms` clamps the rest
+    // into the sliders. A recipe authored on a build with a wider slider must
+    // still render.
+    for (const key of LUMA_KEYS) finiteNumber(luma[key], `$.simulation.luma.${key}`, 0, 64);
     numericArray(simulation['attraction'], speciesCount * speciesCount, '$.simulation.attraction');
     numericArray(simulation['minR'], speciesCount * speciesCount, '$.simulation.minR');
     numericArray(simulation['maxR'], speciesCount * speciesCount, '$.simulation.maxR');
@@ -748,7 +772,12 @@ function liftV3toV4(recipe: Record<string, unknown>): Record<string, unknown> {
  * `wiggle: 0` every family of directions produces the same matrix.
  */
 function liftV4toV5(recipe: Record<string, unknown>): Record<string, unknown> {
-  const lifted: Record<string, unknown> = { ...recipe, version: EXPORT_RECIPE_VERSION };
+  // Literal 5, NOT `EXPORT_RECIPE_VERSION`. Each hop must land on the version it
+  // is named for or the chain skips the hops above it — when this said
+  // `EXPORT_RECIPE_VERSION` and that constant went to 6, a v4 sidecar arrived at
+  // "v6" having never met the v6 lift, i.e. missing the block v6 requires.
+  // `liftV3toV4` has always used a literal for the same reason.
+  const lifted: Record<string, unknown> = { ...recipe, version: 5 };
   const impulses = recipe['impulses'];
   if (impulses === null || typeof impulses !== 'object' || Array.isArray(impulses)) return lifted;
   const src = impulses as Record<string, unknown>;
@@ -768,6 +797,35 @@ function liftV4toV5(recipe: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * v5 → v6: particle life's `luma` block, filled in at **depth 0** — the lane's
+ * off state — for exactly the reason the wiggle lift fills 0.
+ *
+ * The remaining five fields are written as literals rather than pulled from
+ * `defaultPlifeLuma()`, and that is deliberate: a lift describes what a v5
+ * recipe *meant*, which is a fact frozen in 2026, while the defaults function is
+ * live art direction that will move. Importing it would make this lift's output
+ * drift every time somebody retunes the shipped look — the same class of bug as
+ * defaulting `wiggle` to 0.6. They are inert at depth 0 anyway; they exist here
+ * only because `runtimeStateFromRecipe` clones the block onto the config with no
+ * defaulting step, so a partial block would reach the shader as NaN.
+ *
+ * A physarum or vizfx recipe passes through untouched: the block is plife's.
+ */
+function liftV5toV6(recipe: Record<string, unknown>): Record<string, unknown> {
+  const lifted: Record<string, unknown> = { ...recipe, version: EXPORT_RECIPE_VERSION };
+  if (recipe['sim'] !== 'plife') return lifted;
+  const simulation = recipe['simulation'];
+  if (simulation === null || typeof simulation !== 'object' || Array.isArray(simulation)) {
+    return lifted;
+  }
+  lifted['simulation'] = {
+    luma: { depth: 0, curve: 2.5, mid: 0.4, hdrBudget: 1, whitePeak: 0.5, jitter: 0.12 },
+    ...(simulation as Record<string, unknown>),
+  };
+  return lifted;
+}
+
+/**
  * Bring an older recipe up to the current schema, one hop at a time.
  *
  * Chained rather than branched: a v3 sidecar has to arrive at v5 through the
@@ -778,9 +836,10 @@ function liftV4toV5(recipe: Record<string, unknown>): Record<string, unknown> {
 export function liftExportRecipe(value: unknown): unknown {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   let recipe = value as Record<string, unknown>;
-  if (recipe['version'] !== 3 && recipe['version'] !== 4) return value;
+  if (recipe['version'] !== 3 && recipe['version'] !== 4 && recipe['version'] !== 5) return value;
   if (recipe['version'] === 3) recipe = liftV3toV4(recipe);
   if (recipe['version'] === 4) recipe = liftV4toV5(recipe);
+  if (recipe['version'] === 5) recipe = liftV5toV6(recipe);
   return recipe;
 }
 

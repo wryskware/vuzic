@@ -395,13 +395,14 @@ def validate_export_submission(
         raise HTTPException(422, f"recipe is not finite JSON: {exc}") from exc
     if len(encoded) > MAX_EXPORT_RECIPE_BYTES:
         raise HTTPException(413, f"recipe exceeds {MAX_EXPORT_RECIPE_BYTES} bytes")
-    # 5 is current (impulse `wiggle`); 3 (pre-HSLuv palette) and 4 are still
-    # accepted because `liftExportRecipe` in the Node worker walks an older
-    # recipe up to 5 losslessly on the way in. This layer does not validate the
-    # recipe's contents at all — that is `validateExportRecipe`'s job in the
-    # worker — so it only has to refuse versions the worker cannot read at all.
-    if recipe.get("version") not in (3, 4, 5):
-        raise HTTPException(422, "recipe version 3, 4 or 5 is required")
+    # 6 is current (plife's per-particle `luma` block); 3 (pre-HSLuv palette),
+    # 4 and 5 (impulse `wiggle`) are still accepted because `liftExportRecipe`
+    # in the Node worker walks an older recipe up to the current schema
+    # losslessly on the way in. This layer does not validate the recipe's
+    # contents at all — that is `validateExportRecipe`'s job in the worker — so
+    # it only has to refuse versions the worker cannot read at all.
+    if recipe.get("version") not in (3, 4, 5, 6):
+        raise HTTPException(422, "recipe version 3, 4, 5 or 6 is required")
     if recipe.get("rendererBuild") != renderer_build:
         raise HTTPException(409, "renderer build changed; refresh the app and capture again")
     identity = recipe.get("track")

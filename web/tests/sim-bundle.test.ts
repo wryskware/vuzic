@@ -32,7 +32,7 @@ const [{ buildSimBundle, buildSimBundleFromRecipe }, { defaultModulationConfig }
     import('../src/sim/plife/plife.ts'),
     import('../src/timeline/sampler.ts'),
   ]);
-import type { ExportRecipe } from '../src/runtime/recipe.ts';
+import { EXPORT_RECIPE_VERSION, type ExportRecipe } from '../src/runtime/recipe.ts';
 import type { Timeline } from '../src/timeline/types.ts';
 
 function sampler(): InstanceType<typeof TimelineSampler> {
@@ -100,7 +100,7 @@ function plifeRecipe(): ExportRecipe {
   const modulationWithShared = structuredClone(authored.modulator.config);
   const { render: _render, impulses: _impulses, ...modulation } = modulationWithShared;
   return {
-    version: 5,
+    version: EXPORT_RECIPE_VERSION,
     rendererBuild: 'test',
     track: { id: 'test', contentVersion: 'test-v1' },
     sim: 'plife',

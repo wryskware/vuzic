@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { captureBrowserExportRecipe } from '../src/export/browser-recipe.ts';
+import { EXPORT_RECIPE_VERSION } from '../src/runtime/recipe.ts';
 import { defaultModulationConfig } from '../src/mapping/persist.ts';
 import { defaultImpulseConfig } from '../src/sim/impulses.ts';
 import { defaultPlifeConfig } from '../src/sim/plife/config.ts';
@@ -112,7 +113,7 @@ test('browser capture reads current live identity, authored base, extras, and ou
   const f = fixture();
   const recipe = f.capture();
 
-  assert.equal(recipe.version, 5);
+  assert.equal(recipe.version, EXPORT_RECIPE_VERSION);
   assert.deepEqual(recipe.track, { id: 'pink-loop', contentVersion: 'sha256-track' });
   assert.equal(recipe.sim, 'plife');
   assert.equal(recipe.seed, 42);
