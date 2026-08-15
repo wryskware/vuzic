@@ -170,10 +170,10 @@ Test queued cancellation, active cancellation, process descendants, partial-file
 ## Repository notes for the next thread
 
 - Read `CLAUDE.md`, `docs/plan.md`, and `docs/headless-export-proposal.md` before editing.
-- For unfamiliar implementation questions, query `cce-latent-music-terrarium` for a few focused semantic hits first. Use `codebase-memory` after identifying symbols when callers, dependencies, impact, or execution paths matter. Then read exact source before editing.
+- Use `codebase-memory` after identifying symbols when callers, dependencies, impact, or execution paths matter. Then read exact source before editing.
 - Preserve the pre-existing untracked directories `data/timelines/bug-fix-rush/allin1/` and `data/timelines/bug-fix-rush/spec/`; they are unrelated user work.
 - Run focused tests while iterating, then finish with the complete web and Python suites and a real native Windows smoke render for any process-management or encoding change.
 
 Suggested next-thread request:
 
-> Resume from `docs/handoffs/headless-export-current-state.md`. First implement and test a persistent browser export-session controller across panel/simulation rebuilds. Then commit that checkpoint. If budget remains, implement cross-platform cancellation/process-tree cleanup as a separate commit. Preserve unrelated untracked timeline directories and use the CCE and codebase-memory MCP servers according to AGENTS.md.
+> Resume from `docs/handoffs/headless-export-current-state.md`. First implement and test a persistent browser export-session controller across panel/simulation rebuilds. Then commit that checkpoint. If budget remains, implement cross-platform cancellation/process-tree cleanup as a separate commit. Preserve unrelated untracked timeline directories and use the codebase-memory MCP server according to AGENTS.md.

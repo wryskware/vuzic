@@ -71,34 +71,21 @@ records the original open questions and the reasoning behind them.
 The decisions in `plan.md` are settled. Do not silently reverse one — if the
 evidence turns out to contradict a decision, say so and let the user choose.
 
-## Indexed retrieval and session memory
+## Indexed retrieval
 
-Two local MCP servers are the first-class retrieval surfaces here. Route by
-what kind of question it is — not by whether it "feels like implementation":
+Route by what kind of question it is:
 
-- **Anything about this project's code, docs, plan, or architecture**
-  ("how/where does X work", "what does the plan say about Y") →
-  `cce-latent-music-terrarium` `context_search` first, narrow result set
-  (3–8 hits). The index covers `docs/` too — plan and research questions
-  belong here, not in a repo-wide grep.
-- **Project history** ("what did we decide", "why is it this way", "what did
-  the earlier session do") → `session_recall` first. It returns recorded
-  decisions with reasons across all past sessions; drill in with
-  `session_timeline`/`session_event`. Check the auto-memory index too.
 - **Structure, once a symbol is known** (callers, callees, dependencies,
-  impact, execution paths) → `codebase-memory` graph tools.
-- **Exact strings, known paths, generated timeline fields, shader bindings,
-  query parameters, dynamic references** → direct Grep/Glob/Read.
+  impact, execution paths) → `codebase-memory` graph tools. These MCP tools
+  are deferred: batch-load the ones you need in a single ToolSearch call at
+  first need.
+- **Everything else** — exact strings, known paths, docs and plan questions,
+  generated timeline fields, shader bindings, query parameters, dynamic
+  references → direct Grep/Glob/Read.
+- **Project history** ("what did we decide", "why is it this way") → git log
+  and the auto-memory index.
 
-These MCP tools are deferred: batch-load the ones you need in a single
-ToolSearch call at first need. That round-trip is far cheaper than a broad
-grep — never fall back to grep just because the tools aren't loaded yet.
-
-Write-side hygiene, so recall works next time: after settling a non-obvious
-decision, call `record_decision` (decision + reason); after tracing or
-modifying a non-obvious flow, call `record_code_area`.
-
-Read the exact source before changing it; source is authoritative when an
+Read the exact source before changing it; source is authoritative when the
 index is stale or incomplete. Avoid duplicate search layers and stop when the
-evidence is sufficient. Both indexes are local; never send repository source
-to the remote `claude.ai Era Context` server.
+evidence is sufficient. The index is local; never send repository source to
+the remote `claude.ai Era Context` server.
