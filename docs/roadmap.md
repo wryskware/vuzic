@@ -33,9 +33,17 @@ does not yet *feel reactive* to impulses, and velocity dynamics are flat.
    - Depth: a new macro knob, 0 (off) → large.
    - Cost is trivial: the perturbed 8×8 matrix re-upload is 256 bytes
      per frame.
-3. **Brightness dynamic range — in progress 2026-08-15, in a worktree so
-   main and the branch can be A/B compared.** Design direction settled
-   with the user 2026-08-15:
+3. **Brightness dynamic range.** ✅ **Done** — A/B'd in a worktree,
+   approved by the user and merged 2026-08-15 (`81cd072`..`70fb3a3`):
+   per-particle luminance from `|v|/maxSpeed` (`plife/luma.ts`), a
+   power curve anchored so gain at `mid` is exactly 1 (redistributes
+   light, so auto-exposure can't cancel it), HDR headroom spent as a
+   `log2(H)`-stop budget, `whitePeak` desaturation for the SDR
+   rendition, a session-only SDR/HDR preview toggle, and a `luma`
+   config block riding the registry. Carried recipe **v6** (the block
+   lands in recipes; `liftV5toV6` fills it, and a latent
+   version-stamping bug in `liftV4toV5` was fixed en route; the server
+   gate accepts 3–6). Design direction that was settled beforehand:
    - The brightness curve is **perceptually non-linear** (power-curve
      shaped), and the exponent is plausibly a runtime knob.
    - The feel: modest variation around the SDR range for the bulk of
