@@ -77,7 +77,14 @@ does not yet *feel reactive* to impulses, and velocity dynamics are flat.
    equality — so any future field added to config but missed in
    persistence fails CI instead of costing a bug report.
 5. **Automatic block registration — highest priority bug fix in this
-   phase.** Item 4's first two rungs are closed: fields round trip
+   phase.** ✅ **Done** (`4da3de5`, 2026-08-15): `BlockTable<Config>` is
+   exhaustive over the config's own object-valued keys, so declaring a
+   block *is* registering it and forgetting is a compile error; opt-outs
+   are explicit at the declaration site and CI-asserted. Physarum and
+   vizfx migrated too. One manual list remains — `PLIFE_KEYS` in
+   `runtime/recipe.ts` — but it fails loudly (recipe validation throws),
+   a different bug class. Original framing: item 4's first two rungs are
+   closed: fields round trip
    because the reader walks the destination's own keys rather than a
    written list, and widgets save because a panel can only be handed a
    `PersistedContainer` and the compiler rejects anything else. The rung
