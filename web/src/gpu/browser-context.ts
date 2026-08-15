@@ -1,4 +1,10 @@
-import { configureCanvas, displayHeadroom, hdrOverride, type CanvasHdrState } from './hdr-canvas';
+import {
+  configureCanvas,
+  displayHeadroom,
+  hdrOverride,
+  previewHeadroomOverride,
+  type CanvasHdrState,
+} from './hdr-canvas';
 import type { GpuRuntimeContext } from './runtime-context';
 
 /** Browser-owned GPU state, including the canvas swapchain and its lifecycle. */
@@ -67,11 +73,14 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<BrowserGpuCont
       // Headroom is refreshed here rather than from a media-query listener
       // because it is not a boolean: it drifts with panel brightness and with
       // what else is on screen, and resize() already runs once per frame.
+      //
+      // Precedence, outermost first: an 8-bit swapchain has headroom 1 and
+      // nothing may claim otherwise; then the workbench's live preview override
+      // (session-only — see `setPreviewHeadroom`); then `?hdr=<n>`, which is the
+      // same idea pinned at load; then the measurement.
       ctx.displayHeadroom = !hdrCanvas.extended
         ? 1
-        : typeof override === 'number'
-          ? override
-          : displayHeadroom();
+        : (previewHeadroomOverride() ?? (typeof override === 'number' ? override : displayHeadroom()));
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));

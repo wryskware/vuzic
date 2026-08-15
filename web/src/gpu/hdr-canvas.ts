@@ -76,6 +76,42 @@ export function displayHeadroom(): number {
 }
 
 /**
+ * Session-only headroom override, for the workbench's preview toggle.
+ *
+ * `?hdr=<number>` already pins the headroom, but it costs a reload, and tuning
+ * two renditions of the same look is a loop you run dozens of times — the whole
+ * argument for the workbench existing. This is that override made live.
+ *
+ * Three deliberate properties:
+ *
+ * - **Module state, not config.** Both readers — the grade
+ *   (`PostFx.writeParams`) and the particle luminance lane (`writeGlobals`) —
+ *   reach it through `GpuRuntimeContext.displayHeadroom`, which
+ *   `BrowserGpuContext.resize` recomputes once a frame. Putting it here means
+ *   one knob moves both, so what you tune is what you see; a per-sim setting
+ *   would have moved one of them and quietly lied about the other.
+ * - **Never persisted.** It is a claim about the panel you are looking at, in
+ *   the same class as `effectiveBudget`. A saved "pretend this is SDR" would
+ *   open every future session mid-experiment.
+ * - **Only honoured on an extended swapchain.** An 8-bit surface genuinely has
+ *   headroom 1, and pretending otherwise would drive the grade past a ceiling
+ *   the compositor is about to clamp — a preview of nothing. Forcing 1 on an
+ *   extended surface, which is the direction that matters for tuning the SDR
+ *   rendition on an HDR machine, is exact.
+ */
+let previewHeadroom: number | null = null;
+
+/** `null` restores the measured value. Values are clamped like a real report. */
+export function setPreviewHeadroom(value: number | null): void {
+  previewHeadroom =
+    value === null || !Number.isFinite(value) ? null : Math.min(Math.max(value, 1), MAX_HEADROOM);
+}
+
+export function previewHeadroomOverride(): number | null {
+  return previewHeadroom;
+}
+
+/**
  * `?hdr=off` forces the 8-bit swapchain; `?hdr=<number>` pins the headroom
  * instead of trusting the display, which is the only way to compare the two
  * grades on one machine. Anything else leaves the automatic behaviour alone.

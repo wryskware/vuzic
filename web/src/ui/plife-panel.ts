@@ -36,7 +36,9 @@
  */
 import { Pane } from 'tweakpane';
 import { saveModulationLocal } from '../mapping/persist';
-import { createAutosave, persisting, type PersistedContainer } from './autosave';
+import { createAutosave, persisting, saveNow, type PersistedContainer } from './autosave';
+import { setPreviewHeadroom } from '../gpu/hdr-canvas';
+import { defaultPlifeLuma, lumaUniforms, LUMA_RANGE } from '../sim/plife/luma';
 import type { ImpulseEngine } from '../sim/impulses';
 import {
   BUDGET_FPS_RANGE,
@@ -147,6 +149,11 @@ export function createPlifePanel(
     grid: '—',
   };
   const budgetState: BudgetState = { effective: '—', alive: '—' };
+  // Both session-only, both deliberately NOT in any persisted block: `headroom`
+  // is which display the look is being tuned *for* (see the folder comment) and
+  // `effective` / `span` are readouts of what is actually in force.
+  const previewState = { headroom: 0, effective: '—' };
+  const lumaState = { span: '—' };
 
   // ── explore ────────────────────────────────────────────────────────────────
   // Its own tab, the same placement physarum's panel uses and for the same
@@ -683,6 +690,87 @@ export function createPlifePanel(
     invalidate: () => sim.invalidatePalette(),
   });
 
+  // Brightness dynamic range, above the grade folder because it acts before it:
+  // this lane decides what the HDR surface *contains*, the grade decides how
+  // that surface reaches the display. See sim/plife/luma.ts for the arithmetic
+  // and for why every number here is a stop rather than a multiplier.
+  //
+  // The folder is created RAW and wrapped a few lines down, which is the one
+  // deliberate hole in `persisting`'s by-construction guarantee and is worth the
+  // explanation: the preview-headroom control below is **session-only state**,
+  // in the same class as `effectiveBudget`. It is a claim about the panel you
+  // are sitting in front of, and persisting it would open every future session
+  // mid-experiment, pretending an HDR display is SDR because you once compared
+  // them. Adding it through the raw handle is how it says so at the declaration
+  // site instead of by being quietly missing from a list.
+  const lumaRoot = tabs.look.addFolder({
+    title: 'brightness range · speed → luminance',
+    expanded: false,
+  });
+  lumaRoot
+    .addBinding(previewState, 'headroom', {
+      label: 'preview canvas',
+      options: {
+        'auto (this display)': 0,
+        'SDR — headroom 1×': 1,
+        'HDR — headroom 2×': 2,
+        'HDR — headroom 4× (~1000 nit)': 4,
+        'HDR — headroom 8×': 8,
+      },
+    })
+    .on('change', (ev) => setPreviewHeadroom(ev.value > 0 ? ev.value : null));
+  // What the grade and the luminance lane are ACTUALLY budgeting against, which
+  // is not always what the control above asks for: an 8-bit swapchain is pinned
+  // at 1 whatever anyone claims, and `?hdr=` still outranks the measurement.
+  lumaRoot.addBinding(previewState, 'effective', { readonly: true, label: 'headroom in force' });
+
+  const luma = persisting(lumaRoot, autosave);
+  luma.addBinding(config.luma, 'depth', {
+    min: LUMA_RANGE.depth.min,
+    max: LUMA_RANGE.depth.max,
+    step: 0.05,
+    label: 'depth  (stops, SDR — 0 = off)',
+  });
+  luma.addBinding(config.luma, 'curve', {
+    min: LUMA_RANGE.curve.min,
+    max: LUMA_RANGE.curve.max,
+    step: 0.05,
+    label: 'curve  (speed exponent)',
+  });
+  luma.addBinding(config.luma, 'mid', {
+    min: LUMA_RANGE.mid.min,
+    max: LUMA_RANGE.mid.max,
+    step: 0.01,
+    label: 'mid  (speed kept at 1×)',
+  });
+  luma.addBinding(config.luma, 'hdrBudget', {
+    min: LUMA_RANGE.hdrBudget.min,
+    max: LUMA_RANGE.hdrBudget.max,
+    step: 0.05,
+    label: 'hdr budget  (× display stops)',
+  });
+  luma.addBinding(config.luma, 'whitePeak', {
+    min: LUMA_RANGE.whitePeak.min,
+    max: LUMA_RANGE.whitePeak.max,
+    step: 0.01,
+    label: 'white peak  (SDR cue)',
+  });
+  luma.addBinding(config.luma, 'jitter', {
+    min: LUMA_RANGE.jitter.min,
+    max: LUMA_RANGE.jitter.max,
+    step: 0.01,
+    label: 'jitter  (× span, per particle)',
+  });
+  // The composed result, so the two knobs whose product decides the span do not
+  // have to be multiplied in your head — and so "why is nothing happening"
+  // resolves to a number rather than to a guess.
+  luma.addBinding(lumaState, 'span', { readonly: true, label: 'span in force' });
+  luma.addButton({ title: 'reset brightness range' }).on('click', () => {
+    Object.assign(config.luma, defaultPlifeLuma());
+    saveNow(luma);
+    pane.refresh();
+  });
+
   const refreshRender = addRenderFolder(persisting(tabs.look, autosave), {
     render: config.render,
     config,
@@ -722,6 +810,21 @@ export function createPlifePanel(
       budgetState.alive =
         `${st.aliveParticles.toLocaleString()}` +
         (st.aliveParticles >= st.effectiveBudget ? ' — budget binding' : '');
+
+      // What the grade and the luminance lane are budgeting against right now,
+      // and the span that composes out of it. Read from the sim rather than
+      // recomputed from the control, because an 8-bit swapchain pins it at 1
+      // whatever the control says — and a readout that agreed with the request
+      // instead of with the pixels would be the least useful widget on the pane.
+      const headroom = sim.displayHeadroom();
+      previewState.effective =
+        `${headroom.toFixed(2)}×` +
+        (previewState.headroom > 0 && Math.abs(headroom - previewState.headroom) > 0.01
+          ? ' — override not honoured (SDR swapchain)'
+          : '');
+      const span = lumaUniforms(config.luma, headroom).stops;
+      lumaState.span =
+        span > 0 ? `${span.toFixed(2)} stops (×${Math.pow(2, span).toFixed(0)})` : 'off';
 
       // The three arrays are the sim's own live state, held by reference and
       // rewritten in place every tick — reading them here is the whole of the
