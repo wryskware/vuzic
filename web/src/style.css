@@ -147,3 +147,17 @@ body > .tp-dfwv .tp-tbiv_b {
   padding: 5px 14px;
   cursor: pointer;
 }
+
+/* View toggles (keys.ts: `toggle-panel`, `toggle-timeline`) hide by class on
+   <body>, never by teardown — the panel state and the overlay's render loop
+   keep running underneath so re-showing is instant and `Space` still plays.
+   Session-only; a fresh load shows everything. `body > .tp-dfwv` mirrors the
+   existing wrapper rule above so the specificity still beats tweakpane's own. */
+body.panel-hidden > .tp-dfwv {
+  display: none;
+}
+
+body.timeline-hidden #transport,
+body.timeline-hidden #overlay {
+  display: none;
+}

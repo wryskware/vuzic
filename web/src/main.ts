@@ -40,6 +40,7 @@ import { loadTimeline } from './timeline/loader';
 import { TimelineSampler, type FeaturesFrame } from './timeline/sampler';
 import { SECONDS_PER_TICK, TICK_HZ } from './timing';
 import type { ExplorerPanelHost } from './ui/explore-panel';
+import { planKey, type TargetInfo } from './ui/keys';
 import { createPanel, type PanelHandle } from './ui/panel';
 import { createPlifePanel } from './ui/plife-panel';
 import { MILKDROP_MODE } from './ui/sim-panel';
@@ -1167,51 +1168,111 @@ async function main(): Promise<void> {
 
   playButton.addEventListener('click', () => void clock.toggle());
   haltButton.addEventListener('click', () => setHalted(!halted));
+
+  // --- view toggles: session-only visibility, CSS class on <body> -------------
+  // Hiding is never a teardown: the panel and overlay keep running underneath
+  // the class, so re-showing is instant and a `Space` still plays while the
+  // bar is off-screen. Deliberately not persisted — a fresh load shows all.
+  const togglePanel = (): void => {
+    document.body.classList.toggle('panel-hidden');
+  };
+  const toggleTimeline = (): void => {
+    document.body.classList.toggle('timeline-hidden');
+    // `DebugOverlay.resize` sizes the backing store from `clientWidth`, which is
+    // 0 while the strip is `display:none` — so it collapses to 1×1 for as long
+    // as the strip is off. A running workbench repaints at full size on the
+    // first frame back; a halted one draws only when asked, and would show that
+    // 1×1 stretched across the strip until the next resize. One frame each way
+    // is the whole fix.
+    needsRedraw = true;
+  };
+  const toggleFullscreen = (): void => {
+    // Not while exploring. The grid is driven by single clicks that re-lay it
+    // out underneath the cursor, so a double there is already ambiguous — going
+    // fullscreen on top of it is one surprise too many. Same rule the `s`/`t`
+    // claims follow in `planKey`: the explorer is a locked-in GUI.
+    if (explorerActive) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen();
+  };
+
+  const targetInfo = (ev: KeyboardEvent): TargetInfo => {
+    const t = ev.target;
+    return {
+      tagName: t instanceof Element ? t.tagName : undefined,
+      isContentEditable: t instanceof HTMLElement ? t.isContentEditable : false,
+    };
+  };
+
+  // All key → action mapping lives in `planKey` (ui/keys.ts), which is unit
+  // tested in isolation. The handler only adapts the two DOM facts `ev` carries
+  // and runs the action. `preventDefault` is part of the plan so the test can
+  // pin which keys are claimed; the editable-target guard is inside `planKey`.
   window.addEventListener('keydown', (ev) => {
-    if (ev.target instanceof HTMLInputElement) return;
-    // Explorer's keys are claimed only while the mode is active, so 'r',
-    // Backspace and Escape keep meaning nothing the rest of the time. The
-    // transport keys below stay live in both modes — the music still drives the
-    // nine tiles, so seeking to the chorus is exactly what you want to do here.
-    if (explorerActive) {
-      if (ev.code === 'KeyR') {
-        ev.preventDefault();
+    const plan = planKey(ev.code, ev.shiftKey, explorerActive, targetInfo(ev));
+    if (plan.preventDefault) ev.preventDefault();
+    switch (plan.kind) {
+      case 'halt':
+        // Live in both modes and whichever substrate is running: it is a statement
+        // about the machine, not about the world.
+        setHalted(!halted);
+        return;
+      case 'play-toggle':
+        void clock.toggle();
+        return;
+      case 'seek':
+        clock.seek(clock.time + plan.delta);
+        return;
+      case 'explorer-reroll':
+        // Explorer's keys are claimed only while the mode is active, so 'r',
+        // Backspace and Escape keep meaning nothing the rest of the time. The
+        // transport keys above stay live in both modes — the music still drives
+        // the nine tiles, so seeking to the chorus is exactly what you want to
+        // do here.
         explorerReroll();
         return;
-      }
-      if (ev.code === 'Backspace') {
-        ev.preventDefault();
+      case 'explorer-back':
         explorerBack();
         return;
-      }
-      if (ev.code === 'Escape') {
-        ev.preventDefault();
+      case 'explorer-exit':
         explorerExit();
         return;
-      }
-    }
-    if (ev.code === 'KeyH') {
-      // Live in both modes and whichever substrate is running: it is a statement
-      // about the machine, not about the world.
-      ev.preventDefault();
-      setHalted(!halted);
-    } else if (ev.code === 'Space') {
-      ev.preventDefault();
-      void clock.toggle();
-    } else if (ev.code === 'ArrowLeft') {
-      clock.seek(clock.time - (ev.shiftKey ? 10 : 2));
-    } else if (ev.code === 'ArrowRight') {
-      clock.seek(clock.time + (ev.shiftKey ? 10 : 2));
+      case 'toggle-panel':
+        togglePanel();
+        return;
+      case 'toggle-timeline':
+        toggleTimeline();
+        return;
+      case 'none':
+        return;
+      default:
+        // `keys.ts` says a new binding is a branch there plus one here; this is
+        // what makes that true. A `KeyPlan` kind with no case above stops being
+        // assignable to `never` and fails the typecheck instead of silently
+        // doing nothing.
+        plan satisfies never;
+        return;
     }
   });
-  window.addEventListener('resize', () => {
+
+  // A double-click on the terrarium (not the workbench, not a button) is the
+  // fullscreen affordance: it goes where the eye is, and leaves every UI
+  // surface the double-click might have hit alone.
+  stage.addEventListener('dblclick', toggleFullscreen);
+  overlayCanvas.addEventListener('dblclick', toggleFullscreen);
+
+  const onResize = (): void => {
     gpu?.resize();
     overlay.resize();
     if (gpu) explorerRig?.layout(gpu.width, gpu.height);
     // A resize clears the canvas's drawing buffer, so a halted workbench would
     // go black and stay black. One frame puts the frozen world back.
     needsRedraw = true;
-  });
+  };
+  window.addEventListener('resize', onResize);
+  // `resize` does not necessarily fire when the viewport changes by entering or
+  // leaving fullscreen, so the canvases get the same one-frame refresh explicitly.
+  document.addEventListener('fullscreenchange', onResize);
 
   // Explorer routing. Both listeners are registered once and guard on the mode
   // rather than being attached and detached around it — one fewer thing that can
