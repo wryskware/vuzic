@@ -15,13 +15,11 @@ work.
 The core-quality gap: the morphing is great but on a slow track; the sim
 does not yet *feel reactive* to impulses, and velocity dynamics are flat.
 
-1. **Velocity dynamics bug.** All particles appear to move at the same
-   speed all the time — no dynamic change in velocity. Diagnose first
-   (suspect: speeds pinned at max because force sits far above the
-   friction equilibrium; the `agility` macro adjusting max speed and
-   friction together is the design smell). Regardless of root cause,
-   split `agility` into two independent macros: **speed** and **drag**.
-2. **Impulse wiggle** (the critical feature). Per-stem impulse events
+1. **Velocity dynamics bug.** ✅ **Done** — the `agility` split into
+   independent **speed** and **drag** macros landed (`f1b3f70`), and the
+   user confirmed 2026-08-15 that velocity dynamics are reasonably
+   solved.
+2. **Impulse wiggle** ✅ **Done** (`e792be4`). Per-stem impulse events
    perturb the **primary species'** (0–3) interaction-matrix rows —
    the vuzic pattern (per-species row vector), adapted to timeline
    impulses. Design decisions, settled:
@@ -35,7 +33,22 @@ does not yet *feel reactive* to impulses, and velocity dynamics are flat.
    - Depth: a new macro knob, 0 (off) → large.
    - Cost is trivial: the perturbed 8×8 matrix re-upload is 256 bytes
      per frame.
-3. **Brightness dynamic range.** The canvas is HDR now, but a species is
+3. **Brightness dynamic range — in progress 2026-08-15, in a worktree so
+   main and the branch can be A/B compared.** Design direction settled
+   with the user 2026-08-15:
+   - The brightness curve is **perceptually non-linear** (power-curve
+     shaped), and the exponent is plausibly a runtime knob.
+   - The feel: modest variation around the SDR range for the bulk of
+     the population, with **peak velocity spiking into HDR headroom**.
+     On a typical 1000-nit HDR screen, most particles live in a
+     standard brightness band and peak levels are reserved for accents.
+   - On an SDR screen everything maps much closer together — still some
+     peak, but it may have to work differently (push lightness toward
+     white, or simply read less). Expect iteration here.
+   - Possibly an explicit canvas SDR/HDR toggle, if auto-detection
+     isn't enough to tune both renditions.
+
+   Original framing: the canvas is HDR now, but a species is
    basically always one uniform brightness — there is little mechanism
    for dynamic range among the particles. Starter direction from the
    user: dimmer baseline, higher peak brightness on impulses. Existing
@@ -50,7 +63,10 @@ does not yet *feel reactive* to impulses, and velocity dynamics are flat.
      flat sheet.
    - Transient-shaped flash envelopes (fast attack, slower decay,
      per event kind).
-4. **Persistence bug class.** Arc-mode settings for accents do not
+4. **Persistence bug class.** ✅ **Done** for its first two rungs
+   (`e792be4` — see item 5, which is the remaining rung and is in
+   progress as of 2026-08-15). Original framing: arc-mode settings for
+   accents do not
    survive a refresh. This is the latest instance of a recurring bug
    shape: a new setting gets added but not wired into the
    serialize/restore round-trip, and it surfaces later as "my tweak
@@ -117,36 +133,56 @@ does not yet *feel reactive* to impulses, and velocity dynamics are flat.
 ## Phase 2 — Tuning tools
 
 These ship in the published app (same build), so they finish before the
-cut.
+cut. Reordered 2026-08-15 at the user's direction: the explorer rebuild
+dropped from first to last — it is lower priority for the user than the
+palette pass, seed favorites, and the README, and can run as a
+background thread.
 
-3. **Explorer rebuild.** The current explorer is essentially useless: it
+3. **Palette pass.** Recover the palette the initial version used (git
+   history); curate ~6–8 more adapted from strong perceptual
+   collections, tuned in arc mode. Add per-species color preview boxes
+   when adjusting the palette in arc mode. Sequenced after the
+   brightness work — curating palettes against a moving brightness
+   model is wasted work.
+4. **Seed favorites v0.** Like/dislike buttons in the workbench that
+   persist seed + context. Deliberately sequenced late so the parameter
+   space is mostly settled and the collected data stays meaningful. The
+   eventual "learn what good interaction matrices look like" model is a
+   far-future consumer of this data — collect now, schedule never
+   (until it earns itself).
+5. **README + dev instructions** (added 2026-08-15). Polished,
+   human-first, no thesis: a stranger clones the repo, gets the web app
+   running, processes their own song locally through the analysis
+   pipeline / `terrarium-server`, and can find their way around well
+   enough to fork or contribute a feature. Docs-only, so it can run in
+   parallel with anything; slotted near the cut so it documents reality
+   rather than chasing it.
+6. **Explorer rebuild.** The current explorer is essentially useless: it
    simulates a different parameter set, looks nothing like main mode,
    and ignores modulation. Contract: explore **from the current
    main-mode state** — identical parameters, identical look, modulation
    live — browsing seeded variations, with two scopes (**everything** /
    **matrix-only**), then adopt-or-cancel back into main mode. Known to
-   be real lifting; if it balloons it is the first item allowed to slip
-   past the cut, but the intent is to finish it before publishing.
-4. **Palette pass.** Recover the palette the initial version used (git
-   history); curate ~6–8 more adapted from strong perceptual
-   collections, tuned in arc mode. Add per-species color preview boxes
-   when adjusting the palette in arc mode.
-5. **Seed favorites v0.** Like/dislike buttons in the workbench that
-   persist seed + context. Deliberately sequenced after items 1–3 so the
-   parameter space is mostly settled and the collected data stays
-   meaningful. The eventual "learn what good interaction matrices look
-   like" model is a far-future consumer of this data — collect now,
-   schedule never (until it earns itself).
+   be real lifting; it is the item allowed to slip past the cut.
+   Handoff: `docs/handoffs/explorer-rebuild.md`.
 
 ## Phase 3 — The cut → publish
 
-6. **Keybindings.** `s` toggles the settings panel, `t` toggles the
-   timeline + top menu, double-click toggles fullscreen.
-7. **Track publish allowlist.** Catalog entries are default-private; the
+7. **Keybindings.** Pulled forward 2026-08-15 into its own short
+   mini-thread (worktree, can run in parallel with Phase 1 work).
+   `s` toggles the settings panel, `t` toggles the timeline + top menu,
+   double-click toggles fullscreen. Handoff:
+   `docs/handoffs/keybindings.md`.
+8. **Preset strings v1** (moved into the deploy phase 2026-08-15). The
+   compact-string codec, `#p=` fragment links, copy string / copy link.
+   Its gates (palette v2, recipe v5) are merged and save profiles v0
+   landed the apply path it reuses. Shareable links are arguably *the*
+   friends-and-family feature. Brief: `docs/handoffs/preset-strings-v1.md`.
+9. **Track publish allowlist.** Catalog entries are default-private; the
    demo build ships only tracks explicitly marked publishable. Allowlist,
    not blacklist — a track under test can never leak by omission. (All
    current music is rights-cleared; the gate is belt-and-suspenders.)
-8. **Static deploy.** S3 bucket (AWS account exists, CLI authenticated);
+10. **Static deploy.** S3 bucket (AWS account exists, CLI authenticated);
    DNS pointing to AWS handled when we get there — not a blocker to
    build against. Demo shape: static only, no terrarium-server, no
    uploads, no export UI. Plife front and center; physarum/vizfx still
