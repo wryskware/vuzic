@@ -42,6 +42,7 @@ import { defaultRenderConfig, type RenderConfig } from '../render/config.ts';
 import { customPalette, type Palette } from '../palette.ts';
 import { oneOf, range, type RuleTree } from '../../mapping/read-into.ts';
 import { persisted, persistedElsewhere, type BlockTable } from '../../mapping/blocks.ts';
+import { defaultPlifeLuma, lumaRules, type PlifeLumaConfig } from './luma.ts';
 
 /** Sim substeps one clock tick may expand into; folded into the PCG tick key. */
 export const MAX_SUBSTEPS = 4;
@@ -843,6 +844,15 @@ export const PLIFE_BLOCKS: BlockTable<PlifeConfig> = {
   // when it was written. It lives on the sim, outside the config entirely, which
   // is the structural way of saying the same thing — and `plife-extras` pins it.
   budget: persisted((cfg) => defaultPlifeBudget(cfg.maxParticles), { rules: budgetRules }),
+  // The per-particle luminance lane. Every field is art direction and persists;
+  // the display headroom it is composed against is deliberately NOT a field of
+  // this block (it is a measurement of the panel this session happens to be
+  // watched on — same reasoning as `effectiveBudget` above). Every knob is
+  // bounded, including the ones whose degenerate value is only *nearly*
+  // harmful: `curve` is an exponent the shader raises a possibly-zero base to,
+  // and `mid` is its own base — the shader floors both again, but a file
+  // should not be the reason it has to.
+  luma: persisted(defaultPlifeLuma, { rules: lumaRules() }),
 
   render: persistedElsewhere(
     'the mapping file owns the render chain: `ModulationConfig.render` IS this ' +
@@ -873,6 +883,12 @@ export interface PlifeConfig {
   field: PlifeFieldConfig;
   /** particle ceiling + the adaptive governor. Structural; outside θ. */
   budget: PlifeBudgetConfig;
+  /**
+   * Per-particle brightness dynamic range: speed → luminance, with the display's
+   * HDR headroom as the budget. Outside θ, like every other lane that composes
+   * on top of it — see `luma.ts`. `depth: 0` reproduces the pre-lane look.
+   */
+  luma: PlifeLumaConfig;
   /** K. 8 by design — see the partition note at the top of this file. */
   speciesCount: number;
   /** pool size; the per-species segment is floor(maxParticles / K) */
@@ -1170,6 +1186,7 @@ export function defaultPlifeConfig(speciesCount = 8): PlifeConfig {
     matrixGen: defaultMatrixGen(),
     field: defaultPlifeField(),
     budget: defaultPlifeBudget(DEFAULT_MAX_PARTICLES),
+    luma: defaultPlifeLuma(),
     speciesCount: k,
     maxParticles: DEFAULT_MAX_PARTICLES,
     forceGain: 1,

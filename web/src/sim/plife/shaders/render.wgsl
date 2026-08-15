@@ -68,6 +68,11 @@ fn fsFade(in: FadeOut) -> @location(0) vec4f {
 // (zero-area) quad, which the rasteriser discards before any fragment work, so
 // culling them on the CPU would buy nothing and would cost a readback.
 
+// Rec. 709 luminance weights, for the peak white push. The one place this sim
+// needs a luminance from a linear RGB triple; `LUMA_WEIGHTS` in plife/luma.ts is
+// the same vector on the CPU side and `plife-luma.test.ts` pins them together.
+const LUMA_WEIGHTS: vec3f = vec3f(0.2126, 0.7152, 0.0722);
+
 struct ParticleOut {
   @builtin(position) pos: vec4f,
   // quad-local coordinates in [-1, 1]^2; length() of this is the splat radius
@@ -121,15 +126,55 @@ fn vsParticles(
   }
   let perp = vec2f(-dir.y, dir.x);
   let size = max(s.geom.x, 1e-6);
-  let halfLen = size * (1.0 + max(s.geom.y, 0.0) * min(speed / max(g.maxSpeed, 1e-6), 1.0));
+  // Normalised speed, hoisted because BOTH velocity cues read it: the stretch
+  // below and the luminance lane further down. One quantity rather than two
+  // similar expressions, so a change to what "fast" means moves them together.
+  // Floored away from zero because it is a `pow` base a few lines later.
+  let u01 = max(min(speed / max(g.maxSpeed, 1e-6), 1.0), 1e-6);
+  let halfLen = size * (1.0 + max(s.geom.y, 0.0) * u01);
 
   out.pos = toClip(centre + dir * (halfLen * qx) + perp * (size * qy));
   out.quad = vec2f(qx, qy);
+
+  // ── per-particle luminance ──────────────────────────────────────────────────
+  //
+  // The only brightness mechanism in this sim that varies WITHIN a species —
+  // `brightness` × stem-follow, the impulse flash and `intensity` all move a
+  // whole colony together, which is why a species used to render as a flat
+  // sheet however loud the music got. Composed (not stacked): those three
+  // decide how bright the colony is, this decides how that brightness is
+  // distributed across its members.
+  //
+  // The whole policy — the stops budget, how much of the display's HDR headroom
+  // to spend, how far to bleach on SDR — is resolved on the CPU in
+  // plife/luma.ts. What is left here is a shaped speed, an exp2, and a lerp.
+  //
+  // At `lumaStops = 0` (depth 0) every term below is exactly the identity:
+  // exp2(0 · x − 0 + 0) = 1 and mix(rgb, _, 0) = rgb. That is the A/B baseline,
+  // and it holds by arithmetic rather than by a branch.
+  let shaped = pow(u01, g.lumaExponent);
+  // Static, drawn once per particle index from the world seed: spatial grain, so
+  // a species reads as a population rather than as a sheet. Deliberately NOT
+  // per-tick — animated per-particle noise is indistinguishable from raising the
+  // temperature, which is the same argument the wander force's value noise makes.
+  let jitter = (rand01(hash3(ii, g.seed, 0x1u)) - 0.5) * 2.0 * g.lumaJitter;
+  let gain = exp2(g.lumaStops * (shaped - g.lumaAnchor) + jitter);
+
+  // The SDR peak cue. Reinhard preserves channel ratios, so a saturated core
+  // cannot pass white however hard it is driven — its strongest channel simply
+  // pins. Desaturating toward the colour's own luminance lifts the two weak
+  // channels instead, so the peak reads as *light*. `lumaWhite` already carries
+  // the headroom trade: it fades out as real headroom arrives, because on a
+  // display that can go brighter, bleaching only costs the hue that labels the
+  // species.
+  var rgb = s.color.rgb;
+  rgb = mix(rgb, vec3f(dot(rgb, LUMA_WEIGHTS)), g.lumaWhite * shaped);
+
   // Energy shaping: pow(e, 1.5) so a particle on its way in or out fades faster
   // than linearly. This is the hook the population lane writes to — a species
   // whose target is falling dims *ahead* of the linear ramp, which reads as
   // "leaving" rather than as "being turned down".
-  out.tint = s.color.rgb * pow(max(p.energy, 0.0), 1.5);
+  out.tint = rgb * (pow(max(p.energy, 0.0), 1.5) * gain);
   return out;
 }
 

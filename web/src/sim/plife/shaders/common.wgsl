@@ -13,12 +13,13 @@ const TAU: f32 = 6.28318530718;
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 //
-// 28 words = 112 bytes = 7 × 16. The three `pad` words are explicit rather than
-// implicit: the uniform address space would round 25 words up to 112 bytes
+// 32 words = 128 bytes = 8 × 16. The two `pad` words are explicit rather than
+// implicit: the uniform address space would round 30 words up to 128 bytes
 // anyway, and an unnamed hole is exactly the kind of thing the TS writer drifts
 // into. Word offsets are documented because that writer (`writeGlobals` in
-// plife.ts, GLOBALS_WORDS = 28) indexes this block positionally and nothing
-// checks the two agree.
+// plife.ts, GLOBALS_WORDS = 32) indexes this block positionally — and, since
+// the per-particle luminance lane landed, `plife-luma.test.ts` counts the
+// fields here and asserts the two agree.
 //
 //   0 worldW         5 cellH          10 tick             15 respawnKey
 //   1 worldH         6 speciesCount   11 dt               16 maxSpeed
@@ -27,7 +28,8 @@ const TAU: f32 = 6.28318530718;
 //   4 cellW          9 seed           14 respawnFraction  19 feedbackZoom
 //
 //  20 riseTau       21 fallTau        22 splashCount      23 nearStencil
-//  24 farOn         25 pad0           26 pad1             27 pad2
+//  24 farOn         25 lumaStops      26 lumaExponent     27 lumaAnchor
+//  28 lumaWhite     29 lumaJitter     30 pad0             31 pad1
 struct Globals {
   // World space is toroidal, h = 1 and w = aspect, fixed for the sim's life.
   worldW: f32,
@@ -89,9 +91,25 @@ struct Globals {
   // than a zero coefficient, because zero coefficients would still cost eight
   // texture fetches per particle per substep for a guaranteed zero.
   farOn: u32,
+  // The per-particle luminance lane, composed on the CPU by `lumaUniforms` in
+  // plife/luma.ts — everything display-dependent (the headroom budget, the SDR
+  // white push) is resolved there, so this side is one fused multiply-add and an
+  // exp2. All five are 0 / 1 / 0 / 0 / 0 when the lane is off, and at those
+  // values `vsParticles` is bit-identical to the pre-lane shader.
+  //
+  //   lumaStops     span in stops across normalised speed 0..1
+  //   lumaExponent  power-curve exponent applied to that speed
+  //   lumaAnchor    mid^exponent — the shaped speed whose gain is exactly 1
+  //   lumaWhite     peak desaturation toward luminance, 0..1
+  //   lumaJitter    half-width of the static per-particle gain, in stops
+  lumaStops: f32,
+  lumaExponent: f32,
+  lumaAnchor: f32,
+
+  lumaWhite: f32,
+  lumaJitter: f32,
   pad0: u32,
   pad1: u32,
-  pad2: u32,
 }
 
 // One impulse hotspot disc, in WORLD units (physarum's equivalent struct is in

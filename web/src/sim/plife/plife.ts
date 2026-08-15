@@ -98,6 +98,7 @@ import {
 } from './config';
 import { readInto } from '../../mapping/read-into';
 import { applyBlocks, serializeBlocks } from '../../mapping/blocks';
+import { lumaUniforms } from './luma';
 import { seedMatrixBase, seedWiggleDirs, wiggleAttraction } from './genmatrix';
 import {
   applyVector,
@@ -125,8 +126,15 @@ const GRID_WORKGROUP = 256;
 const FLOATS_PER_SPECIES = 16;
 /** must match the Splash struct in common.wgsl: two vec4f */
 const FLOATS_PER_SPLASH = 8;
-/** must match the Globals struct in common.wgsl, padding included */
-const GLOBALS_WORDS = 28;
+/**
+ * must match the Globals struct in common.wgsl, padding included.
+ *
+ * "Nothing checks the two agree" was true until the luminance lane needed five
+ * more words; `plife-luma.test.ts` now counts the struct's fields and asserts
+ * this number, because growing the block is exactly when a positional writer
+ * silently starts writing into the wrong slot.
+ */
+const GLOBALS_WORDS = 32;
 /**
  * Height of the far lane's per-species density target, in texels; the width
  * follows the world's aspect so the texels stay square.
@@ -2573,6 +2581,22 @@ export class PlifeSim implements Sim, ModTarget {
     );
   }
 
+  /**
+   * Display peak over diffuse white, by the same rule `PostFx.writeParams` uses.
+   * 1 on every SDR host, so the luminance lane collapses to its SDR rendition
+   * without a mode switch.
+   *
+   * Public because the workbench shows it: the preview override asks for a
+   * headroom and this is what is actually in force, and the two differ whenever
+   * the swapchain is 8-bit. A readout of the request rather than of the result
+   * would be a readout of nothing.
+   */
+  displayHeadroom(): number {
+    const hdr = this.ctx?.hdrOutput;
+    if (hdr) return Math.max(hdr.masteringPeakNits / hdr.paperWhiteNits, 1);
+    return Math.max(this.ctx?.displayHeadroom ?? 1, 1);
+  }
+
   private writeGlobals(pcgTick: number): void {
     const ctx = this.ctx as GpuRuntimeContext;
     const u = this.globalsU32;
@@ -2635,9 +2659,25 @@ export class PlifeSim implements Sim, ModTarget {
     u[22] = this.splashCount >>> 0;
     u[23] = this.stencil() >>> 0;
     u[24] = this.farActive() ? 1 : 0;
-    u[25] = 0;
-    u[26] = 0;
-    u[27] = 0;
+    // The per-particle luminance lane. Composed here rather than in the shader
+    // because the whole policy is display-dependent — see luma.ts — and the
+    // shader must stay a multiply-add it runs millions of times a frame.
+    //
+    // The headroom is resolved the same way `PostFx.writeParams` resolves it,
+    // and that is not a coincidence to be tidied away later: the grade's tone
+    // curve ends at exactly this number, so a lane that budgeted against a
+    // different one would be aiming its peaks at a ceiling the grade does not
+    // have. An HDR10 export host knows it from its mastering policy; the
+    // browser measures it from the display and gets 1 on every SDR host, on an
+    // 8-bit swapchain, and whenever the workbench's preview override says so.
+    const luma = lumaUniforms(cfg.luma, this.displayHeadroom());
+    f[25] = luma.stops;
+    f[26] = luma.exponent;
+    f[27] = luma.anchor;
+    f[28] = luma.white;
+    f[29] = luma.jitterStops;
+    u[30] = 0;
+    u[31] = 0;
     ctx.device.queue.writeBuffer(this.globalsBuf, 0, this.globalsBytes);
   }
 
