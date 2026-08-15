@@ -87,6 +87,33 @@ does not yet *feel reactive* to impulses, and velocity dynamics are flat.
    arcs, the whole impulse lane, the palette and render folders' optional
    `onChange`, and this).
 
+6. **Save profiles v0 — do this one first.** Priority raised 2026-08-14 at
+   the user's direction: there was no save location that survived another
+   tab. Everything tunable lands in one autosave key per sim, written by a
+   debounce *and* on `pagehide`/`visibilitychange`, so any second tab
+   holding stale config overwrote a live tuning session by being closed.
+   Two changes, both landed:
+   - The hide flush is gone (`web/src/ui/autosave.ts`). Losing it costs at
+     most the last 400 ms before a reload, and `maxWaitMs` bounds a dirty
+     run at 2 s anyway; keeping it cost other tabs' work.
+   - A named profile library (`web/src/ui/profiles.ts`, workbench ▸ data),
+     written **only** from its buttons. One localStorage key per profile —
+     no index blob, because an index is a read-modify-write and that is the
+     same clobber one level up.
+
+   A profile is a whole `ExportRecipe`, not a `modulation.json`: the plife
+   matrix comes from the **seed** and the authored θ centre is in no mapping
+   file, so a mapping-only profile restores your colours around a different
+   world. Loading stages the recipe and reloads, which reuses `main.ts`'s
+   one construction order rather than growing a second one.
+
+   Deliberately a subset of `docs/handoffs/preset-strings-v1.md`, which
+   still owns compact strings, `#p=` links and the trimmed `PresetV1`
+   container. Storage is localStorage, so it is per origin and dies with
+   "clear site data" — hence export/import to file. A durable backend (the
+   File System Access API, or `terrarium-server`) fits behind the same four
+   functions later.
+
 ## Phase 2 — Tuning tools
 
 These ship in the published app (same build), so they finish before the

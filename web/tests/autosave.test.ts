@@ -11,13 +11,15 @@
  *   debounce — and the write is deferred forever. That is the exact mechanism
  *   behind the already-diagnosed "my exposure settings are lost on reload", and
  *   it is why `maxWaitMs` exists.
- * - An unflushed debounce loses the **last** edit. Move a slider, reload within
- *   the window, and precisely that one setting is gone while its neighbours are
- *   fine — which is close to undiagnosable from a bug report and reads as
- *   "settings save at random".
+ * - An unflushed debounce loses the **last** edit, so `flush()` exists and
+ *   `dispose()` calls it — a panel rebuild must not be a way to lose the edit
+ *   made a moment before it.
  *
- * Node has no DOM, so the hide-flush listeners are not installed here; `flush()`
- * is exercised directly, which is what those listeners call.
+ * What is deliberately *not* here is a hide flush. It was removed on
+ * 2026-08-14: the autosave slot is one key per sim, so a background tab writing
+ * on `pagehide` overwrote live tuning in another tab. `flush()` is now reached
+ * only from an explicit save button and from `dispose`, and nothing installs a
+ * document-level listener — which is also why this suite needs no DOM.
  */
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';

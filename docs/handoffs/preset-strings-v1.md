@@ -4,6 +4,20 @@
 Palette v2 (`hsluv-palette-v2.md`): modulation v5 and export recipe v4 must be
 merged first, so presets never serialize the v1 palette shape.**
 
+**Partly landed early (2026-08-14): save profiles v0.** The user needed a save
+location that a second tab could not reset, before this package's turn came up.
+What shipped is the local library only — `web/src/ui/profiles.ts` plus a
+workbench folder: name + save, dropdown + load / delete, export / import to
+file, and the pending-slot-then-reload apply path described under "Apply path"
+below, which is already implemented and should be reused rather than rewritten.
+Two deviations from this brief, both deliberate: a v0 profile is a whole
+`ExportRecipe` (with `rendererBuild`/`output` stubbed) rather than `PresetV1`,
+so no validator refactor was needed; and the library is one localStorage key per
+profile under `lmt.profile.<sim>.<name>` rather than the `lmt.presets` array —
+an array is a read-modify-write, which is the multi-tab clobber this was fixing.
+This package still owns the codec, the `#p=` fragment, copy string / copy link,
+the `PresetV1` trim, and whether to migrate v0 entries or drop them.
+
 Routing note for the orchestrator: implementation worker = Opus, reasoning
 effort **medium**. Test spec below is part of the brief (separate authoring
 concern; do not substitute your own green tests for it).

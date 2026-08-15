@@ -23,11 +23,16 @@ import type { ModTarget } from './mapping/target';
 import { TuningLog } from './mapping/tuninglog';
 import { PhysarumSim } from './sim/physarum/physarum';
 import { PlifeSim } from './sim/plife/plife';
-import { isSeedPinned, resolveSeed } from './sim/seed';
+import { isSeedPinned, resolveSeed, setPinnedSeed, syncUrlSeed } from './sim/seed';
 import type { RenderFrame, Sim } from './sim/types';
 import { VIZFX_IDS } from './sim/vizfx/ids';
 import { VizFxSim } from './sim/vizfx/vizfx';
-import { buildSimBundle, type SimBundle } from './runtime/sim-bundle';
+import { buildSimBundle, buildSimBundleFromRecipe, type SimBundle } from './runtime/sim-bundle';
+import {
+  consumePendingProfile,
+  profileOutput,
+  PROFILE_RENDERER_BUILD,
+} from './ui/profiles';
 import type { ExportRecipe } from './runtime/recipe';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
 import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
@@ -217,7 +222,33 @@ function sameTheta(a: Float64Array, b: Float64Array): boolean {
 }
 
 async function main(): Promise<void> {
-  const { seed, pinned } = resolveSeed();
+  /**
+   * A profile the workbench staged before reloading (`ui/profiles.ts`).
+   *
+   * Read first, because it decides three things every construction below is
+   * built from: which substrate, which seed, and which authored state. It is
+   * deleted by the read whatever happens next, so a profile that fails to parse
+   * costs one boot rather than making the app impossible to start.
+   */
+  let profile = consumePendingProfile();
+  if (profile && !SIMS.includes(profile.sim)) {
+    // A profile for a substrate this build does not have. Dropping it whole is
+    // the only coherent answer: its simulation config, θ and palette are all
+    // that sim's, so there is nothing left to partially honour.
+    console.warn(`profile: ignoring a profile for unknown sim "${profile.sim}"`);
+    profile = null;
+  }
+  if (profile) console.info(`profile: applying a saved ${profile.sim} profile`);
+
+  // A profile always replays its own seed — a particle-life matrix is generated
+  // from it, so the same seed *is* half of "the look I saved". Its pin state is
+  // restored alongside, into both channels, so the next reload does what the
+  // profile said rather than what the previous session had pinned.
+  const { seed, pinned } = profile ? { seed: profile.seed, pinned: profile.seedPinned } : resolveSeed();
+  if (profile) {
+    setPinnedSeed(profile.seedPinned ? profile.seed : null);
+    syncUrlSeed(profile.seedPinned ? profile.seed : null);
+  }
 
   // Bundled tracks, whatever a local analysis server offers, and whatever is
   // still in the offline cache from a previous session — one list, resolved
@@ -318,23 +349,29 @@ async function main(): Promise<void> {
    * means "this browser cannot run the app", during a swap it means "keep the sim
    * you already have" — so it stays at each call site where that choice is made.
    */
-  const buildBrowserSimBundle = (id: string, forSeed: number): SimBundle => {
-    const bundle = buildSimBundle({
-      id,
-      seed: forSeed,
-      sampler,
-      drivers,
-      secondsPerTick: SECONDS_PER_TICK,
-      // `sim.simId` and not the requested id: it is the autosave slot's name,
-      // and taking it from the constructed object keeps an unrecognised id on
-      // physarum's mapping instead of opening an empty slot named after a typo.
-      resolveModulationConfig: (candidate) => {
-        const stored = loadModulationLocal(candidate.simId);
-        return stored && modulationFits(stored, candidate.config.speciesCount, candidate.simId)
-          ? stored
-          : defaultModulationConfig(candidate.config, candidate.simId);
-      },
-    });
+  const buildBrowserSimBundle = (id: string, forSeed: number, authored?: ExportRecipe): SimBundle => {
+    // A staged profile is a complete recipe, and rehydrating one is already a
+    // solved problem with a canonical implementation — the same one the export
+    // worker boots from. Delegating keeps "what a recipe means" in one place
+    // instead of growing a browser-flavoured second reading of it here.
+    const bundle = authored
+      ? buildSimBundleFromRecipe({ recipe: authored, sampler, drivers, secondsPerTick: SECONDS_PER_TICK })
+      : buildSimBundle({
+          id,
+          seed: forSeed,
+          sampler,
+          drivers,
+          secondsPerTick: SECONDS_PER_TICK,
+          // `sim.simId` and not the requested id: it is the autosave slot's name,
+          // and taking it from the constructed object keeps an unrecognised id on
+          // physarum's mapping instead of opening an empty slot named after a typo.
+          resolveModulationConfig: (candidate) => {
+            const stored = loadModulationLocal(candidate.simId);
+            return stored && modulationFits(stored, candidate.config.speciesCount, candidate.simId)
+              ? stored
+              : defaultModulationConfig(candidate.config, candidate.simId);
+          },
+        });
     console.info(
       `modulation: ${bundle.sim.simId} · ${bundle.modulator.sourceLabel} → ${bundle.modulator.modulatedCount} parameters, ` +
         `seed ${forSeed}${pinned ? ' (pinned)' : ''}`,
@@ -345,14 +382,22 @@ async function main(): Promise<void> {
   // Resolve which sim to build before building it, so a second substrate slots
   // in here rather than being threaded through the twenty call sites below —
   // those all talk to `ModTarget` now and do not care which one they got.
-  const wantedSim = requestedSim();
+  //
+  // A staged profile names its own substrate and wins over `?sim=`: it was saved
+  // as one world, and loading it into a different one would be loading nothing
+  // it actually contains.
+  const wantedSim = profile?.sim ?? requestedSim();
   if (!(SIMS as readonly string[]).includes(wantedSim)) {
     console.warn(`sim "${wantedSim}" not available; using ${DEFAULT_SIM}`);
   }
   // `let` and not `const`, because the substrate picker replaces all three at
   // once (`switchSim`). Every closure below reads them rather than capturing
   // them, which is what makes the swap invisible to the frame loop.
-  let { sim, impulses, modulator } = buildBrowserSimBundle(wantedSim, seed);
+  //
+  // The profile is passed **only** to this first build. A later substrate swap
+  // is a request for that substrate's own autosaved mapping, not a second
+  // application of a profile the user has since edited away from.
+  let { sim, impulses, modulator } = buildBrowserSimBundle(wantedSim, seed, profile ?? undefined);
 
   // ── milkdrop mode ──────────────────────────────────────────────────────────
   //
@@ -909,6 +954,18 @@ async function main(): Promise<void> {
         time: () => clock.time,
         tick: () => clock.simTick,
         seek: (t: number) => clock.seek(t),
+        // The same capture the export button takes, from the same live `let`s,
+        // with the two export-only fields stubbed. `contentVersion` is one of
+        // them in effect: a profile carries the track id as a note to a human
+        // and never replays a timeline, so an unsynced track must not be a
+        // reason you cannot save the look you just tuned.
+        captureProfile: (): ExportRecipe =>
+          captureBrowserExportRecipe({
+            rendererBuild: PROFILE_RENDERER_BUILD,
+            track: { id: entry.id, version: entry.version === '' ? 'unversioned' : entry.version },
+            source: { sim, modulator, impulses },
+            output: profileOutput(),
+          }),
       },
     };
     return sim instanceof PhysarumSim

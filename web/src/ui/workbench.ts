@@ -79,6 +79,16 @@ import {
   saveModulationLocal,
   serializeModulation,
 } from '../mapping/persist';
+import {
+  deleteProfile,
+  listProfiles,
+  normalizeProfileName,
+  readProfileText,
+  requestProfileApply,
+  saveProfile,
+  saveProfileText,
+} from './profiles';
+import type { ExportRecipe } from '../runtime/recipe';
 
 export interface WorkbenchHost {
   /**
@@ -101,6 +111,16 @@ export interface WorkbenchHost {
   restart(): void;
   /** the panel's own species/matrix widgets are bound to the live config and must be re-read */
   onConfigReplaced?: () => void;
+  /**
+   * The exact live session as a recipe, for the profile library — seed, pin
+   * state, simulation config, θ centre, impulses, mapping and grade.
+   *
+   * Supplied by the app rather than built here because it is the same capture
+   * the export panel takes, from the same live `let`s a substrate swap replaces,
+   * and one of those is a description of a render job this panel knows nothing
+   * about. See `./profiles.ts` for what the export-only fields become.
+   */
+  captureProfile(): ExportRecipe;
 }
 
 export interface WorkbenchHandle {
@@ -130,6 +150,9 @@ interface UiState {
   followStatus: string;
   autosave: boolean;
   file: string;
+  profileName: string;
+  profileSelected: string;
+  profileStatus: string;
   snapshotInfo: string;
   logInfo: string;
 }
@@ -224,6 +247,9 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
     followStatus: '—',
     autosave: true,
     file: '—',
+    profileName: '',
+    profileSelected: '',
+    profileStatus: '—',
     snapshotInfo: 'none',
     logInfo: '0 entries',
   };
@@ -583,6 +609,131 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
     ui.file = 'reset';
     host.onConfigReplaced?.();
     pane.refresh();
+  });
+
+  // ── data · save profiles ───────────────────────────────────────────────────
+  //
+  // The durable half of persistence, and the reason the autosave above can stay
+  // as loose as it is. See `./profiles.ts` for why a profile is a whole export
+  // recipe (the seed and θ are what make a look reproducible, and neither is in
+  // a modulation file) and why nothing but these buttons ever writes one.
+  const profiles = mounts.data.addFolder({ title: 'save profiles (seed + everything)', expanded: true });
+  profiles.addBinding(ui, 'profileStatus', { readonly: true, label: '' });
+
+  /**
+   * The picker, rebuilt whenever the library changes.
+   *
+   * Tweakpane fixes a list's options at construction, so "refresh the dropdown"
+   * is "dispose it and add another" — at `index: 1`, immediately under the
+   * status row, because a re-added blade otherwise lands at the end of the
+   * folder and the controls would reorder themselves every save.
+   */
+  let picker: ReturnType<typeof profiles.addBinding> | null = null;
+  const rebuildPicker = (): void => {
+    const names = listProfiles(sim.simId);
+    if (!names.includes(ui.profileSelected)) ui.profileSelected = names[0] ?? '';
+    picker?.dispose();
+    picker = profiles.addBinding(ui, 'profileSelected', {
+      index: 1,
+      label: 'saved',
+      // A list with no options renders as an empty control that cannot be
+      // clicked; a single dead entry at least says why.
+      options: names.length
+        ? Object.fromEntries(names.map((n) => [n, n]))
+        : { '(none saved)': '' },
+    });
+  };
+  rebuildPicker();
+
+  profiles.addBinding(ui, 'profileName', { label: 'name' });
+  profiles.addButton({ title: 'save profile' }).on('click', () => {
+    // The name field first, then the selection: typing a name means "a new one",
+    // an empty field with something selected means "update that one".
+    const name = normalizeProfileName(ui.profileName) ?? normalizeProfileName(ui.profileSelected);
+    if (name === null) {
+      ui.profileStatus = 'give it a name first';
+      pane.refresh();
+      return;
+    }
+    refreshExtras();
+    const saved = saveProfile(name, host.captureProfile());
+    ui.profileStatus = saved.message;
+    if (saved.sim !== null) {
+      ui.profileSelected = name;
+      ui.profileName = '';
+      rebuildPicker();
+    }
+    record('save', `profile ${name}`);
+    pane.refresh();
+  });
+
+  profiles.addButton({ title: 'load profile (reloads)' }).on('click', () => {
+    const name = normalizeProfileName(ui.profileSelected);
+    const text = name === null ? null : readProfileText(sim.simId, name);
+    if (text === null) {
+      ui.profileStatus = 'nothing selected';
+      pane.refresh();
+      return;
+    }
+    // Staged, not applied: `main.ts` builds the sim, the impulse engine and the
+    // modulator from a recipe exactly once, in an order its own comments call
+    // load-bearing, and a reload runs that instead of a second copy of it.
+    const failure = requestProfileApply(text);
+    if (failure !== null) {
+      ui.profileStatus = failure;
+      pane.refresh();
+      return;
+    }
+    location.reload();
+  });
+
+  profiles.addButton({ title: 'delete profile' }).on('click', () => {
+    const name = normalizeProfileName(ui.profileSelected);
+    if (name === null) {
+      ui.profileStatus = 'nothing selected';
+      pane.refresh();
+      return;
+    }
+    deleteProfile(sim.simId, name);
+    ui.profileStatus = `deleted "${name}"`;
+    rebuildPicker();
+    pane.refresh();
+  });
+
+  // The file pair is not a convenience. Profiles live in localStorage, which is
+  // per origin, so a look tuned on localhost does not exist on the deployed
+  // site — and a browser's "clear site data" takes the library with it. A file
+  // is the only thing that crosses either boundary.
+  profiles.addButton({ title: 'export profile to file' }).on('click', () => {
+    const name = normalizeProfileName(ui.profileSelected);
+    const text = name === null ? null : readProfileText(sim.simId, name);
+    if (text === null) {
+      ui.profileStatus = 'nothing selected';
+      pane.refresh();
+      return;
+    }
+    downloadText(`profile-${sim.simId}-${name}.json`, text);
+    ui.profileStatus = `exported "${name}"`;
+    pane.refresh();
+  });
+
+  profiles.addButton({ title: 'import profile from file…' }).on('click', () => {
+    void pickTextFile().then((text) => {
+      if (text === null) return;
+      const name =
+        normalizeProfileName(ui.profileName) ?? `imported ${listProfiles(sim.simId).length + 1}`;
+      const saved = saveProfileText(name, text);
+      ui.profileStatus =
+        saved.sim !== null && saved.sim !== sim.simId
+          ? `${saved.message} — for ${saved.sim}; open ?sim=${saved.sim} to load it`
+          : saved.message;
+      if (saved.sim === sim.simId) {
+        ui.profileSelected = name;
+        ui.profileName = '';
+      }
+      rebuildPicker();
+      pane.refresh();
+    });
   });
 
   // ── data · A/B ─────────────────────────────────────────────────────────────

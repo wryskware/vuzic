@@ -13,22 +13,26 @@
  * debounce, and the observed symptom was "my exposure settings are lost on
  * reload" — with the edit itself perfectly correct, saved by nothing.
  *
- * Filtering monitors out at each registration site fixes each *instance*. This
- * fixes the *class*, twice over:
+ * Filtering monitors out at each registration site fixes each *instance*.
+ * **`maxWaitMs`** fixes the class: once dirty, the write happens within
+ * `maxWaitMs` no matter what the change stream does, so a starving stream costs
+ * a slightly stale save rather than a lost one.
  *
- * - **`maxWaitMs`.** Once dirty, the write happens within `maxWaitMs` no matter
- *   what the change stream does. A starving stream now costs a slightly stale
- *   save, never a lost one.
- * - **Flush on hide.** `pagehide` and `visibilitychange → hidden` write
- *   synchronously. Without it, moving a slider and reloading inside the debounce
- *   window loses exactly that edit and nothing else — which reads as "settings
- *   save randomly" and is close to undiagnosable from a bug report.
+ * ## Why there is no flush on hide
  *
- * Both listeners are installed once, lazily, for all live autosaves; there is no
- * per-panel lifecycle to get wrong. `pagehide` rather than `beforeunload`
- * because the latter is ignored in the bfcache path on mobile Safari and is
- * increasingly discouraged; `visibilitychange` because a tab switched away from
- * may be discarded without ever firing `pagehide`.
+ * There was one — `pagehide` and `visibilitychange → hidden` wrote
+ * synchronously, to save the edit made inside the last debounce window before a
+ * reload. It was removed on 2026-08-14, deliberately, because it made every
+ * background tab a writer: the autosave slot is a single key per sim, so a tab
+ * holding stale config would overwrite a live tuning session in another tab the
+ * moment it was hidden or closed. Automation tabs made that routine.
+ *
+ * The trade is small and one-sided. Losing a hide flush costs at most the last
+ * 400 ms of edits before a reload — and `maxWaitMs` already bounds a dirty run
+ * at 2 s regardless. Keeping it cost other tabs' work. Durable state that must
+ * survive a hostile neighbour does not belong in the autosave slot at all; it
+ * belongs in a named profile (`./profiles.ts`), which is written only when a
+ * person presses a button.
  */
 
 import type { FolderApi } from 'tweakpane';
@@ -38,7 +42,7 @@ import type { PanelContainer } from './panel.ts';
 export interface Autosave {
   /** Mark dirty and start (or extend) the debounce. Safe to call at any rate. */
   schedule(): void;
-  /** Write now, if dirty. Used by explicit save buttons and the hide handlers. */
+  /** Write now, if dirty. Used by explicit save buttons and by `dispose`. */
   flush(): void;
   /** Flushes any pending write, then stops. Call when a panel is torn down. */
   dispose(): void;
@@ -54,22 +58,6 @@ export interface AutosaveOptions {
    * nothing a person could do between an edit and a reload falls through it.
    */
   maxWaitMs?: number;
-}
-
-const live = new Set<Autosave>();
-let listening = false;
-
-function flushAll(): void {
-  for (const a of live) a.flush();
-}
-
-function listen(): void {
-  if (listening || typeof window === 'undefined') return;
-  listening = true;
-  window.addEventListener('pagehide', flushAll);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flushAll();
-  });
 }
 
 export function createAutosave(write: () => void, options: AutosaveOptions = {}): Autosave {
@@ -109,12 +97,9 @@ export function createAutosave(write: () => void, options: AutosaveOptions = {})
       autosave.flush();
       disposed = true;
       clear();
-      live.delete(autosave);
     },
   };
 
-  live.add(autosave);
-  listen();
   return autosave;
 }
 
