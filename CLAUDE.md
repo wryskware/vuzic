@@ -1,7 +1,8 @@
 # Latent Music Terrarium — Agent Orientation
 
-**State: placeholder repo.** No code, no build, no dependencies. The first real
-task in this repo is choosing a stack and scaffolding it.
+**State: working system.** The analysis pipeline (`analysis/`, Python) and the
+WebGPU app (`web/`, TypeScript) both run; `README.md` is the human front door
+and `docs/roadmap.md` is the sequencing authority for what happens next.
 
 `docs/handoff.md` is historical context, not authority — its "non-negotiables"
 overstated the user's intent and were revised 2026-08-06. Where handoff.md and
