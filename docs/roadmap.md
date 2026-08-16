@@ -165,7 +165,14 @@ background thread.
    eventual "learn what good interaction matrices look like" model is a
    far-future consumer of this data — collect now, schedule never
    (until it earns itself).
-5. **README + dev instructions** (added 2026-08-15). Polished,
+5. **README + dev instructions** ✅ **Done** (`822c0fd`, 2026-08-15).
+   The root README is the human front door (run it, process your own
+   song, repo tour, dev commands); `analysis/README.md` already carried
+   the pipeline depth and the root now delegates to it, so no third doc
+   was needed. Flagged open by it: no LICENSE is chosen ("all rights
+   reserved" placeholder), and the default sim is still `physarum`
+   while plife is the product — both are publish-cut decisions.
+   Original framing: polished,
    human-first, no thesis: a stranger clones the repo, gets the web app
    running, processes their own song locally through the analysis
    pipeline / `terrarium-server`, and can find their way around well
