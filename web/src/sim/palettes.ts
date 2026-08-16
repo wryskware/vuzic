@@ -1,7 +1,7 @@
 /**
  * The curated palette catalog.
  *
- * Art direction, not machinery: nine starting points that are known to look good
+ * Art direction, not machinery: a menu of starting points known to look good
  * *in the sims*, chosen by loading them into physarum's trail field and plife's
  * particle splats rather than by admiring swatches. The two substrates stress a
  * palette in opposite directions — physarum accumulates and blooms, so it wants
@@ -21,6 +21,30 @@
  * change should not silently re-expose the scene or start a rotation nobody
  * asked for. `hueShiftDeg` *is* reset, so a loaded entry shows the hues it was
  * designed with.
+ *
+ * ## The second pass (2026-08-15)
+ *
+ * The nine original entries were invented. The eight added later are *adapted*,
+ * each from a named collection — cmocean, Okabe & Ito's CUD set, Paul Tol's
+ * schemes, MetBrewer, matplotlib — plus `origin`, recovered from the first
+ * commit that ran a simulation. Every one of them names its source in a comment,
+ * and every one of them was changed on the way in, always in the same two ways
+ * and always for the same reason:
+ *
+ * - **Lightness is flattened.** Scientific maps encode a scalar, so they ramp
+ *   lightness by design. Species are not a scalar. A species that is dark
+ *   because of its index is a species you cannot find, and against this
+ *   project's deep black point "dark" starts around HSLuv L 45.
+ * - **Members are dropped.** A qualitative set built for ink on white can afford
+ *   two hues 20° apart; plife draws them as dots a few pixels across and cannot.
+ *   Where a source offered six or eight, the widest-separated four were taken —
+ *   four, because that is plife's primary count and a four-colour entry gets its
+ *   accents from the group lift, which is the relationship the shipped palette
+ *   already has.
+ *
+ * Two entries deliberately keep an uneven lightness — `origin`, because that
+ * spread *is* what the first build looked like, and `viridis`, because the ramp
+ * is the entire content of that map. They are the exceptions and they say so.
  */
 import {
   GROUP_LIGHT_LIFT,
@@ -100,6 +124,30 @@ export const PALETTE_CATALOG: readonly PaletteCatalogEntry[] = [
     arc: { hueStartDeg: 175, hueRangeDeg: -85, sat: 95, light: 63 },
   },
   {
+    name: 'thermal arc',
+    note: 'violet through magenta and red to orange; cmocean thermal, as an arc',
+    mode: 'arc',
+    // Source: cmocean's `thermal` (Thyng et al. 2016, "True Colors of
+    // Oceanography"), a perceptually uniform sequential map that runs
+    // blue-violet → red → orange → yellow. Only its *hue path* is borrowed:
+    // cmocean ramps lightness along the map because it encodes a scalar, and
+    // species are not a scalar — a species that is dark because of its index is
+    // a species that disappears. So the path is flattened onto one HSLuv
+    // lightness and the range stops short of cmocean's pale yellow tail, which
+    // at equal L is indistinguishable from the orange before it.
+    arc: { hueStartDeg: 280, hueRangeDeg: 170, sat: 100, light: 66 },
+  },
+  {
+    name: 'haline arc',
+    note: 'deep blue through azure and teal to green; cmocean haline, as an arc',
+    mode: 'arc',
+    // Source: cmocean's `haline` (same paper), the salinity map. Runs the cold
+    // half of the wheel in the direction abyss arc does not, and reversed
+    // (negative range) so species 0 is the deep blue end rather than the green
+    // one — the same reason verdant arc is reversed.
+    arc: { hueStartDeg: 262, hueRangeDeg: -180, sat: 100, light: 64 },
+  },
+  {
     name: 'teal & coral',
     note: 'complementary pair, two hues of spread each — maximum species contrast',
     mode: 'custom',
@@ -159,6 +207,145 @@ export const PALETTE_CATALOG: readonly PaletteCatalogEntry[] = [
       [190, 100, 60],
       [272, 100, 56],
       [326, 100, 62],
+    ],
+  },
+  {
+    name: 'origin',
+    note: 'the four colours the first build shipped with — orange, magenta, cyan, violet',
+    mode: 'custom',
+    // Recovered from `11fe27d` ("web: WebGPU terrarium app (phases 2-7)"), the
+    // first commit with a running sim. The palette was the four `colorHex`
+    // fields on physarum's species TEMPLATES, authored as sRGB hex and keyed to
+    // the stems: bass `#ff7a1a`, drums `#ff2f6d`, vocals `#35d6ff`, other
+    // `#a56bff`. (Past K=4 that build walked the hue by 41° per cycle in *HSL*;
+    // physarum still does, via `defaultPaletteColor`. The walk is not
+    // reproduced here — the catalog's own convention, hue kept and lightness
+    // lifted per group, is what a v2 entry means by "the next four".)
+    //
+    // Converted to HSLuv and rounded to integers, which moves each colour by at
+    // most 2/255 in one channel (#ff7a1a → #ff7a23 is the worst of them). The
+    // one entry with no equal-lightness discipline at all, because it predates
+    // the idea: the cyan sits at L 80 and the magenta at 56, and that spread —
+    // a bright vocal line over a dark drum — is the look being recovered, not a
+    // defect to normalise away.
+    colors: [
+      [27, 100, 66],
+      [2, 100, 56],
+      [221, 100, 80],
+      [277, 100, 58],
+    ],
+  },
+  {
+    name: 'okabe–ito',
+    note: 'the colourblind-safe qualitative standard; every pair separable to every viewer',
+    mode: 'custom',
+    // Source: Okabe & Ito, "Color Universal Design" (2008) — the eight-colour
+    // qualitative set chosen so no pair collides under protan, deutan or tritan
+    // vision. Four of the eight are taken: orange `#E69F00`, sky blue
+    // `#56B4E9`, bluish green `#009E73`, reddish purple `#CC79A7`. The other
+    // four are black (useless on a black field) and three hues that fall
+    // between these — at K=4 the widest-spread four is the whole point.
+    //
+    // Their authored HSLuv lightnesses are 71 / 70 / 58 / 61: the set was
+    // designed for ink on white, so its darker members are the ones that lose
+    // to this project's black point. Flattened to a shared L 66 — the level the
+    // rest of the catalog's four-colour entries sit at, chosen so the +18 group
+    // lift lands the accents at 84 rather than washing them out near the 92 cap.
+    colors: [
+      [50, 100, 66],
+      [235, 80, 66],
+      [154, 100, 66],
+      [335, 55, 66],
+    ],
+  },
+  {
+    name: 'tol vibrant',
+    note: 'Paul Tol\'s vibrant scheme — blue, teal, orange, magenta at full chroma',
+    mode: 'custom',
+    // Source: Paul Tol, "Colour Schemes" (SRON technical note), the `vibrant`
+    // qualitative scheme. Four of its six: blue `#0077BB`, teal `#009988`,
+    // orange `#EE7733`, magenta `#EE3377` — the cyan and the red are dropped
+    // because each sits within ~20° of a neighbour here and plife's dots are
+    // small enough that 20° is not a difference.
+    //
+    // Two warm and two cool but interleaved cool/cool/warm/warm rather than
+    // alternating: in plife the first two indices are bass and drums, and
+    // giving the rhythm section the cold half is what makes the orange and
+    // magenta of vocals/other read as the melodic voices.
+    colors: [
+      [245, 100, 66],
+      [174, 100, 66],
+      [27, 88, 66],
+      [358, 85, 66],
+    ],
+  },
+  {
+    name: 'egypt',
+    note: 'vermillion, lapis, malachite, amber — four pigments, maximum mutual distance',
+    mode: 'custom',
+    // Source: MetBrewer's `Egypt` (Blake Robert Mills), taken from an Egyptian
+    // painted panel in the Met's collection. Natively four colours — `#DD5129`,
+    // `#0F7BA2`, `#43B284`, `#FAB255` — which is exactly plife's primary count,
+    // so nothing is dropped and nothing is invented.
+    //
+    // Their HSLuv lightnesses run 53 / 48 / 66 / 78; flattened to 64 so the
+    // lapis stops being the species you cannot find. The hues (19 / 232 / 150 /
+    // 48) are within 4° of the source and are the reason this reads as pigment
+    // rather than as a hue wheel: nothing is on a cardinal.
+    colors: [
+      [19, 88, 64],
+      [232, 98, 64],
+      [150, 83, 64],
+      [48, 89, 64],
+    ],
+  },
+  {
+    name: 'lakota',
+    note: 'cyan, gold, crimson, deep green — high chroma, four quadrants of the wheel',
+    mode: 'custom',
+    // Source: MetBrewer's `Lakota` (Blake Robert Mills), from Lakota beadwork.
+    // Four of its six: `#04A3BD`, `#F0BE3D`, `#931E18`, `#247D3F`; the orange
+    // and the near-black navy are dropped, the first for sitting between the
+    // gold and the crimson and the second for being L 17.
+    //
+    // The crimson is the adaptation that matters: at its authored L 32 it is a
+    // hole in a plife field. At the shared L 66 it is no longer crimson so much
+    // as a hot red, and the set survives because the *spacing* — 216 / 61 / 13
+    // / 135, four hues that are nearly a quadrant apart each — is what was
+    // worth taking from beadwork in the first place.
+    //
+    // The gold is the one member kept off the shared L 66, at 78. HSLuv's yellow
+    // runs out of chroma as lightness falls, so a hue-61 gold at 66 is an olive
+    // and the source's `#F0BE3D` is simply not in the set any more. 'violet +
+    // gold' makes the same exception for the same colour and the same reason.
+    colors: [
+      [216, 100, 66],
+      [61, 95, 78],
+      [13, 90, 66],
+      [135, 87, 66],
+    ],
+  },
+  {
+    name: 'viridis',
+    note: 'purple → blue → teal → green, brightening as it goes; a ladder, not a ring',
+    mode: 'custom',
+    // Source: matplotlib's `viridis` (Smith & van der Walt, 2015), the
+    // perceptually uniform default. The second entry after 'steel + signal' to
+    // break the equal-lightness rule, and for the opposite reason: viridis *is*
+    // its lightness ramp, so flattening it would leave four hues that are
+    // merely adjacent. Sampled at four even stops of the map, then the floor
+    // lifted (L 27 → 46, where the grade's black point stops swallowing it) and
+    // the ceiling pulled down (L 91 → 84, so the accents' +18 lift has somewhere
+    // to go before the 92 cap).
+    //
+    // In plife this reads as depth rather than as four voices: bass sits low and
+    // violet, and each species up the stack is lighter and greener. Judge it
+    // against 'steel + signal', which does the same trick inside one hue.
+    colors: [
+      [273, 58, 46],
+      [212, 89, 58],
+      [135, 81, 70],
+      [77, 97, 84],
     ],
   },
 ];
