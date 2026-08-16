@@ -80,6 +80,17 @@ import {
   serializeModulation,
 } from '../mapping/persist';
 import {
+  countFavorites,
+  deleteFavorite,
+  exportFavoritesJsonl,
+  favoriteRecipeText,
+  importFavoritesJsonl,
+  listFavorites,
+  readFavorite,
+  recordFavorite,
+  type FavoriteVerdict,
+} from './favorites';
+import {
   deleteProfile,
   listProfiles,
   normalizeProfileName,
@@ -153,6 +164,9 @@ interface UiState {
   profileName: string;
   profileSelected: string;
   profileStatus: string;
+  favStatus: string;
+  favInfo: string;
+  favSelected: string;
   snapshotInfo: string;
   logInfo: string;
 }
@@ -250,6 +264,9 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
     profileName: '',
     profileSelected: '',
     profileStatus: '—',
+    favStatus: '—',
+    favInfo: '0 favorites',
+    favSelected: '',
     snapshotInfo: 'none',
     logInfo: '0 entries',
   };
@@ -403,6 +420,55 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
     host.onConfigReplaced?.();
     pane.refresh();
   });
+
+  // ── play · the verdict pair (roadmap phase 2 item 4) ───────────────────────
+  //
+  // Here, and not on the data tab, because the loop these belong to is the one
+  // written at the top of this file: *reroll → watch → judge*. The reroll button
+  // is two rows up; a verdict you have to change tabs to record is a verdict that
+  // does not get recorded, and the tuning log's keep/discard buttons over on data
+  // are the standing demonstration of that. The pool's *management* — the count,
+  // the return path, the files — is genuinely data-tab work and lives there.
+  //
+  // One click, no dialog, no name: the whole value of the feature is that it is
+  // cheaper to press than to think about. See `./favorites.ts` for what a press
+  // stores and why a like is fat and a dislike is thin.
+  let rebuildFavPicker: (() => void) | null = null;
+  const judge = (verdict: FavoriteVerdict): void => {
+    refreshExtras();
+    const recipe = host.captureProfile();
+    // The generation block as it stood at the press, read off the capture rather
+    // than off `sim` — `ModTarget` is substrate-agnostic and has no `matrixGen`,
+    // and a sim without one honestly stores null.
+    const raw = (recipe.simulation as Record<string, unknown>)['matrixGen'];
+    const gen =
+      raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+        ? (JSON.parse(JSON.stringify(raw)) as Record<string, unknown>)
+        : null;
+    const result = recordFavorite({
+      verdict,
+      sim: recipe.sim,
+      seed: recipe.seed,
+      seedPinned: recipe.seedPinned,
+      speciesCount: sim.config.speciesCount,
+      gen,
+      track: host.trackId,
+      time: host.time(),
+      // A dislike carries no state on purpose; the module note says why.
+      ...(verdict === 'like' ? { recipe } : {}),
+    });
+    ui.favStatus = result.message;
+    // The tuning log gets the same act with θ attached. The two records answer
+    // different questions — this one is "which seed", that one is "which θ" —
+    // and one button press is honestly both.
+    record(verdict === 'like' ? 'keep' : 'discard', 'favorite');
+    refreshFavorites();
+    rebuildFavPicker?.();
+    pane.refresh();
+  };
+  world.addBinding(ui, 'favStatus', { readonly: true, label: '' });
+  world.addButton({ title: '👍 like this world' }).on('click', () => judge('like'));
+  world.addButton({ title: '👎 dislike this world' }).on('click', () => judge('dislike'));
 
   // ── map · the driver bank (Revision 4) ─────────────────────────────────────
   // Two widgets per driver: a meter you read and a gain you turn. The meter is
@@ -736,6 +802,89 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
     });
   });
 
+  // ── data · seed favorites (the pool) ───────────────────────────────────────
+  //
+  // The other half of the verdict pair up on the play tab. Everything here is
+  // slow, deliberate work — pick a remembered world and go back to it, or move
+  // the pool through a file — which is what the data tab is for.
+  const favorites = mounts.data.addFolder({ title: 'seed favorites (👍 / 👎 pool)', expanded: false });
+  favorites.addBinding(ui, 'favInfo', { readonly: true, label: '' });
+
+  /** Likes only: a dislike stores no state, so there is nothing to return to. */
+  let favPicker: ReturnType<typeof favorites.addBinding> | null = null;
+  const favLabel = (fav: { seed: number; at: string; track: string }): string =>
+    `seed ${fav.seed} · ${fav.track} · ${fav.at.slice(0, 16).replace('T', ' ')}`;
+  rebuildFavPicker = (): void => {
+    // Newest first: the world you want back is almost always the last one you
+    // liked, and this folder is otherwise a growing list you have to scroll.
+    const likes = listFavorites(sim.simId)
+      .filter((f) => f.verdict === 'like' && f.recipe !== undefined)
+      .reverse();
+    if (!likes.some((f) => f.id === ui.favSelected)) ui.favSelected = likes[0]?.id ?? '';
+    favPicker?.dispose();
+    favPicker = favorites.addBinding(ui, 'favSelected', {
+      index: 1,
+      label: 'liked',
+      options: likes.length
+        ? Object.fromEntries(likes.map((f) => [favLabel(f), f.id]))
+        : { '(none liked yet)': '' },
+    });
+  };
+  rebuildFavPicker();
+
+  favorites.addButton({ title: 'return to this world (reloads)' }).on('click', () => {
+    const fav = ui.favSelected === '' ? null : readFavorite(ui.favSelected);
+    const text = fav === null ? null : favoriteRecipeText(fav);
+    if (text === null) {
+      ui.favStatus = 'nothing to return to';
+      pane.refresh();
+      return;
+    }
+    // The profile library's staging slot, verbatim. A favorite is a recipe and a
+    // reload is already the one apply path in the app; a second one would be a
+    // second construction order to keep correct.
+    const failure = requestProfileApply(text);
+    if (failure !== null) {
+      ui.favStatus = failure;
+      pane.refresh();
+      return;
+    }
+    location.reload();
+  });
+
+  favorites.addButton({ title: 'forget this favorite' }).on('click', () => {
+    if (ui.favSelected === '') {
+      ui.favStatus = 'nothing selected';
+      pane.refresh();
+      return;
+    }
+    deleteFavorite(ui.favSelected);
+    ui.favStatus = 'forgotten';
+    refreshFavorites();
+    rebuildFavPicker?.();
+    pane.refresh();
+  });
+
+  // Not a convenience, for the reason stated over the profile pair: localStorage
+  // is per origin and "clear site data" takes the pool with it. This one is also
+  // the format the eventual model reads, so the export is the deliverable and not
+  // just the backup.
+  favorites.addButton({ title: 'export .jsonl (all sims)' }).on('click', () => {
+    downloadText('seed-favorites.jsonl', exportFavoritesJsonl(), 'application/x-ndjson');
+    ui.favStatus = 'exported';
+    pane.refresh();
+  });
+  favorites.addButton({ title: 'import .jsonl…' }).on('click', () => {
+    void pickTextFile().then((text) => {
+      if (text === null) return;
+      const merged = importFavoritesJsonl(text);
+      ui.favStatus = `imported ${merged.added}${merged.skipped > 0 ? ` · skipped ${merged.skipped}` : ''}`;
+      refreshFavorites();
+      rebuildFavPicker?.();
+      pane.refresh();
+    });
+  });
+
   // ── data · A/B ─────────────────────────────────────────────────────────────
   const ab = mounts.data.addFolder({ title: 'A/B  ·  sim state snapshot', expanded: false });
   ab.addBinding(ui, 'snapshotInfo', { readonly: true, label: '' });
@@ -788,7 +937,16 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
   function refreshLog(): void {
     ui.logInfo = `${log.size} entries`;
   }
+  /**
+   * Counted, not listed: `countFavorites` walks keys and parses nothing, and a
+   * like carries a whole recipe. Parsing the pool to print one number would make
+   * this the most expensive line in the panel.
+   */
+  function refreshFavorites(): void {
+    ui.favInfo = `${countFavorites()} favorites (all sims)`;
+  }
   refreshLog();
+  refreshFavorites();
   pullFromConfig();
 
   return {
@@ -866,6 +1024,7 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
       boundary.dispose();
       follow.dispose();
       file.dispose();
+      favorites.dispose();
       ab.dispose();
       logFolder.dispose();
     },
