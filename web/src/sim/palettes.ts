@@ -24,7 +24,7 @@
  *
  * ## The second pass (2026-08-15)
  *
- * The nine original entries were invented. The eight added later are *adapted*,
+ * The nine original entries were invented. The six added later are *adapted*,
  * each from a named collection — cmocean, Okabe & Ito's CUD set, Paul Tol's
  * schemes, MetBrewer, matplotlib — plus `origin`, recovered from the first
  * commit that ran a simulation. Every one of them names its source in a comment,
@@ -45,6 +45,15 @@
  * Two entries deliberately keep an uneven lightness — `origin`, because that
  * spread *is* what the first build looked like, and `viridis`, because the ramp
  * is the entire content of that map. They are the exceptions and they say so.
+ *
+ * Two candidates were tried in plife and dropped, and are recorded because a
+ * rejection is the more useful half of a curation pass: cmocean's `haline` (see
+ * the note where it would have sat) and Paul Tol's `light` pastel scheme. The
+ * pastels failed for a reason that generalises — at HSLuv L 72 and S ~60, bloom
+ * and the grade carry every species most of the way to white, so a set chosen
+ * for being gentle on paper arrives here as cream and pale blue. Nothing in this
+ * catalog can be quiet by being pale; the quiet entries are quiet by being
+ * *narrow* (`verdant arc`) or *monochrome* (`steel + signal`).
  */
 import {
   GROUP_LIGHT_LIFT,
@@ -137,16 +146,14 @@ export const PALETTE_CATALOG: readonly PaletteCatalogEntry[] = [
     // at equal L is indistinguishable from the orange before it.
     arc: { hueStartDeg: 280, hueRangeDeg: 170, sat: 100, light: 66 },
   },
-  {
-    name: 'haline arc',
-    note: 'deep blue through azure and teal to green; cmocean haline, as an arc',
-    mode: 'arc',
-    // Source: cmocean's `haline` (same paper), the salinity map. Runs the cold
-    // half of the wheel in the direction abyss arc does not, and reversed
-    // (negative range) so species 0 is the deep blue end rather than the green
-    // one — the same reason verdant arc is reversed.
-    arc: { hueStartDeg: 262, hueRangeDeg: -180, sat: 100, light: 64 },
-  },
+  // cmocean's `haline` was tried here as its cold counterpart (262° → 82°, the
+  // salinity map's own sweep) and rejected in plife on 2026-08-15. Four species
+  // over a ~180° cold arc puts two of them in the cyan–teal band, where HSLuv
+  // hue discriminability is at its worst: species 1 and 2 came out #00aac6 and
+  // #00af99 and read as one colour at dot size. Widening the sweep to 215° fixed
+  // the collapse and cost the entry its reason to exist — it lands on 'verdant
+  // arc' with a blue on the front. Kept as a note so the next person does not
+  // re-derive it.
   {
     name: 'teal & coral',
     note: 'complementary pair, two hues of spread each — maximum species contrast',
@@ -369,17 +376,23 @@ export function applyPaletteEntry(
 ): void {
   palette.mode = entry.mode;
   palette.space = entry.space ?? 'hsluv';
-  if (entry.arc) palette.arc = { ...entry.arc };
+  // `Object.assign` and not `palette.arc = {...}`, for the same reason `colors`
+  // is spliced rather than reassigned two blocks down, and it is the same bug
+  // one field over: the panel's four arc sliders are bound to *this object* by
+  // reference (`addArcControls(folder, p.arc)`), so replacing it left every
+  // slider editing a detached copy. The symptom was silent and specific —
+  // load any arc entry, then drag the arc knobs and nothing happens, while the
+  // widgets still read whatever they read before the load.
+  if (entry.arc) Object.assign(palette.arc, entry.arc);
   // An arc entry that does not name an accent arc gets its primaries' arc
   // lifted in lightness, which is the relationship the shipped plife palette
   // already has (+13..+21 HSLuv L at the same hue family). An entry that *does*
   // name one is making a deliberate second-family choice and is left alone.
-  if (entry.accentArc) palette.accentArc = { ...entry.accentArc };
+  if (entry.accentArc) Object.assign(palette.accentArc, entry.accentArc);
   else if (entry.arc) {
-    palette.accentArc = {
-      ...entry.arc,
+    Object.assign(palette.accentArc, entry.arc, {
       light: Math.min(entry.arc.light + GROUP_LIGHT_LIFT, GROUP_LIGHT_MAX),
-    };
+    });
   }
   if (entry.mode === 'custom' && entry.colors && entry.colors.length > 0) {
     const source = entry.colors;

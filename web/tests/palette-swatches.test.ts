@@ -60,6 +60,34 @@ test('every catalog entry previews the colours plife is about to draw', () => {
   }
 });
 
+test('a catalog load edits the arcs in place, so the sliders stay connected', () => {
+  // The panel binds its four arc sliders to `palette.arc` itself
+  // (`addArcControls(folder, p.arc)`), which is why `applyPaletteEntry` may not
+  // hand the palette a fresh object. It used to, and the failure was invisible:
+  // the sliders went on editing a detached copy, so after loading any arc entry
+  // the arc knobs did nothing at all.
+  for (const entry of PALETTE_CATALOG) {
+    const palette = defaultPlifePalette(8);
+    const arc = palette.arc;
+    const accentArc = palette.accentArc;
+    applyPaletteEntry(palette, entry, 8, PRIMARY_COUNT);
+    assert.equal(palette.arc, arc, `${entry.name} replaced the primaries' arc`);
+    assert.equal(palette.accentArc, accentArc, `${entry.name} replaced the accents' arc`);
+    if (entry.arc) assert.deepEqual({ ...palette.arc }, { ...entry.arc }, entry.name);
+  }
+
+  // And the point of it: a slider write reaches the render path.
+  const palette = defaultPlifePalette(8);
+  const bound = palette.arc;
+  applyPaletteEntry(palette, PALETTE_CATALOG.find((e) => e.mode === 'arc')!, 8, PRIMARY_COUNT);
+  bound.hueStartDeg = 200;
+  assertMatches(palette, 8, PRIMARY_COUNT, 'after a slider write following a load');
+  assert.notDeepEqual(
+    rendered(palette, 8, PRIMARY_COUNT)[0],
+    rendered({ ...palette, arc: { ...bound, hueStartDeg: 0 } }, 8, PRIMARY_COUNT)[0],
+  );
+});
+
 test('the preview follows the arc knobs, in every colour space', () => {
   for (const space of ['hsl', 'hsluv', 'oklch'] as const) {
     const palette: Palette = {
