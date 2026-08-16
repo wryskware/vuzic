@@ -159,7 +159,29 @@ background thread.
    when adjusting the palette in arc mode. Sequenced after the
    brightness work — curating palettes against a moving brightness
    model is wasted work.
-4. **Seed favorites v0.** Like/dislike buttons in the workbench that
+4. **Seed favorites v0.** ✅ **Done** (`bbb22c7`..`d3e5206`).
+   `web/src/ui/favorites.ts` is a library like `profiles.ts`, not a config
+   block: one localStorage key per verdict (`lmt.fav.v1.<id>`, id sorts
+   chronologically), never an index blob. 👍/👎 sit in the *world seed*
+   folder, one row under the reroll button, because the loop is reroll →
+   watch → judge; the pool's management (count, likes picker,
+   return-to-world, JSONL export/import) is on the data tab.
+
+   The one design decision worth carrying forward: **a like stores a whole
+   `ExportRecipe` and a dislike stores none.** A like has to be
+   *returnable*, and only whole state returns you to a world (the profiles
+   argument, verbatim) — it goes back through `requestProfileApply`, so
+   there is still exactly one apply path in the app. A dislike is never
+   returned to and is the *common* verdict by construction, and the
+   measured sizes are 14.4 kB against 367 B in a 5 MB origin budget shared
+   with the profiles and the track cache. Both verdicts carry identical
+   *model* context — seed, `matrixGen`, `speciesCount`, track, time —
+   because `seedMatrixBase` is a pure function of those, so the matrix is
+   re-derivable and storing it would be `explore/log.ts`'s rejected trade
+   (8× the bytes for 0× the information). A like that will not fit drops
+   its recipe and keeps the verdict.
+
+   Original framing: like/dislike buttons in the workbench that
    persist seed + context. Deliberately sequenced late so the parameter
    space is mostly settled and the collected data stays meaningful. The
    eventual "learn what good interaction matrices look like" model is a
