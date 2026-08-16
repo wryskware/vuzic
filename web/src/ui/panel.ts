@@ -61,6 +61,18 @@ export interface PanelContainer {
   addFolder(params: Parameters<FolderApi['addFolder']>[0]): PanelContainer;
   addBinding: FolderApi['addBinding'];
   addButton: FolderApi['addButton'];
+  /**
+   * The container's own DOM node — the one concession to "no private surface".
+   *
+   * Tweakpane has no swatch-row widget and no way to make one without writing a
+   * plugin, so the palette folder's per-species colour preview
+   * (`palette-folder.ts`) is a plain `<div>` mounted into the folder's content
+   * element. Reading a node is not reaching past the seam the way calling a
+   * folder's internals would be: nothing here writes tweakpane's own DOM, and a
+   * builder that appends its own child cannot desynchronise a widget it does
+   * not touch.
+   */
+  element: FolderApi['element'];
   /** Panels tear their own folders down on a sim swap. */
   dispose: FolderApi['dispose'];
 }
