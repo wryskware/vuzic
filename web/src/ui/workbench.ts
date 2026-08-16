@@ -452,7 +452,11 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
       seedPinned: recipe.seedPinned,
       speciesCount: sim.config.speciesCount,
       gen,
-      track: host.trackId,
+      // The catalog id off the capture, NOT `host.trackId` — that one is the
+      // timeline manifest's, which is a human title ("Free Fall (Remastered)")
+      // and is fine on a download filename and wrong as a key a loader groups
+      // by. The recipe's is the validated identifier (`free-fall`).
+      track: recipe.track.id,
       time: host.time(),
       // A dislike carries no state on purpose; the module note says why.
       ...(verdict === 'like' ? { recipe } : {}),
