@@ -1,0 +1,8 @@
+# Lore repo-side configuration (lore D-0012). Committed; follows the repo.
+[authority]
+profile = "lore-v1"
+# Default when absent is "annotate"; this repo opts into authority-aware
+# ranking to match the other dogfood repos. There is no 0_Canon ledger here
+# yet and no document declares `design_status`, so the two behaviors are
+# currently indistinguishable — this is the setting for when that changes.
+behavior = "rank"
