@@ -78,6 +78,17 @@ Then start the web dev server as above. The browser probes
 `127.0.0.1:8765` once at startup; everything works without the server, it
 just does more with it.
 
+Or start both at once from the repo root, which is what `dev.ps1` is for:
+
+```powershell
+./dev.ps1                  # server, then vite once the port answers
+./dev.ps1 -NoServer        # web only
+./dev.ps1 -- -v            # extra args go to terrarium-server
+```
+
+It holds vite back until the server is listening (the browser only probes
+once, and the models take a while to load), and Ctrl-C stops both.
+
 ### The manual way: the CLI
 
 Same install as above (the `server` extra is optional here), then:
