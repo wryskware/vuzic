@@ -14,7 +14,9 @@
  * so a widget that does not say it changed something changes nothing on screen.
  */
 import {
+  FALLBACK_COLOR,
   harmonizePalette,
+  paletteHex,
   syncPaletteColors,
   MAX_HUE_RATE_DEG_PER_SEC,
   PALETTE_SPACES,
@@ -51,6 +53,38 @@ const SPACE_LABELS: Record<PaletteSpace, string> = {
   oklch: 'oklch — even chroma, gamut-mapped',
 };
 
+/**
+ * Every species' colour as the palette currently resolves it — what the preview
+ * swatches show, and the one function a test can check them against.
+ *
+ * Two things are deliberately *not* folded in, and both are the same judgement:
+ * a swatch row is for reading the palette's internal relationships, not for
+ * predicting a pixel.
+ *
+ * - **`hueRateDegPerSec`.** The effective shift is a function of the sim clock
+ *   (`paletteHuePhase`), so including it would mean polling — and this folder is
+ *   built on the rule that nothing polls. `hueShiftDeg`, the authored base, *is*
+ *   included, because it is a slider in this folder and a slider whose swatches
+ *   do not move is a slider that looks broken.
+ * - **`saturation` / `brightness`.** Those are the linear-space trims: one
+ *   global desaturation and one global exposure, applied to the whole image
+ *   after the colour is chosen, and then re-exposed again by the grade. Folding
+ *   them in would darken or grey every swatch by the same amount, which changes
+ *   nothing about which species you can tell apart and costs the row its only
+ *   job.
+ */
+export function paletteSwatchHexes(
+  palette: Palette,
+  speciesCount: number,
+  groupSize = speciesCount,
+): string[] {
+  const k = Math.max(1, speciesCount);
+  const size = Math.max(1, Math.min(groupSize, k));
+  return Array.from({ length: k }, (_, i) =>
+    paletteHex(palette, i, FALLBACK_COLOR, palette.hueShiftDeg, k, size),
+  );
+}
+
 /** Returns the panel's refresh hook: pulls proxy state and visibility back in. */
 export function addPaletteFolder(
   container: PersistedContainer,
@@ -76,6 +110,11 @@ export function addPaletteFolder(
   root.on('change', () => {
     if (refreshing) return;
     host.invalidate();
+    // Every widget in the folder can move a resolved colour — the arc knobs
+    // through `arcChanged`, but also the hue shift, the colour space and the
+    // pickers — so the preview is repainted from the one place that sees all of
+    // them rather than from each of them. It is K style writes; nothing polls.
+    syncSwatches();
   });
 
   // ── catalog ────────────────────────────────────────────────────────────────
@@ -181,6 +220,45 @@ export function addPaletteFolder(
     addArcControls(accentFolder, p.accentArc);
   }
 
+  // ── the preview row ────────────────────────────────────────────────────────
+  // K swatches of each species' resolved colour, live under the arc knobs.
+  //
+  // It lives *inside* the arc folder, which is the whole trick: arc mode is the
+  // mode where the colours are computed rather than typed, so it is the only
+  // mode with no colour pickers to look at — and `refresh()` already hides that
+  // folder in custom mode, where the pickers are the preview. Nothing extra has
+  // to remember to hide this.
+  //
+  // A hand-built `<div>` because tweakpane has no swatch-row widget; see
+  // `PanelContainer.element`. It mounts into the folder's *content* element so
+  // it collapses with the folder rather than hanging below a closed one.
+  const arcContent =
+    arcFolder.element.querySelector<HTMLElement>(':scope > .tp-fldv_c') ?? arcFolder.element;
+  const swatchRow = document.createElement('div');
+  swatchRow.style.cssText = 'display:flex;gap:2px;padding:6px 4px 2px;';
+  const swatches = Array.from({ length: k }, (_, i) => {
+    const cell = document.createElement('div');
+    cell.style.cssText = 'flex:1 1 0;min-width:4px;height:14px;border-radius:2px;';
+    // The one gap in the row is the group boundary, so plife's four accents read
+    // as a second family at a glance instead of as species 4..7 of one row. On a
+    // substrate with no accents (`groupSize === k`) there is no boundary and the
+    // row is uninterrupted.
+    if (hasAccents && i === groupSize) cell.style.marginLeft = '10px';
+    swatchRow.appendChild(cell);
+    return cell;
+  });
+  arcContent.appendChild(swatchRow);
+
+  function syncSwatches(): void {
+    const hexes = paletteSwatchHexes(p, k, groupSize);
+    swatches.forEach((cell, i) => {
+      const hex = hexes[i] ?? FALLBACK_COLOR;
+      cell.style.background = hex;
+      const name = host.speciesName(i);
+      cell.title = `${i}${name ? ` ${name}` : ''} — ${hex}`;
+    });
+  }
+
   // ── custom ─────────────────────────────────────────────────────────────────
   const customFolder = root.addFolder({ title: 'colours', expanded: true });
   const colorProxy: Record<string, string> = {};
@@ -243,6 +321,10 @@ export function addPaletteFolder(
    */
   function refresh(): void {
     syncColorProxy();
+    // Not covered by the `change` handler: a catalog load, a mode switch and the
+    // host's own refresh all come through here, and the first two are exactly
+    // when the preview is most wrong if it is not repainted.
+    syncSwatches();
     // Only one of the two authorities is ever live, and showing the other is how
     // you end up editing hexes that the arc overwrites on its next change.
     arcFolder.hidden = p.mode !== 'arc';
