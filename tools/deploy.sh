@@ -57,4 +57,4 @@ id=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION" \
   --paths '/*' --query 'Invalidation.Id' --output text)
 
 echo "deploy: uploaded; invalidation $id"
-echo "deploy: https://dwjp9zs5pyebf.cloudfront.net/"
+echo "deploy: https://dreams.wryskware.dev/"

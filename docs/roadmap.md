@@ -267,21 +267,26 @@ background thread.
    rather than being a constant in four places.
 
    Net: `web/dist` 519 MB → 27 MB.
-10. **Static deploy.** 🟡 **Infrastructure live, demo shape outstanding.**
+10. **Static deploy.** ✅ **Done** — live at `dreams.wryskware.dev`.
    Standing up (2026-08-19): private S3 bucket `wryskware-terrarium-site`
    behind CloudFront distribution `E2ISYNUAG82OYT` with origin access
    control — no public bucket, no website endpoint — served at
-   `https://dwjp9zs5pyebf.cloudfront.net/`. `tools/deploy.sh` builds the
+   `https://dreams.wryskware.dev/`. `tools/deploy.sh` builds the
    publish cut and pushes it in three cache classes, content-first and
    document-last, then invalidates. `DEFAULT_SIM` is now `plife`.
 
-   Deliberately **no custom domain yet**: the subdomain is undecided
-   (`dreams.wryskware.dev` versus a `vuzic.app` one), and a distribution
-   serves its own name meanwhile, so the choice was never a blocker.
-   Worth knowing when deciding: `vuzic.app` already has a Route 53 hosted
-   zone and needs no registrar work, while `wryskware.dev` is registered
-   at Spaceship on their parking nameservers and needs an NS change there.
-   Attaching either is a cert in us-east-1, an alias, and an alias record.
+   **The domain is `dreams.wryskware.dev`** (user's choice, 2026-08-19).
+   Hosted zone `Z1014033376GTUZEXE6AE`, delegated from Spaceship; an ACM
+   cert in us-east-1 validated by DNS, attached to the distribution with
+   TLS 1.2 as the floor; A and AAAA aliases at the subdomain. The
+   `cloudfront.net` name still works and is what `--no-build` deploys
+   verify against when DNS is in doubt.
+
+   The apex also carries Spaceship's email-forwarding records (SPF TXT and
+   two MX at preference 0). Note for whoever edits them next: Route 53
+   models both MX entries as **one record set with two values** — creating
+   them as two sets is rejected, which does not match how the provider's
+   own instructions describe them.
 
    **The demo shape** landed with it (`00a0e3f`). `DEMO_BUILD`
    (`web/src/runtime/demo.ts`) is set only by `build:publish`, and is
