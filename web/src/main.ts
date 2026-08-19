@@ -33,6 +33,7 @@ import {
   profileOutput,
   PROFILE_RENDERER_BUILD,
 } from './ui/profiles';
+import { consumeBootPreset } from './ui/presets';
 import type { ExportRecipe } from './runtime/recipe';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
 import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
@@ -224,22 +225,47 @@ function sameTheta(a: Float64Array, b: Float64Array): boolean {
 
 async function main(): Promise<void> {
   /**
-   * A profile the workbench staged before reloading (`ui/profiles.ts`).
+   * The authored state this boot starts from, if it did not start from the
+   * autosave: a preset string (staged by the workbench, or carried in a `#p=`
+   * fragment — `ui/presets.ts`) or a saved profile (`ui/profiles.ts`).
    *
-   * Read first, because it decides three things every construction below is
-   * built from: which substrate, which seed, and which authored state. It is
-   * deleted by the read whatever happens next, so a profile that fails to parse
-   * costs one boot rather than making the app impossible to start.
+   * Read first, because between them they decide four things every construction
+   * below is built from: which substrate, which seed, which authored state,
+   * and — presets only — which track. **Both channels are consumed
+   * unconditionally, and only then does one of them win**: a slot left behind by
+   * its own failed apply would re-apply on every reload, which turns one bad
+   * string into an app that cannot be started without devtools.
+   *
+   * A preset outranks a profile because a preset is only ever armed one action
+   * before the reload that reads it, and the two can only be set at once by a
+   * session that pressed both buttons in the same instant.
    */
-  let profile = consumePendingProfile();
+  const boot = await consumeBootPreset();
+  if (boot.error !== null) console.warn(`preset: ignoring an unusable preset — ${boot.error}`);
+  const staged = consumePendingProfile();
+  let profile = boot.preset?.recipe ?? staged;
+  /**
+   * Advisory, and only a preset has one. A profile carries a real track id too,
+   * but loading a profile has never switched tracks, and quietly changing that
+   * here would be a second feature riding in on this one.
+   */
+  let trackHint = boot.preset?.plan.trackHint ?? null;
   if (profile && !SIMS.includes(profile.sim)) {
-    // A profile for a substrate this build does not have. Dropping it whole is
+    // Saved state for a substrate this build does not have. Dropping it whole is
     // the only coherent answer: its simulation config, θ and palette are all
-    // that sim's, so there is nothing left to partially honour.
-    console.warn(`profile: ignoring a profile for unknown sim "${profile.sim}"`);
+    // that sim's, so there is nothing left to partially honour — including its
+    // track, which was chosen to go with a look that is not being applied.
+    console.warn(`profile: ignoring saved state for unknown sim "${profile.sim}"`);
     profile = null;
+    trackHint = null;
   }
-  if (profile) console.info(`profile: applying a saved ${profile.sim} profile`);
+  if (profile) {
+    console.info(
+      boot.preset !== null
+        ? `preset: applying a ${boot.preset.source} preset for ${profile.sim}`
+        : `profile: applying a saved ${profile.sim} profile`,
+    );
+  }
 
   // A profile always replays its own seed — a particle-life matrix is generated
   // from it, so the same seed *is* half of "the look I saved". Its pin state is
@@ -273,7 +299,14 @@ async function main(): Promise<void> {
       base: `${import.meta.env.BASE_URL}timelines/${id}`,
     };
 
-  let entry = pick(requestedTrack());
+  // A preset's track is a *hint*: the music never travels with the look, so a
+  // preset made against a track this origin does not have still applies — it
+  // just applies to whatever is playing, and says so.
+  if (trackHint !== null && !catalog.tracks.some((t) => t.id === trackHint)) {
+    console.info(`preset: no local track "${trackHint}"; keeping the current one`);
+    trackHint = null;
+  }
+  let entry = pick(trackHint ?? requestedTrack());
   let track = entry.id;
   let timeline;
   try {
