@@ -222,15 +222,54 @@ background thread.
    Its gates (palette v2, recipe v5) are merged and save profiles v0
    landed the apply path it reuses. Shareable links are arguably *the*
    friends-and-family feature. Brief: `docs/handoffs/preset-strings-v1.md`.
-9. **Track publish allowlist.** Catalog entries are default-private; the
-   demo build ships only tracks explicitly marked publishable. Allowlist,
-   not blacklist — a track under test can never leak by omission. (All
-   current music is rights-cleared; the gate is belt-and-suspenders.)
-10. **Static deploy.** S3 bucket (AWS account exists, CLI authenticated);
-   DNS pointing to AWS handled when we get there — not a blocker to
-   build against. Demo shape: static only, no terrarium-server, no
-   uploads, no export UI. Plife front and center; physarum/vizfx still
-   reachable via `?sim=` but unadvertised; workbench included.
+9. **Track publish allowlist.** ✅ **Done** (`796e8cb`, 2026-08-19).
+   `data/publish.json` names the five tracks the demo ships, read only by
+   `sync-data --publish`; the fallback (`synthetic`) always ships because
+   `main.ts` falls back to it. Chosen by the user: bug-fix-rush,
+   drifting-slow-remastered, free-fall, lost-in-space-1-3, pink-loop.
+
+   The same commit closes a **second, unwritten leak of the same shape**,
+   one level down. `sync-data` copied every file in a timeline directory
+   except a *skip list* naming `embedding.*` and `plots/` — a blacklist,
+   which is exactly what item 9 forbids for tracks and nobody had applied
+   to files. `bug-fix-rush` was therefore shipping 116 MB of demucs stems
+   (`demix/`) and 20 MB of spectrograms (`spec/`). It is now a wanted-list
+   of the files the browser actually reads.
+
+   And a **third gate nobody had written down at all: audio format.** A
+   track's `audio.wav` is 30–52 MB, which is unremarkable over localhost
+   and indefensible over CloudFront. Bundled audio is transcoded to 160k
+   AAC in MP4 (what `decodeAudioData` supports without qualification;
+   Opus would save more bytes and cost Safari). `terrarium-server` still
+   serves its own `audio.wav`, so the name rides `TrackEntry.audioFile`
+   rather than being a constant in four places.
+
+   Net: `web/dist` 519 MB → 27 MB.
+10. **Static deploy.** 🟡 **Infrastructure live, demo shape outstanding.**
+   Standing up (2026-08-19): private S3 bucket `wryskware-terrarium-site`
+   behind CloudFront distribution `E2ISYNUAG82OYT` with origin access
+   control — no public bucket, no website endpoint — served at
+   `https://dwjp9zs5pyebf.cloudfront.net/`. `tools/deploy.sh` builds the
+   publish cut and pushes it in three cache classes, content-first and
+   document-last, then invalidates. `DEFAULT_SIM` is now `plife`.
+
+   Deliberately **no custom domain yet**: the subdomain is undecided
+   (`dreams.wryskware.dev` versus a `vuzic.app` one), and a distribution
+   serves its own name meanwhile, so the choice was never a blocker.
+   Worth knowing when deciding: `vuzic.app` already has a Route 53 hosted
+   zone and needs no registrar work, while `wryskware.dev` is registered
+   at Spaceship on their parking nameservers and needs an NS change there.
+   Attaching either is a cert in us-east-1, an alias, and an alias record.
+
+   **Still open — the demo shape.** "Static only, no terrarium-server, no
+   uploads, no export UI" is not built: there is no build-mode flag at
+   all, only `import.meta.env.DEV`. The published console logs
+   `export capability probe failed` (and on HTTPS that probe to
+   `http://localhost:8765` is blocked as mixed content), and the panel
+   still offers a dead "Download rendered video". Sequenced after preset
+   strings v1 because both edit `workbench.ts`. Plife front and center;
+   physarum/vizfx still reachable via `?sim=` but unadvertised; workbench
+   included.
 
 ## Post-cut backlog (acknowledged, not scheduled)
 
