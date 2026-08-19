@@ -217,11 +217,33 @@ background thread.
    `s` toggles the settings panel, `t` toggles the timeline + top menu,
    double-click toggles fullscreen. Handoff:
    `docs/handoffs/keybindings.md`.
-8. **Preset strings v1** (moved into the deploy phase 2026-08-15). The
-   compact-string codec, `#p=` fragment links, copy string / copy link.
-   Its gates (palette v2, recipe v5) are merged and save profiles v0
-   landed the apply path it reuses. Shareable links are arguably *the*
-   friends-and-family feature. Brief: `docs/handoffs/preset-strings-v1.md`.
+8. **Preset strings v1** ✅ **Done** (`410a95d`, 2026-08-19).
+   `lmt1.` + base64url(deflate-raw(canonical JSON)), native `CompressionStream`
+   and no dependency; a live plife session encodes to ~6.2 kB. `web/src/runtime/preset.ts`
+   owns the codec, `web/src/ui/presets.ts` the folder (copy string / copy link /
+   paste / load). Boot precedence: pending slot > pending profile > `#p=` >
+   autosave, the fragment cleared with `replaceState` only on a *successful*
+   apply. `PRESET_KEYS` is derived from the recipe's own `TOP_LEVEL_KEYS` minus
+   an explicit `DROPPED_RECIPE_KEYS`, so a new recipe field cannot go silently
+   missing from presets — the same "declaring is registering" discipline as
+   item 5.
+
+   Two decisions worth carrying:
+   - **No `lmt.presets` array.** The brief specified one; it predates save
+     profiles v0, and building it would have reintroduced exactly the
+     read-modify-write multi-tab clobber v0's per-key layout was written to
+     escape, plus a second competing library in the same panel. The profile
+     shelf stays the one library; this package owns the codec and transport.
+   - **The block validators are shared, not copied.** `recipe.ts` exports them;
+     `fail()` now throws a bare `$.path complaint` and each public entry point
+     adds its own document label, so a preset failure reads `preset: …` rather
+     than borrowing "export recipe:". `export-recipe.test.ts` is byte-for-byte
+     unmodified and still green, which is the evidence that recipe behaviour
+     did not move.
+
+   Open, deliberately: a *profile* load still ignores its stored track hint,
+   as it always has. Extending it is one line and a behaviour change to
+   shipped v0.
 9. **Track publish allowlist.** ✅ **Done** (`796e8cb`, 2026-08-19).
    `data/publish.json` names the five tracks the demo ships, read only by
    `sync-data --publish`; the fallback (`synthetic`) always ships because
@@ -261,15 +283,15 @@ background thread.
    at Spaceship on their parking nameservers and needs an NS change there.
    Attaching either is a cert in us-east-1, an alias, and an alias record.
 
-   **Still open — the demo shape.** "Static only, no terrarium-server, no
-   uploads, no export UI" is not built: there is no build-mode flag at
-   all, only `import.meta.env.DEV`. The published console logs
-   `export capability probe failed` (and on HTTPS that probe to
-   `http://localhost:8765` is blocked as mixed content), and the panel
-   still offers a dead "Download rendered video". Sequenced after preset
-   strings v1 because both edit `workbench.ts`. Plife front and center;
-   physarum/vizfx still reachable via `?sim=` but unadvertised; workbench
-   included.
+   **The demo shape** landed with it (`00a0e3f`). `DEMO_BUILD`
+   (`web/src/runtime/demo.ts`) is set only by `build:publish`, and is
+   expressed as two *absences* rather than a flag threaded through the UI:
+   the build declines to probe for a server and declines to hand `main.ts`'s
+   panel an export host, and since both surfaces were already optional the UI
+   disappears on its own. Rollup drops `probeServer`'s body outright.
+   Verified live: no request to 8765, no console error, no export folder, no
+   "analysis server" row. Plife front and centre; physarum/vizfx still
+   reachable via `?sim=` but unadvertised; workbench included.
 
 ## Post-cut backlog (acknowledged, not scheduled)
 
