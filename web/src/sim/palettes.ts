@@ -102,6 +102,33 @@ export interface PaletteCatalogEntry {
  */
 export const PALETTE_CATALOG: readonly PaletteCatalogEntry[] = [
   {
+    name: 'wrysk',
+    note: "the studio's own — teal through blue to violet, accents off the whole wheel",
+    mode: 'arc',
+    // Lifted from the profile that ships as the default look
+    // (`runtime/default-profile.json`), which is why it is the one entry here
+    // that was tuned against a specific track rather than against the two
+    // substrates in the abstract.
+    //
+    // **The 160 deg is baked in.** That profile carries `hueShiftDeg: 160`, and
+    // `colors` in a palette are the base hues *before* the shift — the shift is
+    // applied at render time by `paletteHuePhase`. A catalog entry resets
+    // `hueShiftDeg` to 0 by contract (see the note at the top of this file), so
+    // an entry that copied the profile's raw arc would load as the orange-green
+    // it is stored as and not the teal-violet anyone actually saw. `arcHue` is
+    // linear in `hueStartDeg`, so adding the shift to the start reproduces it
+    // exactly: primaries 20 + 160, accents 157 + 160.
+    //
+    // L 50 is lower than anything else in this catalog, which sits at 58-68. It
+    // is authored, not an oversight: the look leans on the luma curve for its
+    // dynamic range rather than on a bright base, so the population sits dark
+    // and the fast particles carry the light.
+    arc: { hueStartDeg: 180, hueRangeDeg: 125, sat: 100, light: 50 },
+    // A full 360 deg across the four accents, so they are a genuinely separate
+    // family spanning the wheel rather than a lighter copy of the primaries.
+    accentArc: { hueStartDeg: 317, hueRangeDeg: 360, sat: 100, light: 59 },
+  },
+  {
     name: 'spectrum',
     note: 'the whole wheel, evenly divided — vuzic\'s default, best at large K',
     mode: 'arc',

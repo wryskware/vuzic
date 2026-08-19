@@ -36,6 +36,7 @@ import {
 import { consumeBootPreset } from './ui/presets';
 import type { ExportRecipe } from './runtime/recipe';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
+import { DEFAULT_PROFILE } from './runtime/default-profile';
 import { DEMO_BUILD } from './runtime/demo';
 import {
   buildCatalog,
@@ -265,11 +266,46 @@ async function main(): Promise<void> {
     profile = null;
     trackHint = null;
   }
+  /**
+   * The shipped look, at the bottom of the precedence order.
+   *
+   * Every condition here is "this visitor has no state of their own": no preset
+   * arrived, nothing was staged, and the autosave slot for the sim they are
+   * asking for is empty. A returning visitor's own tuning therefore always wins
+   * — the default is a *first impression*, not a reset that fights them.
+   *
+   * Gated on the requested sim because the recipe is plife's: a `?sim=physarum`
+   * visit must not be dragged to plife by a default look, since `wantedSim`
+   * below lets a profile's sim outrank the query. And skipped when `?seed=` is
+   * explicit, because the profile replays its own pinned seed and someone who
+   * named a seed in the URL has said what they want.
+   */
+  const params = new URLSearchParams(location.search);
+  let usingDefaultProfile = false;
+  if (
+    profile === null &&
+    requestedSim() === DEFAULT_PROFILE.sim &&
+    !params.has('seed') &&
+    loadModulationLocal(DEFAULT_PROFILE.sim) === null
+  ) {
+    profile = DEFAULT_PROFILE;
+    usingDefaultProfile = true;
+    // Unlike a saved profile, the shipped default brings its track. That is not
+    // the "loading a profile switches tracks" change refused above — there is no
+    // session to interrupt here, and this is the same decision `DEFAULT_TRACK`
+    // already makes, made better: the look was authored against this track, and
+    // pairing them is the whole of the first impression. `?track=` still wins,
+    // and `pick` falls back if the track is not in this build.
+    if (!params.has('track')) trackHint = DEFAULT_PROFILE.track.id;
+  }
+
   if (profile) {
     console.info(
-      boot.preset !== null
-        ? `preset: applying a ${boot.preset.source} preset for ${profile.sim}`
-        : `profile: applying a saved ${profile.sim} profile`,
+      usingDefaultProfile
+        ? `profile: no saved ${profile.sim} state; starting from the shipped default`
+        : boot.preset !== null
+          ? `preset: applying a ${boot.preset.source} preset for ${profile.sim}`
+          : `profile: applying a saved ${profile.sim} profile`,
     );
   }
 
