@@ -86,7 +86,13 @@ Or start both at once from the repo root, which is what `dev.ps1` is for:
 ./dev.ps1 -- -v            # extra args go to terrarium-server
 ```
 
-It holds vite back until the server is listening (the browser only probes
+```bash
+./dev.sh                   # the same thing, for bash/zsh
+./dev.sh --no-server
+./dev.sh -- -v
+```
+
+Either one holds vite back until the server is listening (the browser only probes
 once, and the models take a while to load), and Ctrl-C stops both.
 
 ### The manual way: the CLI
