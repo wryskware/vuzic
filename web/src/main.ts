@@ -35,7 +35,12 @@ import {
 } from './ui/profiles';
 import type { ExportRecipe } from './runtime/recipe';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
-import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
+import {
+  buildCatalog,
+  DEFAULT_AUDIO_FILE,
+  fetcherFor,
+  type TrackEntry,
+} from './timeline/catalog';
 import { loadTimeline } from './timeline/loader';
 import { TimelineSampler, type FeaturesFrame } from './timeline/sampler';
 import { SECONDS_PER_TICK, TICK_HZ } from './timing';
@@ -48,7 +53,7 @@ import { createVizFxPanel } from './ui/vizfx-panel';
 
 const DEFAULT_TRACK = 'free-fall';
 const FALLBACK_TRACK = 'synthetic';
-const DEFAULT_SIM = 'physarum';
+const DEFAULT_SIM = 'plife';
 /**
  * Every `?sim=` value that resolves to a real substrate.
  *
@@ -263,6 +268,7 @@ async function main(): Promise<void> {
     version: '',
     base: `${import.meta.env.BASE_URL}timelines/${FALLBACK_TRACK}`,
     hasAudio: false,
+    audioFile: DEFAULT_AUDIO_FILE,
     source: 'bundled',
   };
   const pick = (id: string): TrackEntry =>
@@ -302,7 +308,7 @@ async function main(): Promise<void> {
     },
     {
       secondsPerTick: SECONDS_PER_TICK,
-      audioUrl: `${entry.base}/audio.wav`,
+      audioUrl: `${entry.base}/${entry.audioFile}`,
       fetcher: fetcherFor(entry),
     },
   );

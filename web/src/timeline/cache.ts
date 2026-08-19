@@ -22,7 +22,7 @@
  * evicted whole before it is loaded, so a stale `timeline.bin` can never be
  * paired with a fresh `timeline.json`.
  */
-import type { TrackEntry } from './catalog.ts';
+import { DEFAULT_AUDIO_FILE, type TrackEntry } from './catalog.ts';
 
 const CACHE_NAME = 'lmt-tracks-v1';
 const INDEX_KEY = 'lmt.trackCache.v1';
@@ -34,6 +34,11 @@ interface IndexEntry {
   duration: number;
   version: string;
   hasAudio: boolean;
+  /**
+   * Optional: rows written before bundled audio was transcoded have no such
+   * field, and `audio.wav` is what those payloads are actually keyed by.
+   */
+  audioFile?: string;
   base: string;
 }
 
@@ -65,8 +70,9 @@ function writeIndex(index: CacheIndex): void {
 }
 
 /** Every URL a track occupies, in load order. */
-function urlsFor(entry: { base: string; hasAudio: boolean }): string[] {
-  const files = ['timeline.json', 'timeline.bin', ...(entry.hasAudio ? ['audio.wav'] : [])];
+function urlsFor(entry: { base: string; hasAudio: boolean; audioFile?: string }): string[] {
+  const audio = entry.audioFile ?? DEFAULT_AUDIO_FILE;
+  const files = ['timeline.json', 'timeline.bin', ...(entry.hasAudio ? [audio] : [])];
   return files.map((f) => `${entry.base}/${f}`);
 }
 
@@ -120,6 +126,7 @@ export function rememberCachedTrack(entry: TrackEntry): void {
     duration: entry.duration,
     version: entry.version,
     hasAudio: entry.hasAudio,
+    audioFile: entry.audioFile,
     base: entry.base,
   };
   writeIndex(index);
@@ -153,7 +160,8 @@ export async function listCachedTracks(): Promise<TrackEntry[]> {
       pruned = true;
       continue;
     }
-    const audio = entry.hasAudio ? await cache.match(`${entry.base}/audio.wav`) : undefined;
+    const audioFile = entry.audioFile ?? DEFAULT_AUDIO_FILE;
+    const audio = entry.hasAudio ? await cache.match(`${entry.base}/${audioFile}`) : undefined;
     out.push({
       id: entry.id,
       title: entry.title,
@@ -161,6 +169,7 @@ export async function listCachedTracks(): Promise<TrackEntry[]> {
       version: entry.version,
       base: entry.base,
       hasAudio: entry.hasAudio && audio !== undefined,
+      audioFile,
       source: 'cached',
     });
   }

@@ -35,11 +35,24 @@ export interface TrackEntry {
   duration: number;
   /** Hash of the exact timeline.json + timeline.bin bytes this entry loads. */
   version: string;
-  /** Base URL for `timeline.json` / `timeline.bin` / `audio.wav`, no trailing slash. */
+  /** Base URL for `timeline.json` / `timeline.bin` / the audio file, no trailing slash. */
   base: string;
   hasAudio: boolean;
+  /**
+   * The audio file's name under `base`. Not a constant, because the two sources
+   * genuinely disagree: `sync-data` transcodes bundled audio to `audio.m4a` (a
+   * 40 MB WAV per track is fine over localhost and indefensible over CloudFront),
+   * while `terrarium-server` serves the pipeline's own `audio.wav` untouched.
+   *
+   * Defaulted rather than required so a stale `index.json` or an older server
+   * still resolves to the historic name instead of losing its audio silently.
+   */
+  audioFile: string;
   source: TrackSource;
 }
+
+/** What a track's audio was always called, before bundled builds started transcoding. */
+export const DEFAULT_AUDIO_FILE = 'audio.wav';
 
 /**
  * Bundled and server tracks fetch differently; the difference stops here.
@@ -64,6 +77,7 @@ interface ServerTrackRow {
   duration?: unknown;
   version?: unknown;
   hasAudio?: unknown;
+  audio?: unknown;
 }
 
 function bundledBase(id: string): string {
@@ -93,6 +107,7 @@ export async function loadBundledTracks(): Promise<TrackEntry[]> {
       version: String(r.version ?? ''),
       base: bundledBase(String(r.id)),
       hasAudio: r.hasAudio === true,
+      audioFile: typeof r.audio === 'string' ? r.audio : DEFAULT_AUDIO_FILE,
       source: 'bundled' as const,
     }));
   } catch (err) {
@@ -136,6 +151,7 @@ export function serverEntry(r: ServerTrackRow): TrackEntry {
     version: String(r.version ?? ''),
     base: `${SERVER_BASE}/tracks/${id}`,
     hasAudio: r.hasAudio === true,
+    audioFile: typeof r.audio === 'string' ? r.audio : DEFAULT_AUDIO_FILE,
     source: 'server',
   };
 }
