@@ -68,7 +68,7 @@ import type { ModTarget } from '../mapping/target';
 import { MAX_DRIVER_GAIN, type Modulator } from '../mapping/modulation';
 import { MOD_GROUPS, type ModGroup } from '../mapping/modspec';
 import type { TuningLog, TuningAction } from '../mapping/tuninglog';
-import { randomSeed, setPinnedSeed, syncUrlSeed } from '../sim/seed';
+import { randomSeed, SEED_PIN_HINT, setPinnedSeed, syncUrlSeed } from '../sim/seed';
 import {
   clearModulationLocal,
   defaultModulationConfig,
@@ -90,6 +90,14 @@ import {
   recordFavorite,
   type FavoriteVerdict,
 } from './favorites';
+import {
+  extractPresetToken,
+  presetLinkFor,
+  presetStringFromRecipe,
+  requestPresetApply,
+} from './presets';
+import { decodePreset, recipeFromPreset } from '../runtime/preset';
+import { serializeExportRecipe } from '../runtime/recipe';
 import {
   deleteProfile,
   listProfiles,
@@ -164,6 +172,8 @@ interface UiState {
   profileName: string;
   profileSelected: string;
   profileStatus: string;
+  presetPaste: string;
+  presetStatus: string;
   favStatus: string;
   favInfo: string;
   favSelected: string;
@@ -264,6 +274,8 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
     profileName: '',
     profileSelected: '',
     profileStatus: '—',
+    presetPaste: '',
+    presetStatus: '—',
     favStatus: '—',
     favInfo: '0 favorites',
     favSelected: '',
@@ -372,13 +384,16 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
   // ── play · the world seed. The ONE place seeds are shown or changed. ────────
   const world = mounts.seed;
   world.addBinding(ui, 'seed', { readonly: true, label: 'seed' });
-  world.addBinding(ui, 'pin', { label: 'pin (survives reload)' }).on('change', (ev) => {
+  const pinBinding = world.addBinding(ui, 'pin', { label: 'pin (survives reload)' }).on('change', (ev) => {
     // localStorage and ?seed= are pinned together: unticking has to clear both or
     // a URL param would keep resurrecting the old world on reload.
     setPinnedSeed(ev.value ? sim.currentSeed : null);
     syncUrlSeed(ev.value ? sim.currentSeed : null);
     record(ev.value ? 'pin' : 'unpin');
   });
+  // What the box does *not* mean: a preset always carries and replays the seed.
+  // Tweakpane has no tooltip, so this is a `title` on the row, as elsewhere.
+  pinBinding.element.title = SEED_PIN_HINT;
   // Full scatter, and that is its whole meaning: "re-run" is "start this world
   // again from the beginning", so it clears and re-scatters exactly as a fresh
   // load would. It is the only button in the app that reproduces a load.
@@ -804,6 +819,91 @@ export function createWorkbench(mounts: WorkbenchMounts, host: WorkbenchHost): W
       rebuildPicker();
       pane.refresh();
     });
+  });
+
+  // ── data · preset strings ──────────────────────────────────────────────────
+  //
+  // The same look as the profile above it, in the one form that crosses an
+  // origin: `lmt1.` + base64url(deflate(canonical JSON)). A profile lives in
+  // this browser's localStorage and a `modulation.json` is a diffable file for
+  // one half of the state; a string is what you paste into a message, and a
+  // link is what somebody else opens.
+  //
+  // Copy takes the **live** session, not the selected profile: what you want to
+  // send is almost always what is on screen, and "save it first, then copy it"
+  // would be a step with no purpose. Loading goes through the same staged
+  // reload as everything else on this tab — see `./presets.ts` for why.
+  const presets = mounts.data.addFolder({
+    title: 'preset strings (copy / paste / link)',
+    expanded: false,
+  });
+  presets.addBinding(ui, 'presetStatus', { readonly: true, label: '' });
+
+  const copyToClipboard = (text: string, what: string): void => {
+    void navigator.clipboard.writeText(text).then(
+      () => {
+        // The size caveat, stated as a number rather than a warning: a K=64
+        // particle-life link runs to tens of kilobytes, which always works as a
+        // string and which some chat clients will truncate as a URL.
+        ui.presetStatus = `copied ${what} · ${text.length} chars`;
+        pane.refresh();
+      },
+      () => {
+        ui.presetStatus = `could not copy the ${what}`;
+        pane.refresh();
+      },
+    );
+  };
+
+  const withLiveToken = (then: (token: string) => void): void => {
+    refreshExtras();
+    void presetStringFromRecipe(host.captureProfile()).then(then, (err: Error) => {
+      ui.presetStatus = err.message;
+      pane.refresh();
+    });
+  };
+
+  presets.addButton({ title: 'copy preset string' }).on('click', () => {
+    withLiveToken((token) => copyToClipboard(token, 'string'));
+  });
+
+  presets.addButton({ title: 'copy preset link (#p=…)' }).on('click', () => {
+    withLiveToken((token) => copyToClipboard(presetLinkFor(token), 'link'));
+  });
+
+  presets.addBinding(ui, 'presetPaste', { label: 'paste' });
+  presets.addButton({ title: 'load pasted preset (reloads)' }).on('click', () => {
+    // A whole URL or a bare token: this panel hands out both, and a person
+    // pasting the wrong one into the wrong box should still get their look.
+    const token = extractPresetToken(ui.presetPaste);
+    if (token === null) {
+      ui.presetStatus = 'no lmt1. preset string in there';
+      pane.refresh();
+      return;
+    }
+    void decodePreset(token).then(
+      (preset) => {
+        // Offered a library slot on the way past, so an imported look survives
+        // the next paste into the same box. The library is the profile shelf —
+        // one library rather than two, and it is the multi-tab-safe one.
+        const name =
+          normalizeProfileName(ui.profileName) ?? `imported ${listProfiles(preset.sim).length + 1}`;
+        const saved = saveProfileText(name, serializeExportRecipe(recipeFromPreset(preset)));
+        if (saved.sim === sim.simId) rebuildPicker();
+        void requestPresetApply(token).then((failure) => {
+          if (failure !== null) {
+            ui.presetStatus = failure;
+            pane.refresh();
+            return;
+          }
+          location.reload();
+        });
+      },
+      (err: Error) => {
+        ui.presetStatus = err.message;
+        pane.refresh();
+      },
+    );
   });
 
   // ── data · seed favorites (the pool) ───────────────────────────────────────

@@ -26,6 +26,21 @@ export function setPinnedSeed(seed: number | null): void {
   }
 }
 
+/**
+ * What the pin checkbox does *not* control, said where the checkbox is.
+ *
+ * Presets and profiles always store the live seed and always replay it, pinned
+ * or not — a particle-life matrix is generated from the seed, so a saved look
+ * loaded onto a fresh one is a different world wearing the same colours. The
+ * checkbox is the separate, narrower question of whether *live* runs stay here.
+ * Without this hint the natural reading of an unticked box is "my presets will
+ * come back randomised", which is the opposite of what happens.
+ */
+export const SEED_PIN_HINT =
+  'The current seed is always saved into presets and profiles, and always ' +
+  'replayed when one loads. Pinning additionally keeps live runs and reloads ' +
+  'on this seed.';
+
 const URL_PARAM = 'seed';
 
 /**
