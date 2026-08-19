@@ -13,6 +13,7 @@
  * timeout, and everything works without it. `analysis/README.md` documents how
  * to run one.
  */
+import { DEMO_BUILD } from '../runtime/demo.ts';
 import { cachingFetch, listCachedTracks } from './cache.ts';
 
 /**
@@ -129,6 +130,10 @@ function isRow(r: ServerTrackRow): boolean {
  * suppresses it — the info line below is what this module contributes.
  */
 export async function probeServer(): Promise<TrackEntry[] | null> {
+  // The published cut has no server to find, and on HTTPS this request is
+  // blocked as mixed content before it is even attempted. "No server" is
+  // already an ordinary answer here, so declining to ask needs no other path.
+  if (DEMO_BUILD) return null;
   try {
     const res = await fetch(`${SERVER_BASE}/tracks`, {
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -194,7 +199,10 @@ export async function buildCatalog(): Promise<Catalog> {
     probeServer(),
     listCachedTracks(),
   ]);
-  if (server === null) {
+  // Not in the published cut: there, no server is the design rather than a
+  // condition worth reporting, and naming a localhost port to a stranger reads
+  // as something being broken.
+  if (server === null && !DEMO_BUILD) {
     console.info(
       `analysis server not reachable at ${SERVER_BASE}; ` +
         `${bundled.length} bundled and ${cached.length} cached track(s) available`,

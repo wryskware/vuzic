@@ -36,6 +36,7 @@ import {
 import { consumeBootPreset } from './ui/presets';
 import type { ExportRecipe } from './runtime/recipe';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
+import { DEMO_BUILD } from './runtime/demo';
 import {
   buildCatalog,
   DEFAULT_AUDIO_FILE,
@@ -959,19 +960,28 @@ async function main(): Promise<void> {
         serverCount: catalog.serverCount,
         switchTo: switchTrack,
       },
-      exports: {
-        session: exportSession,
-        trackId: entry.id,
-        // `sim`, `modulator`, and `impulses` are the live `let`s replaced as one
-        // unit by a substrate swap. Capture reads them only on the button click.
-        capture: (rendererBuild: string, output: ExportRecipe['output']) =>
-          captureBrowserExportRecipe({
-            rendererBuild,
-            track: entry,
-            source: { sim, modulator, impulses },
-            output,
+      // Absent entirely in the published cut: every panel treats a missing host
+      // as "no export folder", so this is the whole of that decision. Spread
+      // rather than `exports: undefined`, because `exactOptionalPropertyTypes`
+      // distinguishes the two and only absence means absent.
+      ...(DEMO_BUILD
+        ? {}
+        : {
+            exports: {
+              session: exportSession,
+              trackId: entry.id,
+              // `sim`, `modulator`, and `impulses` are the live `let`s replaced
+              // as one unit by a substrate swap. Capture reads them only on the
+              // button click.
+              capture: (rendererBuild: string, output: ExportRecipe['output']) =>
+                captureBrowserExportRecipe({
+                  rendererBuild,
+                  track: entry,
+                  source: { sim, modulator, impulses },
+                  output,
+                }),
+            },
           }),
-      },
       sims: {
         ids: SIMS,
         presets: VIZFX_IDS,
