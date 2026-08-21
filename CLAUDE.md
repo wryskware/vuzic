@@ -76,10 +76,6 @@ evidence turns out to contradict a decision, say so and let the user choose.
 
 Route by what kind of question it is:
 
-- **Structure, once a symbol is known** (callers, callees, dependencies,
-  impact, execution paths) → `codebase-memory` graph tools. These MCP tools
-  are deferred: batch-load the ones you need in a single ToolSearch call at
-  first need.
 - **Everything else** — exact strings, known paths, docs and plan questions,
   generated timeline fields, shader bindings, query parameters, dynamic
   references → direct Grep/Glob/Read.
