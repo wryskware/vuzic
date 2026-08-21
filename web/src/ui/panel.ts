@@ -12,7 +12,7 @@ import {
   type SpeciesConfig,
 } from '../sim/physarum/config';
 import type { ImpulseEngine } from '../sim/impulses';
-import { randomSeed, setPinnedSeed, syncUrlSeed } from '../sim/seed';
+import { randomSeed, SEED_PIN_HINT, setPinnedSeed, syncUrlSeed } from '../sim/seed';
 import {
   createExplorePanel,
   type ExplorePanelHandle,
@@ -302,10 +302,13 @@ export function createPanel(
   const run = tabs.play.addFolder({ title: 'run', expanded: !opts.workbench });
   if (!opts.workbench) {
     run.addBinding(state, 'seed', { readonly: true });
-    run.addBinding(state, 'pin', { label: 'pin seed' }).on('change', (ev) => {
+    const pin = run.addBinding(state, 'pin', { label: 'pin seed' }).on('change', (ev) => {
       setPinnedSeed(ev.value ? sim.currentSeed : null);
       syncUrlSeed(ev.value ? sim.currentSeed : null);
     });
+    // Tweakpane has no tooltip of its own; a `title` on the row's element is
+    // the same mechanism the palette swatches already use.
+    pin.element.title = SEED_PIN_HINT;
     run.addButton({ title: 'restart (same seed)' }).on('click', () => {
       sim.reseed(sim.currentSeed);
       opts.onRestart?.();

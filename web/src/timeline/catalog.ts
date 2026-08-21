@@ -13,6 +13,7 @@
  * timeout, and everything works without it. `analysis/README.md` documents how
  * to run one.
  */
+import { DEMO_BUILD } from '../runtime/demo.ts';
 import { cachingFetch, listCachedTracks } from './cache.ts';
 
 /**
@@ -35,11 +36,24 @@ export interface TrackEntry {
   duration: number;
   /** Hash of the exact timeline.json + timeline.bin bytes this entry loads. */
   version: string;
-  /** Base URL for `timeline.json` / `timeline.bin` / `audio.wav`, no trailing slash. */
+  /** Base URL for `timeline.json` / `timeline.bin` / the audio file, no trailing slash. */
   base: string;
   hasAudio: boolean;
+  /**
+   * The audio file's name under `base`. Not a constant, because the two sources
+   * genuinely disagree: `sync-data` transcodes bundled audio to `audio.m4a` (a
+   * 40 MB WAV per track is fine over localhost and indefensible over CloudFront),
+   * while `terrarium-server` serves the pipeline's own `audio.wav` untouched.
+   *
+   * Defaulted rather than required so a stale `index.json` or an older server
+   * still resolves to the historic name instead of losing its audio silently.
+   */
+  audioFile: string;
   source: TrackSource;
 }
+
+/** What a track's audio was always called, before bundled builds started transcoding. */
+export const DEFAULT_AUDIO_FILE = 'audio.wav';
 
 /**
  * Bundled and server tracks fetch differently; the difference stops here.
@@ -64,6 +78,7 @@ interface ServerTrackRow {
   duration?: unknown;
   version?: unknown;
   hasAudio?: unknown;
+  audio?: unknown;
 }
 
 function bundledBase(id: string): string {
@@ -93,6 +108,7 @@ export async function loadBundledTracks(): Promise<TrackEntry[]> {
       version: String(r.version ?? ''),
       base: bundledBase(String(r.id)),
       hasAudio: r.hasAudio === true,
+      audioFile: typeof r.audio === 'string' ? r.audio : DEFAULT_AUDIO_FILE,
       source: 'bundled' as const,
     }));
   } catch (err) {
@@ -114,6 +130,10 @@ function isRow(r: ServerTrackRow): boolean {
  * suppresses it — the info line below is what this module contributes.
  */
 export async function probeServer(): Promise<TrackEntry[] | null> {
+  // The published cut has no server to find, and on HTTPS this request is
+  // blocked as mixed content before it is even attempted. "No server" is
+  // already an ordinary answer here, so declining to ask needs no other path.
+  if (DEMO_BUILD) return null;
   try {
     const res = await fetch(`${SERVER_BASE}/tracks`, {
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -136,6 +156,7 @@ export function serverEntry(r: ServerTrackRow): TrackEntry {
     version: String(r.version ?? ''),
     base: `${SERVER_BASE}/tracks/${id}`,
     hasAudio: r.hasAudio === true,
+    audioFile: typeof r.audio === 'string' ? r.audio : DEFAULT_AUDIO_FILE,
     source: 'server',
   };
 }
@@ -178,7 +199,10 @@ export async function buildCatalog(): Promise<Catalog> {
     probeServer(),
     listCachedTracks(),
   ]);
-  if (server === null) {
+  // Not in the published cut: there, no server is the design rather than a
+  // condition worth reporting, and naming a localhost port to a stranger reads
+  // as something being broken.
+  if (server === null && !DEMO_BUILD) {
     console.info(
       `analysis server not reachable at ${SERVER_BASE}; ` +
         `${bundled.length} bundled and ${cached.length} cached track(s) available`,

@@ -1,4 +1,5 @@
 import type { PanelContainer } from './panel';
+import { DEMO_BUILD } from '../runtime/demo';
 import {
   pollJob,
   uploadForAnalysis,
@@ -74,7 +75,12 @@ export function createTrackFolder(
   folder.addBinding(state, 'track', { label: 'playing', options }).on('change', (ev) => {
     if (ev.value !== host.current) host.switchTo(String(ev.value));
   });
-  folder.addBinding(state, 'server', { readonly: true, label: 'analysis server' });
+  // The readout is for whoever is running a pipeline beside the app; in the
+  // published cut it is a permanent "offline" against a server the build was
+  // never going to talk to.
+  if (!DEMO_BUILD) {
+    folder.addBinding(state, 'server', { readonly: true, label: 'analysis server' });
+  }
 
   // The upload half only exists when a server answered. With none there is
   // nothing to POST to, and a button that always fails is worse than no button.

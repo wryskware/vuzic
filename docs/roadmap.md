@@ -217,19 +217,85 @@ background thread.
    `s` toggles the settings panel, `t` toggles the timeline + top menu,
    double-click toggles fullscreen. Handoff:
    `docs/handoffs/keybindings.md`.
-8. **Preset strings v1** (moved into the deploy phase 2026-08-15). The
-   compact-string codec, `#p=` fragment links, copy string / copy link.
-   Its gates (palette v2, recipe v5) are merged and save profiles v0
-   landed the apply path it reuses. Shareable links are arguably *the*
-   friends-and-family feature. Brief: `docs/handoffs/preset-strings-v1.md`.
-9. **Track publish allowlist.** Catalog entries are default-private; the
-   demo build ships only tracks explicitly marked publishable. Allowlist,
-   not blacklist — a track under test can never leak by omission. (All
-   current music is rights-cleared; the gate is belt-and-suspenders.)
-10. **Static deploy.** S3 bucket (AWS account exists, CLI authenticated);
-   DNS pointing to AWS handled when we get there — not a blocker to
-   build against. Demo shape: static only, no terrarium-server, no
-   uploads, no export UI. Plife front and center; physarum/vizfx still
+8. **Preset strings v1** ✅ **Done** (`410a95d`, 2026-08-19).
+   `lmt1.` + base64url(deflate-raw(canonical JSON)), native `CompressionStream`
+   and no dependency; a live plife session encodes to ~6.2 kB. `web/src/runtime/preset.ts`
+   owns the codec, `web/src/ui/presets.ts` the folder (copy string / copy link /
+   paste / load). Boot precedence: pending slot > pending profile > `#p=` >
+   autosave, the fragment cleared with `replaceState` only on a *successful*
+   apply. `PRESET_KEYS` is derived from the recipe's own `TOP_LEVEL_KEYS` minus
+   an explicit `DROPPED_RECIPE_KEYS`, so a new recipe field cannot go silently
+   missing from presets — the same "declaring is registering" discipline as
+   item 5.
+
+   Two decisions worth carrying:
+   - **No `lmt.presets` array.** The brief specified one; it predates save
+     profiles v0, and building it would have reintroduced exactly the
+     read-modify-write multi-tab clobber v0's per-key layout was written to
+     escape, plus a second competing library in the same panel. The profile
+     shelf stays the one library; this package owns the codec and transport.
+   - **The block validators are shared, not copied.** `recipe.ts` exports them;
+     `fail()` now throws a bare `$.path complaint` and each public entry point
+     adds its own document label, so a preset failure reads `preset: …` rather
+     than borrowing "export recipe:". `export-recipe.test.ts` is byte-for-byte
+     unmodified and still green, which is the evidence that recipe behaviour
+     did not move.
+
+   Open, deliberately: a *profile* load still ignores its stored track hint,
+   as it always has. Extending it is one line and a behaviour change to
+   shipped v0.
+9. **Track publish allowlist.** ✅ **Done** (`796e8cb`, 2026-08-19).
+   `data/publish.json` names the five tracks the demo ships, read only by
+   `sync-data --publish`; the fallback (`synthetic`) always ships because
+   `main.ts` falls back to it. Chosen by the user: bug-fix-rush,
+   drifting-slow-remastered, free-fall, lost-in-space-1-3, pink-loop.
+
+   The same commit closes a **second, unwritten leak of the same shape**,
+   one level down. `sync-data` copied every file in a timeline directory
+   except a *skip list* naming `embedding.*` and `plots/` — a blacklist,
+   which is exactly what item 9 forbids for tracks and nobody had applied
+   to files. `bug-fix-rush` was therefore shipping 116 MB of demucs stems
+   (`demix/`) and 20 MB of spectrograms (`spec/`). It is now a wanted-list
+   of the files the browser actually reads.
+
+   And a **third gate nobody had written down at all: audio format.** A
+   track's `audio.wav` is 30–52 MB, which is unremarkable over localhost
+   and indefensible over CloudFront. Bundled audio is transcoded to 160k
+   AAC in MP4 (what `decodeAudioData` supports without qualification;
+   Opus would save more bytes and cost Safari). `terrarium-server` still
+   serves its own `audio.wav`, so the name rides `TrackEntry.audioFile`
+   rather than being a constant in four places.
+
+   Net: `web/dist` 519 MB → 27 MB.
+10. **Static deploy.** ✅ **Done** — live at `dreams.wryskware.dev`.
+   Standing up (2026-08-19): private S3 bucket `wryskware-terrarium-site`
+   behind CloudFront distribution `E2ISYNUAG82OYT` with origin access
+   control — no public bucket, no website endpoint — served at
+   `https://dreams.wryskware.dev/`. `tools/deploy.sh` builds the
+   publish cut and pushes it in three cache classes, content-first and
+   document-last, then invalidates. `DEFAULT_SIM` is now `plife`.
+
+   **The domain is `dreams.wryskware.dev`** (user's choice, 2026-08-19).
+   Hosted zone `Z1014033376GTUZEXE6AE`, delegated from Spaceship; an ACM
+   cert in us-east-1 validated by DNS, attached to the distribution with
+   TLS 1.2 as the floor; A and AAAA aliases at the subdomain. The
+   `cloudfront.net` name still works and is what `--no-build` deploys
+   verify against when DNS is in doubt.
+
+   The apex also carries Spaceship's email-forwarding records (SPF TXT and
+   two MX at preference 0). Note for whoever edits them next: Route 53
+   models both MX entries as **one record set with two values** — creating
+   them as two sets is rejected, which does not match how the provider's
+   own instructions describe them.
+
+   **The demo shape** landed with it (`00a0e3f`). `DEMO_BUILD`
+   (`web/src/runtime/demo.ts`) is set only by `build:publish`, and is
+   expressed as two *absences* rather than a flag threaded through the UI:
+   the build declines to probe for a server and declines to hand `main.ts`'s
+   panel an export host, and since both surfaces were already optional the UI
+   disappears on its own. Rollup drops `probeServer`'s body outright.
+   Verified live: no request to 8765, no console error, no export folder, no
+   "analysis server" row. Plife front and centre; physarum/vizfx still
    reachable via `?sim=` but unadvertised; workbench included.
 
 ## Post-cut backlog (acknowledged, not scheduled)

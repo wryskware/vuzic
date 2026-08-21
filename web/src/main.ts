@@ -33,9 +33,17 @@ import {
   profileOutput,
   PROFILE_RENDERER_BUILD,
 } from './ui/profiles';
+import { consumeBootPreset } from './ui/presets';
 import type { ExportRecipe } from './runtime/recipe';
 import { invalidateIfStale, rememberCachedTrack } from './timeline/cache';
-import { buildCatalog, fetcherFor, type TrackEntry } from './timeline/catalog';
+import { DEFAULT_PROFILE } from './runtime/default-profile';
+import { DEMO_BUILD } from './runtime/demo';
+import {
+  buildCatalog,
+  DEFAULT_AUDIO_FILE,
+  fetcherFor,
+  type TrackEntry,
+} from './timeline/catalog';
 import { loadTimeline } from './timeline/loader';
 import { TimelineSampler, type FeaturesFrame } from './timeline/sampler';
 import { SECONDS_PER_TICK, TICK_HZ } from './timing';
@@ -48,7 +56,7 @@ import { createVizFxPanel } from './ui/vizfx-panel';
 
 const DEFAULT_TRACK = 'free-fall';
 const FALLBACK_TRACK = 'synthetic';
-const DEFAULT_SIM = 'physarum';
+const DEFAULT_SIM = 'plife';
 /**
  * Every `?sim=` value that resolves to a real substrate.
  *
@@ -224,22 +232,82 @@ function sameTheta(a: Float64Array, b: Float64Array): boolean {
 
 async function main(): Promise<void> {
   /**
-   * A profile the workbench staged before reloading (`ui/profiles.ts`).
+   * The authored state this boot starts from, if it did not start from the
+   * autosave: a preset string (staged by the workbench, or carried in a `#p=`
+   * fragment — `ui/presets.ts`) or a saved profile (`ui/profiles.ts`).
    *
-   * Read first, because it decides three things every construction below is
-   * built from: which substrate, which seed, and which authored state. It is
-   * deleted by the read whatever happens next, so a profile that fails to parse
-   * costs one boot rather than making the app impossible to start.
+   * Read first, because between them they decide four things every construction
+   * below is built from: which substrate, which seed, which authored state,
+   * and — presets only — which track. **Both channels are consumed
+   * unconditionally, and only then does one of them win**: a slot left behind by
+   * its own failed apply would re-apply on every reload, which turns one bad
+   * string into an app that cannot be started without devtools.
+   *
+   * A preset outranks a profile because a preset is only ever armed one action
+   * before the reload that reads it, and the two can only be set at once by a
+   * session that pressed both buttons in the same instant.
    */
-  let profile = consumePendingProfile();
+  const boot = await consumeBootPreset();
+  if (boot.error !== null) console.warn(`preset: ignoring an unusable preset — ${boot.error}`);
+  const staged = consumePendingProfile();
+  let profile = boot.preset?.recipe ?? staged;
+  /**
+   * Advisory, and only a preset has one. A profile carries a real track id too,
+   * but loading a profile has never switched tracks, and quietly changing that
+   * here would be a second feature riding in on this one.
+   */
+  let trackHint = boot.preset?.plan.trackHint ?? null;
   if (profile && !SIMS.includes(profile.sim)) {
-    // A profile for a substrate this build does not have. Dropping it whole is
+    // Saved state for a substrate this build does not have. Dropping it whole is
     // the only coherent answer: its simulation config, θ and palette are all
-    // that sim's, so there is nothing left to partially honour.
-    console.warn(`profile: ignoring a profile for unknown sim "${profile.sim}"`);
+    // that sim's, so there is nothing left to partially honour — including its
+    // track, which was chosen to go with a look that is not being applied.
+    console.warn(`profile: ignoring saved state for unknown sim "${profile.sim}"`);
     profile = null;
+    trackHint = null;
   }
-  if (profile) console.info(`profile: applying a saved ${profile.sim} profile`);
+  /**
+   * The shipped look, at the bottom of the precedence order.
+   *
+   * Every condition here is "this visitor has no state of their own": no preset
+   * arrived, nothing was staged, and the autosave slot for the sim they are
+   * asking for is empty. A returning visitor's own tuning therefore always wins
+   * — the default is a *first impression*, not a reset that fights them.
+   *
+   * Gated on the requested sim because the recipe is plife's: a `?sim=physarum`
+   * visit must not be dragged to plife by a default look, since `wantedSim`
+   * below lets a profile's sim outrank the query. And skipped when `?seed=` is
+   * explicit, because the profile replays its own pinned seed and someone who
+   * named a seed in the URL has said what they want.
+   */
+  const params = new URLSearchParams(location.search);
+  let usingDefaultProfile = false;
+  if (
+    profile === null &&
+    requestedSim() === DEFAULT_PROFILE.sim &&
+    !params.has('seed') &&
+    loadModulationLocal(DEFAULT_PROFILE.sim) === null
+  ) {
+    profile = DEFAULT_PROFILE;
+    usingDefaultProfile = true;
+    // Unlike a saved profile, the shipped default brings its track. That is not
+    // the "loading a profile switches tracks" change refused above — there is no
+    // session to interrupt here, and this is the same decision `DEFAULT_TRACK`
+    // already makes, made better: the look was authored against this track, and
+    // pairing them is the whole of the first impression. `?track=` still wins,
+    // and `pick` falls back if the track is not in this build.
+    if (!params.has('track')) trackHint = DEFAULT_PROFILE.track.id;
+  }
+
+  if (profile) {
+    console.info(
+      usingDefaultProfile
+        ? `profile: no saved ${profile.sim} state; starting from the shipped default`
+        : boot.preset !== null
+          ? `preset: applying a ${boot.preset.source} preset for ${profile.sim}`
+          : `profile: applying a saved ${profile.sim} profile`,
+    );
+  }
 
   // A profile always replays its own seed — a particle-life matrix is generated
   // from it, so the same seed *is* half of "the look I saved". Its pin state is
@@ -263,6 +331,7 @@ async function main(): Promise<void> {
     version: '',
     base: `${import.meta.env.BASE_URL}timelines/${FALLBACK_TRACK}`,
     hasAudio: false,
+    audioFile: DEFAULT_AUDIO_FILE,
     source: 'bundled',
   };
   const pick = (id: string): TrackEntry =>
@@ -273,7 +342,14 @@ async function main(): Promise<void> {
       base: `${import.meta.env.BASE_URL}timelines/${id}`,
     };
 
-  let entry = pick(requestedTrack());
+  // A preset's track is a *hint*: the music never travels with the look, so a
+  // preset made against a track this origin does not have still applies — it
+  // just applies to whatever is playing, and says so.
+  if (trackHint !== null && !catalog.tracks.some((t) => t.id === trackHint)) {
+    console.info(`preset: no local track "${trackHint}"; keeping the current one`);
+    trackHint = null;
+  }
+  let entry = pick(trackHint ?? requestedTrack());
   let track = entry.id;
   let timeline;
   try {
@@ -302,7 +378,7 @@ async function main(): Promise<void> {
     },
     {
       secondsPerTick: SECONDS_PER_TICK,
-      audioUrl: `${entry.base}/audio.wav`,
+      audioUrl: `${entry.base}/${entry.audioFile}`,
       fetcher: fetcherFor(entry),
     },
   );
@@ -920,19 +996,28 @@ async function main(): Promise<void> {
         serverCount: catalog.serverCount,
         switchTo: switchTrack,
       },
-      exports: {
-        session: exportSession,
-        trackId: entry.id,
-        // `sim`, `modulator`, and `impulses` are the live `let`s replaced as one
-        // unit by a substrate swap. Capture reads them only on the button click.
-        capture: (rendererBuild: string, output: ExportRecipe['output']) =>
-          captureBrowserExportRecipe({
-            rendererBuild,
-            track: entry,
-            source: { sim, modulator, impulses },
-            output,
+      // Absent entirely in the published cut: every panel treats a missing host
+      // as "no export folder", so this is the whole of that decision. Spread
+      // rather than `exports: undefined`, because `exactOptionalPropertyTypes`
+      // distinguishes the two and only absence means absent.
+      ...(DEMO_BUILD
+        ? {}
+        : {
+            exports: {
+              session: exportSession,
+              trackId: entry.id,
+              // `sim`, `modulator`, and `impulses` are the live `let`s replaced
+              // as one unit by a substrate swap. Capture reads them only on the
+              // button click.
+              capture: (rendererBuild: string, output: ExportRecipe['output']) =>
+                captureBrowserExportRecipe({
+                  rendererBuild,
+                  track: entry,
+                  source: { sim, modulator, impulses },
+                  output,
+                }),
+            },
           }),
-      },
       sims: {
         ids: SIMS,
         presets: VIZFX_IDS,

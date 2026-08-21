@@ -114,7 +114,11 @@ export interface ExportRecipeV4 {
 
 export type ExportRecipe = ExportRecipeV4;
 
-const TOP_LEVEL_KEYS = [
+/**
+ * Exported so `./preset.ts` can derive its own key list by subtraction rather
+ * than hand-keeping a second one that would silently drift out of step.
+ */
+export const TOP_LEVEL_KEYS = [
   'version',
   'rendererBuild',
   'track',
@@ -133,18 +137,43 @@ const TOP_LEVEL_KEYS = [
 
 const MAX_STRING_CHARS = 4096;
 const MAX_KEY_CHARS = 128;
-const MAX_ARRAY_LENGTH = 131_072;
+export const MAX_ARRAY_LENGTH = 131_072;
 const MAX_OBJECT_KEYS = 4096;
 const MAX_DEPTH = 32;
 const MAX_NODES = 250_000;
-const MAX_ABS_CONFIG_NUMBER = 1e12;
+export const MAX_ABS_CONFIG_NUMBER = 1e12;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-function fail(path: string, message: string): never {
-  throw new Error(`export recipe: ${path} ${message}`);
+/**
+ * Throws a bare `"$.path complaint"`. The document kind it belongs to is added
+ * by `withLabel` at each public entry point, so the same block validators can
+ * report against a recipe *or* a preset string without either one borrowing the
+ * other's name in the message a person actually reads.
+ */
+export function fail(path: string, message: string): never {
+  throw new Error(`${path} ${message}`);
 }
 
-function object(value: unknown, path: string): Record<string, unknown> {
+const RECIPE_LABEL = 'export recipe: ';
+
+/**
+ * Prefix a validation failure with the document kind, once.
+ *
+ * Idempotent by inspection, because these nest: `serializeExportRecipe` calls
+ * `validateExportRecipe`, and a preset's parser calls block validators that
+ * throw the shared bare form.
+ */
+export function withLabel<T>(label: string, run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    const message = (error as Error).message;
+    if (message.startsWith(label)) throw error;
+    throw new Error(`${label}${message}`);
+  }
+}
+
+export function object(value: unknown, path: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     fail(path, 'must be an object');
   }
@@ -153,7 +182,7 @@ function object(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function keysExactly(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+export function keysExactly(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
   for (const key of Object.keys(value)) {
     if (!allowed.includes(key)) fail(`${path}.${key}`, 'is not supported by this schema version');
   }
@@ -162,7 +191,7 @@ function keysExactly(value: Record<string, unknown>, allowed: readonly string[],
   }
 }
 
-function keysRequired(
+export function keysRequired(
   value: Record<string, unknown>,
   allowed: readonly string[],
   required: readonly string[],
@@ -176,33 +205,33 @@ function keysRequired(
   }
 }
 
-function boundedString(value: unknown, path: string, max = MAX_STRING_CHARS): string {
+export function boundedString(value: unknown, path: string, max = MAX_STRING_CHARS): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > max) {
     fail(path, `must be a non-empty string of at most ${max} characters`);
   }
   return value;
 }
 
-function identifier(value: unknown, path: string): string {
+export function identifier(value: unknown, path: string): string {
   const text = boundedString(value, path, 128);
   if (!ID.test(text)) fail(path, 'contains unsupported characters');
   return text;
 }
 
-function finiteNumber(value: unknown, path: string, min: number, max: number): number {
+export function finiteNumber(value: unknown, path: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
     fail(path, `must be a finite number in ${min}..${max}`);
   }
   return value;
 }
 
-function integer(value: unknown, path: string, min: number, max: number): number {
+export function integer(value: unknown, path: string, min: number, max: number): number {
   const n = finiteNumber(value, path, min, max);
   if (!Number.isSafeInteger(n)) fail(path, 'must be a safe integer');
   return n;
 }
 
-function boolean(value: unknown, path: string): boolean {
+export function boolean(value: unknown, path: string): boolean {
   if (typeof value !== 'boolean') fail(path, 'must be a boolean');
   return value;
 }
@@ -260,7 +289,12 @@ function jsonValue(
   ancestors.delete(value);
 }
 
-function validateRender(value: unknown, path: string): void {
+/** The whole-document JSON walk, with its private budget allocated for you. */
+export function assertJsonValue(value: unknown, path = '$'): void {
+  jsonValue(value, path, { nodes: 0 }, new Set<object>(), 0);
+}
+
+export function validateRender(value: unknown, path: string): void {
   const render = object(value, path);
   keysExactly(render, ['grade', 'bloom', 'feedback'], path);
 
@@ -301,7 +335,7 @@ function validateRender(value: unknown, path: string): void {
   finiteNumber(feedback['zoom'], `${path}.feedback.zoom`, 0.25, 4);
 }
 
-function validateImpulse(value: unknown, path: string): void {
+export function validateImpulse(value: unknown, path: string): void {
   const impulses = object(value, path);
   keysExactly(impulses, ['enabled', 'gain', 'responses'], path);
   boolean(impulses['enabled'], `${path}.enabled`);
@@ -463,17 +497,23 @@ const VIZFX_KEYS = [
   'speed', 'paused',
 ] as const;
 
-function numericArray(value: unknown, length: number, path: string): void {
+export function numericArray(value: unknown, length: number, path: string): void {
   if (!Array.isArray(value) || value.length !== length) fail(path, `must contain exactly ${length} values`);
   for (let i = 0; i < value.length; i++) {
     finiteNumber(value[i], `${path}[${i}]`, -MAX_ABS_CONFIG_NUMBER, MAX_ABS_CONFIG_NUMBER);
   }
 }
 
-function validateSimulation(
+/**
+ * `particleBudget` is `null` for a document that has no such field to agree
+ * with — a preset string derives the budget at apply time instead of carrying
+ * it (`./preset.ts`). Everything else about the block is validated identically,
+ * which is the point of not writing a second copy of this.
+ */
+export function validateSimulation(
   value: unknown,
   sim: string,
-  particleBudget: number,
+  particleBudget: number | null,
 ): number {
   const simulation = object(value, '$.simulation');
   if (Object.hasOwn(simulation, 'render')) fail('$.simulation.render', 'belongs at $.render');
@@ -487,7 +527,7 @@ function validateSimulation(
       1,
       MAX_RECIPE_PARTICLE_BUDGET,
     );
-    if (particleBudget !== maxAgents) fail('$.particleBudget', 'must match $.simulation.maxAgents');
+    if (particleBudget !== null && particleBudget !== maxAgents) fail('$.particleBudget', 'must match $.simulation.maxAgents');
     boolean(simulation['paused'], '$.simulation.paused');
     boolean(simulation['stemDrive'], '$.simulation.stemDrive');
     numericArray(simulation['matrix'], speciesCount * speciesCount, '$.simulation.matrix');
@@ -503,7 +543,7 @@ function validateSimulation(
     const budget = object(simulation['budget'], '$.simulation.budget');
     keysExactly(budget, ['cap', 'adaptive', 'floorFps', 'idealFps'], '$.simulation.budget');
     const cap = integer(budget['cap'], '$.simulation.budget.cap', 1, MAX_RECIPE_PARTICLE_BUDGET);
-    if (particleBudget !== cap) fail('$.particleBudget', 'must match $.simulation.budget.cap');
+    if (particleBudget !== null && particleBudget !== cap) fail('$.particleBudget', 'must match $.simulation.budget.cap');
     boolean(budget['adaptive'], '$.simulation.budget.adaptive');
     const luma = object(simulation['luma'], '$.simulation.luma');
     keysExactly(luma, LUMA_KEYS, '$.simulation.luma');
@@ -517,7 +557,7 @@ function validateSimulation(
     numericArray(simulation['maxR'], speciesCount * speciesCount, '$.simulation.maxR');
   } else if (isVizFxId(sim)) {
     keysExactly(simulation, VIZFX_KEYS, '$.simulation');
-    if (particleBudget !== 0) fail('$.particleBudget', 'must be 0 for a non-particle visual');
+    if (particleBudget !== null && particleBudget !== 0) fail('$.particleBudget', 'must be 0 for a non-particle visual');
     boolean(simulation['paused'], '$.simulation.paused');
     integer(simulation['emittersPerLayer'], '$.simulation.emittersPerLayer', 1, 64);
   } else {
@@ -536,7 +576,7 @@ const MODULATION_KEYS = [
 
 const MODULATION_REQUIRED_KEYS = MODULATION_KEYS.filter((key) => key !== 'extras');
 
-function validateModulation(
+export function validateModulation(
   value: unknown,
   sim: string,
   speciesCount: number,
@@ -594,9 +634,22 @@ function validateModulation(
   finiteNumber(boundary['respawnFraction'], '$.modulation.boundary.respawnFraction', 0, 1);
 }
 
+/** The authored θ centre: bounded, finite, and never empty. */
+export function validateModulationBase(value: unknown, path = '$.modulationBase'): void {
+  if (!Array.isArray(value) || value.length === 0) fail(path, 'must be a non-empty array');
+  if (value.length > MAX_ARRAY_LENGTH) fail(path, `exceeds ${MAX_ARRAY_LENGTH} entries`);
+  for (let i = 0; i < value.length; i++) {
+    finiteNumber(value[i], `${path}[${i}]`, -MAX_ABS_CONFIG_NUMBER, MAX_ABS_CONFIG_NUMBER);
+  }
+}
+
 /** Validate without allocating configuration-sized arrays or touching browser state. */
 export function validateExportRecipe(value: unknown): asserts value is ExportRecipe {
-  jsonValue(value, '$', { nodes: 0 }, new Set<object>(), 0);
+  withLabel(RECIPE_LABEL, () => validateRecipeBody(value));
+}
+
+function validateRecipeBody(value: unknown): void {
+  assertJsonValue(value);
   const recipe = object(value, '$');
   keysExactly(recipe, TOP_LEVEL_KEYS, '$');
 
@@ -620,21 +673,7 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
   const speciesCount = validateSimulation(recipe['simulation'], sim, particleBudget);
   const simulation = object(recipe['simulation'], '$.simulation');
   validateModulation(recipe['modulation'], sim, speciesCount, simulation['palette']);
-  const modulationBase = recipe['modulationBase'];
-  if (!Array.isArray(modulationBase) || modulationBase.length === 0) {
-    fail('$.modulationBase', 'must be a non-empty array');
-  }
-  if (modulationBase.length > MAX_ARRAY_LENGTH) {
-    fail('$.modulationBase', `exceeds ${MAX_ARRAY_LENGTH} entries`);
-  }
-  for (let i = 0; i < modulationBase.length; i++) {
-    finiteNumber(
-      modulationBase[i],
-      `$.modulationBase[${i}]`,
-      -MAX_ABS_CONFIG_NUMBER,
-      MAX_ABS_CONFIG_NUMBER,
-    );
-  }
+  validateModulationBase(recipe['modulationBase']);
 
   validateImpulse(recipe['impulses'], '$.impulses');
   validateRender(recipe['render'], '$.render');
@@ -676,7 +715,8 @@ export function validateExportRecipe(value: unknown): asserts value is ExportRec
   }
 }
 
-function canonical(value: unknown): unknown {
+/** Stable key order, so a document is content-hashable and diffs are readable. */
+export function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value !== null && typeof value === 'object') {
     const source = value as Record<string, unknown>;
@@ -844,6 +884,10 @@ export function liftExportRecipe(value: unknown): unknown {
 }
 
 export function parseExportRecipe(text: string): ExportRecipe {
+  return withLabel(RECIPE_LABEL, () => parseRecipeText(text));
+}
+
+function parseRecipeText(text: string): ExportRecipe {
   if (text.length > MAX_RECIPE_JSON_CHARS) {
     fail('$', `exceeds ${MAX_RECIPE_JSON_CHARS} serialized characters`);
   }

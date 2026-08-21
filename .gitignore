@@ -4,6 +4,10 @@ dist/
 *.log
 .env
 .env.*
+# ...except the one that carries no secret and that `build:publish` needs: it
+# holds `VITE_DEMO=1` and nothing else, and without it a fresh clone silently
+# builds the full app and calls it the demo cut.
+!web/.env.demo
 .DS_Store
 Thumbs.db
 
