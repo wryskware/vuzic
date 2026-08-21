@@ -221,12 +221,13 @@ export function createVizFxPanel(
     sim.requestSingleStep();
     pane.refresh();
   });
-  // Steps per clock tick. Above 1 the field decays and zooms faster *per second*
-  // without becoming coarser, because the step is a fixed 1/60 s whatever this
-  // says — see the note on `VizFxSim.tick`.
-  run.addBinding(config, 'speed', { min: 0, max: 4, step: 0.25, label: 'steps / tick' });
+  // World-time multiplier. The field takes exactly one step per rendered frame,
+  // so this stretches the parts of the visual written as functions of *seconds*
+  // — emitter orbits, ripple, spin — and not the compounding per-step θ factors,
+  // which are per-frame. See the notes on `STEP_DT` and `VizFxSim.tick`.
+  run.addBinding(config, 'speed', { min: 0, max: 4, step: 0.25, label: 'world time ×' });
   run.addBinding(state, 'field', { readonly: true, label: 'field' });
-  run.addBinding(state, 'steps', { readonly: true, label: 'steps this tick' });
+  run.addBinding(state, 'steps', { readonly: true, label: 'steps this frame' });
 
   // ── map ────────────────────────────────────────────────────────────────────
   // Below the workbench's own folders: the energy lane and the impulse lane are
@@ -367,7 +368,7 @@ export function createVizFxPanel(
       state.field = `${st.fieldW}×${st.fieldH} · ${st.activeRings} ring${
         st.activeRings === 1 ? '' : 's'
       }`;
-      state.steps = String(st.stepsThisTick);
+      state.steps = String(st.stepsThisFrame);
 
       // The two arrays are the sim's own live state, held by reference and
       // rewritten in place every tick — reading them here is the whole of the

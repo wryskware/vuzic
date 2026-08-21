@@ -11,12 +11,12 @@ import {
   vectorLength,
 } from '../../mapping/preset';
 import type { FeaturesFrame } from '../../timeline/sampler';
-import { LEGACY_SUBSTRATE_HZ, LEGACY_TICK_DIVISOR } from '../../timing';
+import { LEGACY_MODEL_DT } from '../../timing';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
 import { hexToLinear, paletteHuePhase, paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { RenderFrame, Sim } from '../types';
-import { advanceStepCadence, smoothDtFrames } from '../step-cadence';
+import { dtScale, smoothDtFrames } from '../frame-timing';
 import {
   defaultConfig,
   defaultPaletteColor,
@@ -44,8 +44,6 @@ const FLOATS_PER_SPECIES = 24;
 const FLOATS_PER_SPLASH = 8;
 /** must match the Globals struct in common.wgsl, padding included */
 const GLOBALS_WORDS = 28;
-/** sim substeps a single 60 Hz model tick may expand into; folded into the PCG tick key */
-const MAX_SUBSTEPS = 8;
 const STEM_DIMS = 4;
 
 /**
@@ -59,9 +57,8 @@ interface SimSnapshot {
   trail: GPUTexture;
   soil: GPUTexture;
   seed: number;
-  stepAccumulator: number;
-  /** absolute model-step count — the palette's hue cycle rides this, so it travels */
-  simSteps: number;
+  /** the world's own elapsed seconds — the palette's hue cycle rides this */
+  worldSeconds: number;
   lastPcgTick: number;
   /** wall-clock label for the workbench; not part of sim state */
   takenAt: number;
@@ -186,18 +183,32 @@ export class PhysarumSim implements Sim, ModTarget {
   private renderDtFrames = 1;
   private dtFramesPrimed = false;
 
-  private stepAccumulator = 0;
   /**
-   * Absolute model steps since the world began — this substrate's clock.
+   * Seconds of world time since the world began — this substrate's clock.
    *
-   * VizFx already had one (it feeds `f[4]` in its globals); physarum and plife
-   * only counted `stepsThisFrame`, and the palette's autonomous hue cycle needs
-   * an absolute time that is *the simulation's*, not the wall's. Pausing takes no
-   * steps, so the cycle stops with the picture; a snapshot carries it, so
-   * restoring a world restores its colour phase; a headless export starts it at
-   * zero and replays the identical trajectory.
+   * The palette's autonomous hue cycle needs an absolute time that is *the
+   * simulation's*, not the wall's. Pausing advances it by nothing, so the cycle
+   * stops with the picture; a snapshot carries it, so restoring a world restores
+   * its colour phase; a headless export starts it at zero and replays the
+   * identical trajectory.
    */
-  private simSteps = 0;
+  private worldSeconds = 0;
+  /**
+   * This frame's step length in units of the model's own 1/60 s reference step.
+   *
+   * Physarum is a per-step model: `moveDist` is cells per step, `rotate` is
+   * radians per step, `decay` is a factor per step, deposit is an amount per
+   * step. With one variable-length step per rendered frame, every one of those
+   * has to be re-expressed for the length of the step actually being taken, or
+   * the world would run at the refresh rate — 2.4× on a 144 Hz panel — and every
+   * authored preset would mean something different per machine.
+   *
+   * 1.0 on a 60 Hz display, where it is an exact float identity and the uploaded
+   * uniforms are bit-identical to the ones the fixed 60 Hz cadence produced.
+   * Held at its last live value while paused rather than dropping to 0, because
+   * `uploadSpecies` also runs from `render`.
+   */
+  private stepScale = 1;
   private pendingSingleStep = false;
   private lastPcgTick = 0;
   private stepsThisFrame = 0;
@@ -229,7 +240,7 @@ export class PhysarumSim implements Sim, ModTarget {
 
   /** Sim time in seconds — the argument the palette's hue cycle is a function of. */
   get simSeconds(): number {
-    return this.simSteps / LEGACY_SUBSTRATE_HZ;
+    return this.worldSeconds;
   }
 
   private refreshPalette(): void {
@@ -791,11 +802,10 @@ export class PhysarumSim implements Sim, ModTarget {
       this.writeGlobals(this.lastPcgTick);
       return;
     }
-    this.stepAccumulator = 0;
     // A new world starts its colour phase where a fresh load would, so a reseed
     // and a reload of the same recipe agree. `keepWorld` returned above and
     // therefore keeps its clock, which is the same rule the pcg tick follows.
-    this.simSteps = 0;
+    this.worldSeconds = 0;
     this.writeGlobals(0);
     this.uploadSpecies();
     // A new world starts from black; letting the adapted gain carry over would
@@ -907,16 +917,14 @@ export class PhysarumSim implements Sim, ModTarget {
           usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
         }),
         seed: this.seed,
-        stepAccumulator: this.stepAccumulator,
-        simSteps: this.simSteps,
+        worldSeconds: this.worldSeconds,
         lastPcgTick: this.lastPcgTick,
         takenAt: performance.now(),
       };
     }
     const snap = this.snap;
     snap.seed = this.seed;
-    snap.stepAccumulator = this.stepAccumulator;
-    snap.simSteps = this.simSteps;
+    snap.worldSeconds = this.worldSeconds;
     snap.lastPcgTick = this.lastPcgTick;
     snap.takenAt = performance.now();
 
@@ -960,8 +968,7 @@ export class PhysarumSim implements Sim, ModTarget {
     device.queue.submit([encoder.finish()]);
 
     this.setSeed(snap.seed);
-    this.stepAccumulator = snap.stepAccumulator;
-    this.simSteps = snap.simSteps;
+    this.worldSeconds = snap.worldSeconds;
     // The hue phase is a function of the clock that was just rewound, so the
     // cached linearisation is now stale by however far the cycle had run.
     this.paletteDirty = true;
@@ -986,8 +993,19 @@ export class PhysarumSim implements Sim, ModTarget {
     this.ctx.device.queue.writeBuffer(this.matrixBuf, 0, this.matrixData);
   }
 
-  tick(frame: FeaturesFrame, simTick: number): void {
+  /**
+   * One rendered frame's worth of world: exactly one model step, stretched or
+   * squeezed to cover `dt` seconds.
+   *
+   * There is no substep loop and no accumulator — `dt` arrives already clamped
+   * by `MAX_FRAME_DT`, `speed` scales it into world time, and `stepScale`
+   * carries the whole of it into the per-step quantities (see the field's note).
+   * A slow machine therefore takes one longer, coarser step rather than several
+   * short ones, and being late buys no extra GPU work.
+   */
+  tick(frame: FeaturesFrame, _stepIndex: number, dt: number): void {
     if (!this.ready || !this.ctx) return;
+    void _stepIndex;
 
     // The stems channel is 4-dim by contract; species beyond 4 get no stem drive.
     const stemOffset = this.stemOffset;
@@ -997,38 +1015,32 @@ export class PhysarumSim implements Sim, ModTarget {
       }
     }
 
-    let steps = 0;
+    let scale = 0;
     if (this.config.paused) {
+      // A manual single step is worth one 60 Hz frame of world, so the button
+      // means the same thing whatever the display is doing.
       if (this.pendingSingleStep) {
         this.pendingSingleStep = false;
-        steps = 1;
+        scale = 1;
       }
     } else {
-      const next = advanceStepCadence(
-        this.stepAccumulator,
-        this.config.speed,
-        MAX_SUBSTEPS,
-        simTick,
-        LEGACY_TICK_DIVISOR,
-      );
-      this.stepAccumulator = next.accumulator;
-      steps = next.steps;
+      scale = dtScale(dt * Math.max(this.config.speed, 0), LEGACY_MODEL_DT);
     }
 
-    this.stepsThisFrame = steps;
-    if (steps > 0) {
-      this.simSteps += steps;
-      // Only when a cycle is actually running: a static palette must not be
-      // re-linearised every tick, which is what the dirty flag exists to avoid.
-      if (this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
-    }
-    if (steps > 0) this.uploadSplashes();
-    // Convert the 120 Hz app key back to the 60 Hz model key. On the even ticks
-    // that can run steps this is exactly the key the old 60 Hz clock supplied.
-    const modelTick = Math.floor(simTick / LEGACY_TICK_DIVISOR);
-    for (let s = 0; s < steps; s++) {
-      this.runStep(modelTick * MAX_SUBSTEPS + s);
-    }
+    this.stepsThisFrame = scale > 0 ? 1 : 0;
+    if (scale <= 0) return;
+
+    this.stepScale = scale;
+    this.worldSeconds += scale * LEGACY_MODEL_DT;
+    // Only when a cycle is actually running: a static palette must not be
+    // re-linearised every frame, which is what the dirty flag exists to avoid.
+    if (this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
+    this.uploadSplashes();
+    // The pcg key is a plain per-step counter now rather than a function of a
+    // transport tick. It never rewinds, which is all the agents' tie-break and
+    // respawn hashes need; reproducing a given frame across runs is not a
+    // property this loop has any more.
+    this.runStep(this.lastPcgTick + 1);
   }
 
   /**
@@ -1052,8 +1064,11 @@ export class PhysarumSim implements Sim, ModTarget {
       this.splashData[o + 2] = Math.max(s.radius * shortAxis, 1);
       this.splashData[o + 3] = s.strength;
       this.splashData[o + 4] = s.species;
-      this.splashData[o + 5] = s.push;
-      this.splashData[o + 6] = s.swirl;
+      // Push (cells) and swirl (radians) are both applied once per step for the
+      // length of the envelope's decay, so both are rates and both scale with
+      // the step. Without this a splash would shove harder on a fast display.
+      this.splashData[o + 5] = s.push * this.stepScale;
+      this.splashData[o + 6] = s.swirl * this.stepScale;
       this.splashData[o + 7] = 0;
     }
     this.splashCount = n;
@@ -1262,10 +1277,16 @@ export class PhysarumSim implements Sim, ModTarget {
     f[12] = this.respawnFraction;
     u[13] = this.respawnKey >>> 0;
     u[14] = this.splashCount >>> 0;
-    u[15] = 0;
+    // The step's length in model steps. Only the diffusion kernel reads it —
+    // every other per-step quantity is scaled on this side, where it is one
+    // multiply on a uniform instead of one per invocation.
+    f[15] = this.stepScale;
     const soil = this.config.soil;
-    f[16] = Math.min(Math.max(soil.decay, 0), 1);
-    f[17] = Math.max(soil.accum, 0);
+    // Soil is an exponential accumulator on the same per-step clock as the
+    // trails: the decay is a factor (so it exponentiates) and the accumulation
+    // is a rate (so it multiplies). Both are exact identities at scale 1.
+    f[16] = Math.pow(Math.min(Math.max(soil.decay, 0), 1), this.stepScale);
+    f[17] = Math.max(soil.accum, 0) * this.stepScale;
     f[18] = Math.max(soil.depositBias, 0);
     f[19] = Math.max(soil.senseBias, 0);
     f[20] = soil.debugView ? 1 : 0;
@@ -1358,15 +1379,24 @@ export class PhysarumSim implements Sim, ModTarget {
       d[o + 5] = s.sensorAngle.p2;
       d[o + 6] = s.sensorAngle.p3;
       d[o + 7] = 0;
-      d[o + 8] = s.rotate.p1;
-      d[o + 9] = s.rotate.p2;
+      // Rotation is an angular *rate* — radians per model step — so the whole
+      // adaptive curve p1 + p2·x^p3 scales with the step's length. `adaptive()`
+      // is linear in p1 and p2, so scaling those two scales its output at every
+      // trail intensity and the exponent stays alone.
+      d[o + 8] = s.rotate.p1 * this.stepScale;
+      d[o + 9] = s.rotate.p2 * this.stepScale;
       d[o + 10] = s.rotate.p3;
       d[o + 11] = 0;
       // Macro `agility`, the whole move curve — same treatment as `reach`, one
       // lane down: how far an agent travels per step at any trail intensity.
       // `scale` rides here too; that pairing is what makes it a *scale* rather
       // than a second reach knob.
-      const agility = Math.max(macros.agility, 0) * scale;
+      //
+      // `stepScale` rides here as well, and only here among the two distance
+      // lanes: move distance is a *velocity* (cells per step) and must cover the
+      // step actually being taken, while `sensorDist` is a reach — a length, not
+      // a rate — and a shorter step does not make an agent short-sighted.
+      const agility = Math.max(macros.agility, 0) * scale * this.stepScale;
       d[o + 12] = s.moveDist.p1 * agility;
       d[o + 13] = s.moveDist.p2 * agility;
       d[o + 14] = s.moveDist.p3;
@@ -1417,8 +1447,14 @@ export class PhysarumSim implements Sim, ModTarget {
           (1 + Math.max(this.config.stemGain, 0) * stem),
         MAX_EFFECTIVE_DEPOSIT,
       );
-      d[o + 20] = Math.min(base * Math.max(depositMul, 0), MAX_DEPOSIT);
-      d[o + 21] = s.decay;
+      // Deposit is an amount per step, i.e. a rate; MAX_DEPOSIT is the i32
+      // atomic's per-step headroom and therefore clamps the scaled value, not
+      // the authored one.
+      d[o + 20] = Math.min(base * Math.max(depositMul, 0) * this.stepScale, MAX_DEPOSIT);
+      // Decay is a geometric factor per step, so it exponentiates rather than
+      // multiplying — same conversion the render-domain feedback lane does with
+      // `renderDtFrames`, and an exact identity at scale 1.
+      d[o + 21] = Math.pow(s.decay, this.stepScale);
       // Macro `density`, clamped back into 0..1. `stats()` recomputes the same
       // number from the config — hence the shared helper, so the readout and the
       // GPU can never disagree.

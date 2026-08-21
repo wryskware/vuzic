@@ -63,11 +63,16 @@ const MIN_R_FLOOR: f32 = 0.002;
 
 // Wander sampling. `WANDER_FREQ` sets how many independent currents fit across
 // the world (3 => cells about a third of the height) and `WANDER_DRIFT` is how
-// fast the field itself moves, in lattice units per tick. Both are tunable and
-// both are visible: raise the frequency for turbulence, raise the drift for a
-// field that never settles.
+// fast the field itself moves, in lattice units per second of SIM time. Both
+// are tunable and both are visible: raise the frequency for turbulence, raise
+// the drift for a field that never settles.
+//
+// Per second, not per step: with one variable-length step per rendered frame a
+// per-step drift would run at the refresh rate, and the same preset would be a
+// lazy swirl on one display and a gale on another. 0.18/s is the shipped rate —
+// the old 0.0015 per step on the 120 Hz grid — unchanged.
 const WANDER_FREQ: f32 = 3.0;
-const WANDER_DRIFT: f32 = 0.0015;
+const WANDER_DRIFT: f32 = 0.18;
 
 // How far a newly grown particle lands from the conspecific it grew out of, in
 // world units (world height is 1, so this is 1% of the screen height). Small on
@@ -115,6 +120,22 @@ const PUSH_SWIRL_SCALE: f32 = 3.0;
 //             torus's own half-world minimum-image bound.
 override BRUTE: u32 = 0u;
 
+// The segment geometry, specialised for the same reason BRUTE is: `speciesOf`
+// divides by `g.segSize`, and a u32 divide by a *runtime* value has no hardware
+// path — it lowers to ~20+ ALU instructions — which the force loop was paying
+// once per candidate pair, ~10⁹ times per substep in brute mode. As pipeline
+// constants the divide compiles to a multiply-shift. Both numbers are fixed
+// before the pipelines are built (init() sizes the segments first) and cannot
+// change for the sim's life, so nothing is given up. No defaults on purpose: a
+// pipeline that forgets to set them must fail creation, not run wrong physics.
+override SEG_SIZE: u32;
+override SPECIES_COUNT: u32;
+
+/** speciesOf (common.wgsl), over the pipeline constants instead of Globals. */
+fn speciesOfIdx(i: u32) -> u32 {
+  return min(i / SEG_SIZE, SPECIES_COUNT - 1u);
+}
+
 /**
  * One pair's contribution to the force on particle `i` from pool slot `j`.
  *
@@ -122,6 +143,12 @@ override BRUTE: u32 = 0u;
  * differ only in which `j`s they visit, and a tent that drifted between them
  * would make "same settings, other mode" mean two different worlds. Everything
  * it reads beyond its arguments (`src`, `interaction`, `g`) is module scope.
+ *
+ * The caller owns the minimum-image delta (`d`, `r2`) and the coarse row-cap
+ * reject in front of this call — see the force loop — so by the time this runs,
+ * the pair is a genuine candidate. The exact per-species `rmax` test still
+ * lives here, because the row cap is the row's *maximum* reach and a shorter
+ * row entry must still cut off at its own radius.
  *
  * `rcap` is the caller's business, because it is the one number the modes
  * genuinely disagree about — `stencil × cell` for the grid walk, half the short
@@ -131,15 +158,15 @@ fn pairForce(
   i: u32,
   j: u32,
   si: u32,
-  k: u32,
-  pos: vec2f,
+  d: vec2f,
+  r2: f32,
+  energy: f32,
   radiusScale: f32,
   rcap: f32,
-  world: vec2f,
 ) -> vec2f {
+  let k = SPECIES_COUNT;
   let kk = k * k;
-  let q = src[j];
-  let sj = speciesOf(j, g.segSize, k);
+  let sj = speciesOfIdx(j);
   let pair = si * k + sj;
 
   // The receiver's radiusScale scales the whole row, so "this species reaches
@@ -147,9 +174,6 @@ fn pairForce(
   // what the search can see is not a longer reach, it is a silently truncated
   // one.
   let rmax = min(interaction[kk + pair] * radiusScale, rcap);
-  let d0 = q.pos - pos;
-  let d = wrapDelta(d0, world);
-  let r2 = dot(d, d);
   if (r2 > rmax * rmax) {
     return vec2f(0.0);
   }
@@ -197,7 +221,7 @@ fn pairForce(
     let span = max(rmax - rmin, 1e-6);
     f = interaction[pair] * (1.0 - abs(2.0 * r - (rmin + rmax)) / span);
   }
-  return dir * (f * q.energy);
+  return dir * (f * energy);
 }
 
 /**
@@ -229,8 +253,8 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
     return;
   }
   let world = vec2f(g.worldW, g.worldH);
-  let si = speciesOf(i, g.segSize, g.speciesCount);
-  let localIdx = i - si * g.segSize;
+  let si = speciesOfIdx(i);
+  let localIdx = i - si * SEG_SIZE;
   let me = species[si];
   var p = src[i];
 
@@ -248,7 +272,7 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
     // between the two threads.
     if (energy <= 0.0) {
       let hd = hash3(g.seed ^ 0xc0107eeu, g.tick, i);
-      let donor = src[si * g.segSize + (hd % max(goal, 1u))];
+      let donor = src[si * SEG_SIZE + (hd % max(goal, 1u))];
       let h0 = pcg(hd);
       let h1 = pcg(h0);
       if (goal == 0u || donor.energy < DONOR_MIN_ENERGY) {
@@ -283,11 +307,26 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
     }
   }
 
-  let k = g.speciesCount;
+  let k = SPECIES_COUNT;
   let kk = k * k;
   let radiusScale = max(me.motion.y, 1e-3);
 
   let here = wrapWorld(p.pos, world);
+
+  // The receiver's WIDEST reach, over every sender species — K loads, once,
+  // outside the pair loop. Every per-pair `rmax` is min(row entry × radiusScale,
+  // rcap), so min(rowMaxR × radiusScale, rcap) bounds them all, and a candidate
+  // past that bound cannot survive pairForce's exact test for ANY sender. Both
+  // search loops test squared distance against it FIRST, which keeps the reject
+  // path — the overwhelming majority of an O(N²) pass — down to two broadcast
+  // loads, a wrap, a dot and one compare: no divide, no interaction fetch.
+  // Monotonicity makes the reject exact, not approximate: rejected pairs are
+  // precisely pairs whose contribution was 0.0, so the force sum is unchanged
+  // bit for bit.
+  var rowMaxR = 0.0;
+  for (var sj = 0u; sj < k; sj = sj + 1u) {
+    rowMaxR = max(rowMaxR, interaction[kk + si * k + sj]);
+  }
 
   var force = vec2f(0.0);
   if (BRUTE != 0u) {
@@ -315,12 +354,17 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
     // the reason no shared-memory tiling is needed here.
     let nc = g.gridW * g.gridH;
     let total = cellStart[nc - 1u] + cellCount[nc - 1u];
+    let rowCap = min(rowMaxR * radiusScale, rcap);
+    let rowCap2 = rowCap * rowCap;
     for (var s = 0u; s < total; s = s + 1u) {
       let j = sortedIdx[s];
-      if (j == i) {
+      let q = src[j];
+      let d = wrapDelta(q.pos - p.pos, world);
+      let r2 = dot(d, d);
+      if (r2 > rowCap2 || j == i) {
         continue;
       }
-      force = force + pairForce(i, j, si, k, p.pos, radiusScale, rcap, world);
+      force = force + pairForce(i, j, si, d, r2, q.energy, radiusScale, rcap);
     }
   } else {
     // ── grid: the (2s+1)² cell walk ───────────────────────────────────────────
@@ -336,6 +380,8 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
     // there are two numbers that could.
     let stencil = i32(max(g.nearStencil, 1u));
     let rcap = f32(stencil) * min(g.cellW, g.cellH);
+    let rowCap = min(rowMaxR * radiusScale, rcap);
+    let rowCap2 = rowCap * rowCap;
 
     for (var dy = -stencil; dy <= stencil; dy = dy + 1) {
       for (var dx = -stencil; dx <= stencil; dx = dx + 1) {
@@ -349,10 +395,13 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
 
         for (var s = 0u; s < n; s = s + 1u) {
           let j = sortedIdx[start + s];
-          if (j == i) {
+          let q = src[j];
+          let d = wrapDelta(q.pos - p.pos, world);
+          let r2 = dot(d, d);
+          if (r2 > rowCap2 || j == i) {
             continue;
           }
-          force = force + pairForce(i, j, si, k, p.pos, radiusScale, rcap, world);
+          force = force + pairForce(i, j, si, d, r2, q.energy, radiusScale, rcap);
         }
       }
     }
@@ -378,43 +427,61 @@ fn stepParticles(@builtin(global_invocation_id) id: vec3u) {
   //
   // Eight samples per particle covers all K species, because each RGBA fetch
   // carries four of them.
-  if (g.farOn != 0u) {
-    let dim = vec2f(textureDimensions(farDog0, 0));
-    let uv = here / world;
-    let ex = vec2f(1.0 / dim.x, 0.0);
-    let ey = vec2f(0.0, 1.0 / dim.y);
-    let ax = textureSampleLevel(farDog0, farSamp, uv + ex, 0.0)
-           - textureSampleLevel(farDog0, farSamp, uv - ex, 0.0);
-    let ay = textureSampleLevel(farDog0, farSamp, uv + ey, 0.0)
-           - textureSampleLevel(farDog0, farSamp, uv - ey, 0.0);
-    let bx = textureSampleLevel(farDog1, farSamp, uv + ex, 0.0)
-           - textureSampleLevel(farDog1, farSamp, uv - ex, 0.0);
-    let by = textureSampleLevel(farDog1, farSamp, uv + ey, 0.0)
-           - textureSampleLevel(farDog1, farSamp, uv - ey, 0.0);
-    // Unpacked into arrays rather than indexed as vectors: a fixed-size `var`
-    // array is the one form WGSL indexes dynamically without argument.
-    var gx: array<f32, 8>;
-    var gy: array<f32, 8>;
-    gx[0] = ax.x; gx[1] = ax.y; gx[2] = ax.z; gx[3] = ax.w;
-    gx[4] = bx.x; gx[5] = bx.y; gx[6] = bx.z; gx[7] = bx.w;
-    gy[0] = ay.x; gy[1] = ay.y; gy[2] = ay.z; gy[3] = ay.w;
-    gy[4] = by.x; gy[5] = by.y; gy[6] = by.z; gy[7] = by.w;
+  //
+  // GRID MODE ONLY, and specialised out rather than branched out. The lane
+  // exists to hand the truncated (stencil × cell) search a long-range term; the
+  // brute pair sum already reaches the torus's own half-world cap, so there is
+  // nothing left for a compensation lane to compensate. Under BRUTE = 1 this
+  // whole block — samples, gather, dot products — is dead code at pipeline
+  // creation, and the CPU agrees: `farActive` in plife.ts is false in brute
+  // mode, so the splat/blur chain never runs and `farOn` is written 0 there
+  // regardless.
+  if (BRUTE == 0u) {
+    if (g.farOn != 0u) {
+      let dim = vec2f(textureDimensions(farDog0, 0));
+      let uv = here / world;
+      let ex = vec2f(1.0 / dim.x, 0.0);
+      let ey = vec2f(0.0, 1.0 / dim.y);
+      let ax = textureSampleLevel(farDog0, farSamp, uv + ex, 0.0)
+             - textureSampleLevel(farDog0, farSamp, uv - ex, 0.0);
+      let ay = textureSampleLevel(farDog0, farSamp, uv + ey, 0.0)
+             - textureSampleLevel(farDog0, farSamp, uv - ey, 0.0);
+      let bx = textureSampleLevel(farDog1, farSamp, uv + ex, 0.0)
+             - textureSampleLevel(farDog1, farSamp, uv - ex, 0.0);
+      let by = textureSampleLevel(farDog1, farSamp, uv + ey, 0.0)
+             - textureSampleLevel(farDog1, farSamp, uv - ey, 0.0);
 
-    let fbase = 3u * kk + si * k;
-    var far = vec2f(0.0);
-    let jn = min(k, 8u);
-    for (var j = 0u; j < jn; j = j + 1u) {
-      let a = interaction[fbase + j];
-      far = far + vec2f(gx[j], gy[j]) * a;
+      // The row's far coefficients, gathered into two vec4 lanes. SPECIES_COUNT
+      // is a pipeline constant, so this loop unrolls and every index in it is
+      // constant — the whole gather lives in registers. (The previous form, two
+      // function-scope `array<f32, 8>`s indexed dynamically, was exactly the
+      // shape backends demote to scratch memory, taxing the kernel's occupancy
+      // even on frames where the lane was off.) Species beyond K keep the 0 the
+      // vectors were built with and contribute exactly 0.
+      let fbase = 3u * kk + si * k;
+      var cLo = vec4f(0.0);
+      var cHi = vec4f(0.0);
+      for (var j = 0u; j < min(k, 8u); j = j + 1u) {
+        if (j < 4u) {
+          cLo[j] = interaction[fbase + j];
+        } else {
+          cHi[j - 4u] = interaction[fbase + j];
+        }
+      }
+      // ax/bx carry ∂x for species 0..3 / 4..7, ay/by the ∂y counterparts, so
+      // the per-species sum is four lanes at a time.
+      force = force + vec2f(
+        dot(ax, cLo) + dot(bx, cHi),
+        dot(ay, cLo) + dot(by, cHi),
+      );
     }
-    force = force + far;
   }
 
   // Wander: a spatially coherent direction field, sampled at the particle's own
-  // position and drifting with the tick. Applied as a unit push scaled by the
+  // position and drifting with sim time. Applied as a unit push scaled by the
   // species' amplitude, so it is a current the particle swims in rather than
   // per-particle noise (which would just be temperature).
-  let phi = TAU * noise2(p.pos * WANDER_FREQ + vec2f(f32(g.tick) * WANDER_DRIFT), g.seed);
+  let phi = TAU * noise2(p.pos * WANDER_FREQ + vec2f(g.wanderTime * WANDER_DRIFT), g.seed);
   force = force + vec2f(cos(phi), sin(phi)) * max(me.motion.x, 0.0);
 
   var v = p.vel + force * (g.forceGain * max(me.geom.z, 0.0) * g.dt);
@@ -464,8 +531,8 @@ fn initParticles(@builtin(global_invocation_id) id: vec3u) {
   if (i >= g.maxParticles) {
     return;
   }
-  let sp = speciesOf(i, g.segSize, g.speciesCount);
-  let localIdx = i - sp * g.segSize;
+  let sp = speciesOfIdx(i);
+  let localIdx = i - sp * SEG_SIZE;
   let hc = hash3(g.seed, 0xc1a55eedu, sp);
   let centre = vec2f(rand01(hc) * g.worldW, rand01(pcg(hc)) * g.worldH);
 
@@ -553,7 +620,7 @@ fn splashParticles(@builtin(global_invocation_id) id: vec3u) {
   if (p.energy <= 0.0) {
     return;
   }
-  let sp = speciesOf(i, g.segSize, g.speciesCount);
+  let sp = speciesOfIdx(i);
   let world = vec2f(g.worldW, g.worldH);
 
   var v = p.vel;

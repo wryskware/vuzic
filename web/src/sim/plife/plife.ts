@@ -2,7 +2,7 @@
  * Particle life on the GPU: uniform-grid neighbour search, pairwise tent forces,
  * HDR sprite splats with a render-domain trail.
  *
- * Per substep:
+ * Per sim step — one per rendered frame:
  *
  *   clearBuffer(cellCount, cellFill)          — no shader, no dispatch
  *   splashParticles   one thread / particle   → src velocities  [only if discs]
@@ -24,10 +24,10 @@
  * `field.nearStencil`. With the shipped defaults —
  * 2²⁰ pool, primaries at aliveFraction 0.5, accents at 0.12 — that is roughly
  * 325 k live particles in a grid of ~700 cells, so ~460 per cell and ~4 200
- * candidates tested per particle per substep: about 1.4 × 10⁹ candidate tests
- * per substep, 1.6 × 10¹¹ per second at the 120 Hz physics rate. **That will not
- * hold 120 fps on
- * most hardware.** The levers, in the order worth pulling:
+ * candidates tested per particle per step: about 1.4 × 10⁹ candidate tests per
+ * step, and one step per rendered frame — so 8 × 10¹⁰ per second at 60 fps.
+ * **That will not hold 60 fps on most hardware.** The levers, in the order worth
+ * pulling:
  *
  *   1. `maxParticles` — quadratic in effect (fewer particles *and* shorter cell
  *      lists). 2¹⁸ is a 16× reduction in pair work.
@@ -62,15 +62,16 @@
  * a much sharper one — halving the pool quarters the work rather than halving
  * it.
  */
+import { PassTimer } from '../../gpu/pass-timer';
 import type { GpuRuntimeContext } from '../../gpu/runtime-context';
 import type { ModTarget, ThetaRegistry } from '../../mapping/target';
-import { SECONDS_PER_TICK } from '../../timing';
 import type { FeaturesFrame } from '../../timeline/sampler';
 import { MAX_SPLASHES, type ImpulseState } from '../impulses';
 import { paletteHuePhase, paletteLinear } from '../palette';
 import { HDR_FORMAT, PostFx } from '../render/postfx';
 import type { RenderFrame, Sim } from '../types';
-import { advanceStepCadence, smoothDtFrames } from '../step-cadence';
+import { DisplayRateEstimator, smoothDtFrames } from '../frame-timing';
+import { governorVerdict } from './governor';
 import {
   BUDGET_MIN,
   defaultPlifeConfig,
@@ -87,7 +88,6 @@ import {
   MAX_REACH_BRUTE,
   MAX_SIZE,
   MAX_STRETCH,
-  MAX_SUBSTEPS,
   MAX_WIGGLE_ROLL,
   MIN_R_FLOOR,
   PLIFE_BLOCKS,
@@ -110,7 +110,6 @@ import {
   presetToVector,
   vectorLength,
 } from './preset';
-import { PLIFE_SUBSTEP_DT } from './timing';
 
 import commonWgsl from './shaders/common.wgsl?raw';
 import gridWgsl from './shaders/grid.wgsl?raw';
@@ -218,18 +217,16 @@ const BYTES_PER_PARTICLE = 32;
  * bound has to exist because the pass has no way to grow past one workgroup.
  */
 const MAX_CELLS = 16384;
-/**
- * Seconds a single substep advances the world. Particle Life deliberately runs
- * one true integration on every 120 Hz app tick; this is shared with the clock
- * rather than mirrored as another rate literal.
- */
 
 // ── the adaptive particle governor ───────────────────────────────────────────
 //
-// A closed loop with one actuator (the summed population target) and one sensor
-// (the measured frame rate), deliberately slow and deliberately asymmetric. The
-// constants below are the whole control law; `noteFrameRate` is the whole
-// implementation.
+// A closed loop with one actuator (the summed population target) and one
+// sensor — the presented frame rate, against a measured display rate —
+// deliberately slow and deliberately asymmetric. The decision law and its
+// tolerances live in `governor.ts` (pure, tested); the cadence and step-size
+// constants below plus `noteFrameRate` are the whole actuator. (A GPU-meter
+// sensor briefly outranked the frame rate here; `governor.ts` records why it
+// was removed the same day it landed, 2026-08-20.)
 
 /**
  * Minimum wall time between two adjustments.
@@ -264,24 +261,8 @@ const GOVERNOR_SHRINK = 0.85;
  */
 const GOVERNOR_GROW = 1.03;
 
-/**
- * How close to `idealFps` counts as meeting it.
- *
- * This is the vsync guard and it is the one constant that would be a bug if it
- * were the "obvious" value. A display presents at its refresh rate and no
- * faster, so a 120 Hz panel measures ~119.x fps at its very best — under a rule
- * of "grow when fps > ideal × 1.05" a machine with an ideal of 120 could
- * *never* grow, which is exactly backwards for the machine the ideal was chosen
- * to describe. So the test is "meeting the ideal within 3%" rather than
- * "exceeding it": ×0.97 of 120 is 116.4, which one frame of jitter in an EMA
- * over ~25 frames does not fall below, while a genuinely struggling 100 fps
- * still reads as "hold".
- *
- * The deadband is therefore [floorFps, idealFps × 0.97) — shed below it, grow at
- * or above the top of it, and hold in between, which is what keeps the budget
- * still on a machine that is comfortably fine but not spectacular.
- */
-const GOVERNOR_GROW_TOLERANCE = 0.97;
+/** EMA weight for the CPU encode meters; ~a second of memory at 60 Hz. */
+const CPU_METER_ALPHA = 0.05;
 
 /**
  * The sim's whole persistent state on a spare buffer. Just the particles: the
@@ -292,9 +273,8 @@ const GOVERNOR_GROW_TOLERANCE = 0.97;
 interface PlifeSnapshot {
   particles: GPUBuffer;
   seed: number;
-  stepAccumulator: number;
-  /** absolute substep count — the palette's hue cycle rides this, so it travels */
-  simSteps: number;
+  /** the world's own elapsed seconds — the palette's hue cycle rides this */
+  worldSeconds: number;
   lastPcgTick: number;
   /** which ping-pong slot the copy came from; restore puts it back in the same one */
   parity: number;
@@ -510,9 +490,17 @@ export class PlifeSim implements Sim, ModTarget {
     return Math.max(this.config.field.farScale, FAR_SCALE_MIN_RATIO * this.farSigma1);
   }
 
-  /** Is the far lane doing anything? Gates the whole chain and the shader's sampling. */
+  /**
+   * Is the far lane doing anything? Gates the whole chain and the shader's
+   * sampling. Never in brute mode: the lane is the grid lane's long-range
+   * compensation and the brute pair sum already reaches the half-torus cap, so
+   * step.wgsl compiles the sampling out of the BRUTE pipeline and this gate
+   * keeps the CPU honest about it — no splat, no blurs, farOn written 0.
+   * Flipping back to grid re-arms it with no staleness window: `tick` runs
+   * `runFarField` ahead of that same frame's step.
+   */
   private farActive(): boolean {
-    return this.ready && this.config.field.farGain > 0;
+    return this.ready && this.config.field.farGain > 0 && this.pairSearch() !== 'brute';
   }
 
   /**
@@ -619,6 +607,14 @@ export class PlifeSim implements Sim, ModTarget {
   private governorAt = 0;
   /** last frame rate handed in, purely for the panel's readout */
   private measuredFps = 0;
+  /** what the last adjustment was decided on — e.g. "58 fps · ~60 Hz panel" */
+  private governorBasis = '';
+  /**
+   * The display's measured refresh rate, from the gaps between `noteFrameRate`
+   * calls (one per rendered frame). Session-only for the same reason the budget
+   * is: which monitor this window is on is not a persistable fact.
+   */
+  private displayRate = new DisplayRateEstimator();
 
   // ── far field (the density pyramid) ────────────────────────────────────────
   //
@@ -658,6 +654,16 @@ export class PlifeSim implements Sim, ModTarget {
   private cellStartBuf!: GPUBuffer;
   private sortedIdxBuf!: GPUBuffer;
   private splashBuf!: GPUBuffer;
+
+  /**
+   * GPU meters over the sim lane's passes (`gpu/pass-timer.ts`). Constructed
+   * unconditionally in `init` — it degrades itself to a no-op on adapters
+   * without `timestamp-query` — and read by the panel through `gpuTimings`.
+   */
+  private timer!: PassTimer;
+  /** Main-thread cost of tick() / render(), EMA over ~2 s. See `gpuTimings`. */
+  private cpuTickMs = 0;
+  private cpuRenderMs = 0;
 
   private countPipeline!: GPUComputePipeline;
   private scanPipeline!: GPUComputePipeline;
@@ -714,14 +720,21 @@ export class PlifeSim implements Sim, ModTarget {
   private dtFramesPrimed = false;
 
   private parity = 0;
-  private stepAccumulator = 0;
   /**
-   * Absolute substeps since the world began — this substrate's clock, in
-   * `PLIFE_SUBSTEP_DT` units. Only the palette's autonomous hue cycle reads it
-   * today; it exists because that cycle must be a function of *simulation* time
-   * so that pausing freezes it and a headless export replays it exactly.
+   * Seconds of world time since this world began — this substrate's own clock,
+   * accumulated one frame's `dt` at a time. It is deliberately not wall time:
+   * pausing freezes it, `speed` scales it, and a headless export (whose frames
+   * are a fixed dt apart) replays it exactly. The palette's autonomous hue cycle
+   * and the wander field's drift are both functions of it.
    */
-  private simSteps = 0;
+  private worldSeconds = 0;
+  /**
+   * World seconds the last integration step covered — `g.dt` for every pass in
+   * the step chain. One step per rendered frame, so this is the frame's own
+   * clamped delta times `speed`; seeded at a 60 Hz frame so the uniform is
+   * sensible before the first tick and for a paused single-step.
+   */
+  private stepDt = 1 / 60;
   private pendingSingleStep = false;
   private lastPcgTick = 0;
   private stepsThisFrame = 0;
@@ -775,7 +788,7 @@ export class PlifeSim implements Sim, ModTarget {
 
   /** Sim time in seconds — the argument the palette's hue cycle is a function of. */
   get simSeconds(): number {
-    return this.simSteps * PLIFE_SUBSTEP_DT;
+    return this.worldSeconds;
   }
 
   private refreshPalette(): void {
@@ -919,6 +932,15 @@ export class PlifeSim implements Sim, ModTarget {
   }
 
   /**
+   * What the governor last decided on — the fps it read and the display rate it
+   * held it against, e.g. `"58 fps · ~60 Hz panel"`. Panel readout only; empty
+   * until the first adjustment window passes.
+   */
+  get governorBasisNote(): string {
+    return this.governorBasis;
+  }
+
+  /**
    * Hand the governor a frame-rate measurement, once per rendered frame.
    *
    * The EMA lives in `main.ts` rather than here, and that split is deliberate:
@@ -933,20 +955,24 @@ export class PlifeSim implements Sim, ModTarget {
    * `terrarium.sim.noteFrameRate(45, t)` with a synthetic clock, which is the
    * documented dev handle for it (main exposes `terrarium` under `import.meta.env.DEV`).
    *
-   * The law, in full:
+   * ## The sensor is the presented frame rate — see `governor.ts`
    *
-   *   fps <  floorFps                    → ×GOVERNOR_SHRINK, floored
-   *   fps >= idealFps × TOLERANCE        → ×GOVERNOR_GROW, capped
-   *   otherwise                          → hold
-   *
-   * at most once per `GOVERNOR_INTERVAL_MS`. `idealFps` is read as
-   * `max(idealFps, floorFps)` so that a file (or a slider) with the two crossed
-   * degenerates into "shed below the floor, grow at the floor" rather than into
-   * a band that both branches claim.
+   * The whole decision (shed below the floor, grow when meeting what THIS
+   * machine's display can actually show, hold between — and why fps beat the
+   * GPU pass meters as the sensor) lives in `governorVerdict`, pure and
+   * tested. What stays here is the actuator: the 1 s cadence, the asymmetric
+   * step sizes, and the budget arithmetic. The display rate the verdict is held
+   * against is measured from the gaps between these very calls — one per
+   * rendered frame, so the smallest recent gap is the panel's vsync slot
+   * (`DisplayRateEstimator`).
    */
   noteFrameRate(fps: number, now: number = performance.now()): void {
     if (!Number.isFinite(fps) || fps <= 0) return;
     this.measuredFps = fps;
+    // Fed ahead of every gate below: the display's rate is a fact about the
+    // machine whether or not the governor is on or due, and the estimator
+    // needs the per-frame cadence, not the 1 Hz decision cadence.
+    this.displayRate.note(now);
     if (!this.governorOn()) {
       // Turning the governor off is also how you reset it: the next time it is
       // switched on it starts from the cap rather than resuming a shrink that
@@ -958,17 +984,21 @@ export class PlifeSim implements Sim, ModTarget {
     this.governorAt = now;
 
     const b = this.config.budget;
-    const floorFps = b.floorFps;
-    const idealFps = Math.max(b.idealFps, floorFps);
     const cap = this.budgetCap;
     // The base is the *effective* budget, not the raw state: growing from
     // Infinity is not a number, and shrinking from above the cap would waste
     // several adjustments getting back to a ceiling that already bound.
     const cur = this.effectiveBudget;
 
-    if (fps < floorFps) {
+    const displayHz = this.displayRate.hz;
+    this.governorBasis =
+      displayHz === null
+        ? `${fps.toFixed(0)} fps`
+        : `${fps.toFixed(0)} fps · ~${Math.round(displayHz)} Hz panel`;
+    const verdict = governorVerdict(fps, b.floorFps, b.idealFps, displayHz);
+    if (verdict === 'shrink') {
       this.governorBudget = Math.max(cur * GOVERNOR_SHRINK, Math.min(BUDGET_MIN, cap));
-    } else if (fps >= idealFps * GOVERNOR_GROW_TOLERANCE) {
+    } else if (verdict === 'grow') {
       this.governorBudget = Math.min(cur * GOVERNOR_GROW, cap);
     }
   }
@@ -1162,6 +1192,23 @@ export class PlifeSim implements Sim, ModTarget {
     };
   }
 
+  /**
+   * The pass meters: average milliseconds per frame cycle, by pass group —
+   * sim lane ('force', 'grid', 'far', 'splash'), render lane ('fade',
+   * 'sprites', 'post'), plus the CPU encode EMAs ('cpu tick', 'cpu render'),
+   * which measure main-thread time and are the one thing GPU timestamps cannot
+   * see. `null` when the adapter has no `timestamp-query`, so the panel can say
+   * "unsupported" instead of showing zeros that look like a very fast GPU.
+   * The GPU entries are empty until the first publish lands (~a second).
+   */
+  gpuTimings(): ReadonlyMap<string, number> | null {
+    if (!this.ready || !this.timer.enabled) return null;
+    const merged = new Map(this.timer.averages());
+    merged.set('cpu tick', this.cpuTickMs);
+    merged.set('cpu render', this.cpuRenderMs);
+    return merged;
+  }
+
   /** The sim-specific middle of the app's status line. */
   status(): string {
     return `${this.gridW}×${this.gridH} cells · ${this.aliveCount().toLocaleString()} particles · seed ${this.seed}`;
@@ -1183,6 +1230,11 @@ export class PlifeSim implements Sim, ModTarget {
     this.ctx = ctx;
     const { device } = ctx;
     const k = this.config.speciesCount;
+    this.timer = new PassTimer(device);
+    // The post chain reports into the same meter, under its own label — the
+    // panel's per-stage rows are what turn "frame lag but the sim lane reads
+    // fine" from a mystery into a named culprit.
+    this.post.timer = this.timer;
 
     // World space is fixed for the sim's life, exactly like physarum's grid:
     // rescaling it mid-run would move every particle relative to every radius and
@@ -1387,10 +1439,23 @@ export class PlifeSim implements Sim, ModTarget {
       layout: gridPipelineLayout,
       compute: { module: gridModule, entryPoint: 'scatterParticles' },
     });
+    // The segment geometry rides into step.wgsl as pipeline constants rather
+    // than through Globals: `speciesOf` divides by the segment size, a u32
+    // divide by a uniform is ~20+ ALU instructions with no hardware path, and
+    // the force loop derives the sender's species once per candidate pair. As
+    // constants the divide specialises to a multiply-shift. Both values are
+    // frozen above, before any pipeline exists, and the overrides have no
+    // defaults — forgetting one here is a pipeline-creation error, not a
+    // silently wrong partition.
+    const segConstants = { SEG_SIZE: this.segSize, SPECIES_COUNT: k };
     this.stepPipeline = device.createComputePipeline({
       label: 'plife.step',
       layout: stepPipelineLayout,
-      compute: { module: stepModule, entryPoint: 'stepParticles', constants: { BRUTE: 0 } },
+      compute: {
+        module: stepModule,
+        entryPoint: 'stepParticles',
+        constants: { BRUTE: 0, ...segConstants },
+      },
     });
     // The brute lane. One more pipeline off the same module and the same layout,
     // specialised through step.wgsl's `override BRUTE` — so the two force kernels
@@ -1401,13 +1466,19 @@ export class PlifeSim implements Sim, ModTarget {
     this.stepBrutePipeline = device.createComputePipeline({
       label: 'plife.step.brute',
       layout: stepPipelineLayout,
-      compute: { module: stepModule, entryPoint: 'stepParticles', constants: { BRUTE: 1 } },
+      compute: {
+        module: stepModule,
+        entryPoint: 'stepParticles',
+        constants: { BRUTE: 1, ...segConstants },
+      },
     });
     this.initPipeline = device.createComputePipeline({
       label: 'plife.init',
       layout: stepPipelineLayout,
-      compute: { module: stepModule, entryPoint: 'initParticles' },
+      compute: { module: stepModule, entryPoint: 'initParticles', constants: segConstants },
     });
+    // respawnParticles never derives a species, so it is the one entry point in
+    // the module that takes no constants.
     this.respawnPipeline = device.createComputePipeline({
       label: 'plife.respawn',
       layout: stepPipelineLayout,
@@ -1416,7 +1487,7 @@ export class PlifeSim implements Sim, ModTarget {
     this.splashPipeline = device.createComputePipeline({
       label: 'plife.splash',
       layout: splashPipelineLayout,
-      compute: { module: stepModule, entryPoint: 'splashParticles' },
+      compute: { module: stepModule, entryPoint: 'splashParticles', constants: segConstants },
     });
 
     const V = GPUShaderStage.VERTEX;
@@ -1687,7 +1758,7 @@ export class PlifeSim implements Sim, ModTarget {
    * are looking at stays exactly where it is and a different force law takes hold
    * of it, so you watch the world you already have reorganise itself rather than
    * watching it be replaced. Auto-exposure is not reset either — there is no
-   * fade up from black, because nothing went black — and `stepAccumulator` /
+   * fade up from black, because nothing went black — and `worldSeconds` /
    * `lastPcgTick` carry on, because they are the world's clock and the world did
    * not restart.
    *
@@ -1717,10 +1788,9 @@ export class PlifeSim implements Sim, ModTarget {
       this.writeGlobals(this.lastPcgTick);
       return;
     }
-    this.stepAccumulator = 0;
     // A new world starts its colour phase where a fresh load would, alongside
     // the pcg tick. `keepWorld` returned above and keeps both.
-    this.simSteps = 0;
+    this.worldSeconds = 0;
     this.lastPcgTick = 0;
     this.uploadSpecies();
     this.writeGlobals(0);
@@ -1781,8 +1851,7 @@ export class PlifeSim implements Sim, ModTarget {
           usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
         }),
         seed: this.seed,
-        stepAccumulator: this.stepAccumulator,
-        simSteps: this.simSteps,
+        worldSeconds: this.worldSeconds,
         lastPcgTick: this.lastPcgTick,
         parity: this.parity,
         stemLevel: new Float32Array(this.stemLevel.length),
@@ -1794,8 +1863,7 @@ export class PlifeSim implements Sim, ModTarget {
     }
     const snap = this.snap;
     snap.seed = this.seed;
-    snap.stepAccumulator = this.stepAccumulator;
-    snap.simSteps = this.simSteps;
+    snap.worldSeconds = this.worldSeconds;
     snap.lastPcgTick = this.lastPcgTick;
     snap.parity = this.parity;
     snap.stemLevel.set(this.stemLevel);
@@ -1824,8 +1892,7 @@ export class PlifeSim implements Sim, ModTarget {
 
     this.parity = snap.parity;
     this.setSeed(snap.seed);
-    this.stepAccumulator = snap.stepAccumulator;
-    this.simSteps = snap.simSteps;
+    this.worldSeconds = snap.worldSeconds;
     // The hue phase is a function of the clock that was just rewound.
     this.paletteDirty = true;
     this.lastPcgTick = snap.lastPcgTick;
@@ -1940,66 +2007,85 @@ export class PlifeSim implements Sim, ModTarget {
     return true;
   }
 
-  // ── per-tick ───────────────────────────────────────────────────────────────
+  // ── per-frame ──────────────────────────────────────────────────────────────
 
-  tick(frame: FeaturesFrame, simTick: number): void {
+  /**
+   * One rendered frame's worth of world: exactly one integration step of `dt`
+   * seconds, or none at all.
+   *
+   * There is no substep loop and no accumulator. `dt` arrives already clamped by
+   * `MAX_FRAME_DT`, `speed` scales it into world time, and the whole of it goes
+   * into a single step — so a slow machine takes coarser steps rather than more
+   * of them, and the cost of a frame does not grow because the last one was
+   * late. `g.dt` is that number, which the integrator has always read.
+   */
+  tick(frame: FeaturesFrame, _stepIndex: number, dt: number): void {
     if (!this.ready || !this.ctx) return;
+    void _stepIndex;
 
-    // Ahead of the substep loop and outside the paused branch: the population
-    // lane is a *smoother*, and freezing its EMAs while the transport runs would
-    // mean un-pausing snapped the whole field to whatever the music had become.
-    this.updatePopulation(frame, SECONDS_PER_TICK, !this.popPrimed);
+    // Resolve everything the PREVIOUS frame recorded — its step AND its
+    // render/post passes, which are encoded after tick() returns and so cannot
+    // be resolved at the end of this function. At the top of the next frame
+    // every one of those submits has landed, queue order sequences the resolve
+    // after them, and a paused frame (steps = 0) still flushes the render lane
+    // instead of letting its labels pile up.
+    this.timer.finishFrame();
+    const cpuT0 = performance.now();
+
+    // Ahead of the step and outside the paused branch: the population lane is a
+    // *smoother*, and freezing its EMAs while the transport runs would mean
+    // un-pausing snapped the whole field to whatever the music had become. It
+    // gets the frame's own dt, not the world-scaled one — how fast the music
+    // moves is not something `speed` is entitled to change.
+    this.updatePopulation(frame, dt, !this.popPrimed);
     this.popPrimed = true;
 
-    let steps = 0;
+    let stepDt = 0;
     if (this.config.paused) {
+      // A manual single step is worth one 60 Hz frame of world, so the button
+      // means the same thing whatever the display is doing.
       if (this.pendingSingleStep) {
         this.pendingSingleStep = false;
-        steps = 1;
+        stepDt = 1 / 60;
       }
     } else {
-      const next = advanceStepCadence(
-        this.stepAccumulator,
-        this.config.speed,
-        MAX_SUBSTEPS,
-        simTick,
-        1,
-      );
-      this.stepAccumulator = next.accumulator;
-      steps = next.steps;
+      stepDt = dt * Math.max(this.config.speed, 0);
     }
 
-    this.stepsThisFrame = steps;
-    if (steps > 0) {
-      this.simSteps += steps;
+    this.stepsThisFrame = stepDt > 0 ? 1 : 0;
+    if (stepDt > 0) {
+      this.stepDt = stepDt;
+      this.worldSeconds += stepDt;
       // Only when a cycle is actually running: a static palette must not be
-      // re-linearised every tick, which is what the dirty flag exists to avoid.
+      // re-linearised every frame, which is what the dirty flag exists to avoid.
       if (this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
+      // The disc list is a property of this frame's envelopes, and the step
+      // applies them for its whole length — which is what makes a splash a
+      // sustained shove for the length of its decay rather than a single frame's
+      // nudge.
+      this.uploadSplashes();
+      // Ahead of the step: the far field is a *smoothed* quantity at σ ≥ 0.04
+      // world, and the force pass samples its gradient.
+      if (this.farActive()) this.runFarField();
+      // The pcg key is a plain per-step counter now rather than a function of a
+      // transport tick. It never rewinds, which is all the force and spawn
+      // hashes need; reproducing a given frame across runs is not a property
+      // this loop has any more.
+      this.runStep(this.lastPcgTick + 1);
     }
-    // Once per tick, not once per substep: the disc list is a property of the
-    // tick's envelopes, and every substep of this tick applies the same discs
-    // (which is what makes a splash a sustained shove for the length of its
-    // decay rather than a single frame's nudge).
-    if (steps > 0) this.uploadSplashes();
-    // Once per clock tick, ahead of the substeps and outside the loop: the far
-    // field is a *smoothed* quantity at σ ≥ 0.04 world, and nothing in it moves
-    // measurably in the 1/120 s a substep covers. Re-splatting it per substep
-    // would be four times the cost at the ceiling for a field that had barely
-    // changed, and the near lane is the one that has to resolve fast motion.
-    if (steps > 0 && this.farActive()) this.runFarField();
-    for (let s = 0; s < steps; s++) {
-      this.runStep(simTick * MAX_SUBSTEPS + s);
-    }
+    // CPU cost of this frame — uploads, encoding, submits — as an EMA. This is
+    // main-thread time, the thing GPU timestamps are structurally blind to.
+    this.cpuTickMs = this.cpuTickMs * (1 - CPU_METER_ALPHA) + (performance.now() - cpuT0) * CPU_METER_ALPHA;
   }
 
   /**
    * The far lane, once per frame: splat every live particle into a per-species
    * density target, then four separable-Gaussian passes that leave
-   * `G_σ1*ρ − G_σ2*ρ` in `farDog`. `stepParticles` samples that field's gradient
-   * every substep.
+   * `G_σ1*ρ − G_σ2*ρ` in `farDog`. `stepParticles` samples that field's
+   * gradient.
    *
-   * Its own encoder and submit, ahead of the substeps' — the force pass reads
-   * what this writes, and a submit boundary is the least ambiguous way to say so.
+   * Its own encoder and submit, ahead of the step's — the force pass reads what
+   * this writes, and a submit boundary is the least ambiguous way to say so.
    */
   private runFarField(): void {
     const { device } = this.ctx as GpuRuntimeContext;
@@ -2011,15 +2097,20 @@ export class PlifeSim implements Sim, ModTarget {
     this.writeBlurParams();
 
     const encoder = device.createCommandEncoder({ label: 'plife.far' });
-    const splat = encoder.beginRenderPass({
-      label: 'plife.far.splat',
-      colorAttachments: this.farSplatViews.map((view) => ({
-        view,
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        loadOp: 'clear' as const,
-        storeOp: 'store' as const,
-      })),
-    });
+    const splat = encoder.beginRenderPass(
+      this.timer.timedRender(
+        {
+          label: 'plife.far.splat',
+          colorAttachments: this.farSplatViews.map((view) => ({
+            view,
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear' as const,
+            storeOp: 'store' as const,
+          })),
+        },
+        'far',
+      ),
+    );
     splat.setPipeline(this.splatPipeline);
     splat.setBindGroup(0, this.splatBinds[this.parity] as GPUBindGroup);
     // One point per pool slot. Dormant slots emit an off-screen position and are
@@ -2030,15 +2121,20 @@ export class PlifeSim implements Sim, ModTarget {
 
     for (let i = 0; i < FAR_BLUR_PASSES; i++) {
       const targets = this.blurTargets[i] as GPUTextureView[];
-      const pass = encoder.beginRenderPass({
-        label: `plife.far.blur${i}`,
-        colorAttachments: targets.map((view) => ({
-          view,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear' as const,
-          storeOp: 'store' as const,
-        })),
-      });
+      const pass = encoder.beginRenderPass(
+        this.timer.timedRender(
+          {
+            label: `plife.far.blur${i}`,
+            colorAttachments: targets.map((view) => ({
+              view,
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+              loadOp: 'clear' as const,
+              storeOp: 'store' as const,
+            })),
+          },
+          'far',
+        ),
+      );
       pass.setPipeline(this.blurPipeline);
       pass.setBindGroup(0, this.blurBinds[i] as GPUBindGroup);
       pass.draw(3);
@@ -2309,7 +2405,9 @@ export class PlifeSim implements Sim, ModTarget {
     // are visible to everything encoded after it) and because each thread
     // touches only its own particle — no thread reads a neighbour here.
     if (this.splashCount > 0) {
-      const splash = encoder.beginComputePass({ label: 'plife.splash' });
+      const splash = encoder.beginComputePass(
+        this.timer.timed({ label: 'plife.splash' }, 'splash'),
+      );
       splash.setPipeline(this.splashPipeline);
       splash.setBindGroup(0, this.splashBinds[this.parity] as GPUBindGroup);
       splash.dispatchWorkgroups(Math.ceil(this.totalParticles / PARTICLE_WORKGROUP));
@@ -2327,26 +2425,31 @@ export class PlifeSim implements Sim, ModTarget {
     // an already-quadratic pass on absent pool slots; against that, three
     // one-thread-per-particle memory passes are free. See the brute branch in
     // step.wgsl for how it reads the live count back out of the prefix sum.
-    const count = encoder.beginComputePass({ label: 'plife.count' });
+    // Meters: the three grid passes report under one 'grid' label — they are one
+    // rebuild in three legally-separated stages, and their individual costs are
+    // below the browser's timestamp quantum anyway.
+    const count = encoder.beginComputePass(this.timer.timed({ label: 'plife.count' }, 'grid'));
     count.setPipeline(this.countPipeline);
     count.setBindGroup(0, gridBind);
     count.dispatchWorkgroups(gridGroups);
     count.end();
 
-    const scan = encoder.beginComputePass({ label: 'plife.scan' });
+    const scan = encoder.beginComputePass(this.timer.timed({ label: 'plife.scan' }, 'grid'));
     scan.setPipeline(this.scanPipeline);
     scan.setBindGroup(0, gridBind);
     scan.dispatchWorkgroups(1);
     scan.end();
 
-    const scatter = encoder.beginComputePass({ label: 'plife.scatter' });
+    const scatter = encoder.beginComputePass(
+      this.timer.timed({ label: 'plife.scatter' }, 'grid'),
+    );
     scatter.setPipeline(this.scatterPipeline);
     scatter.setBindGroup(0, gridBind);
     scatter.dispatchWorkgroups(gridGroups);
     scatter.end();
 
     const brute = this.pairSearch() === 'brute';
-    const force = encoder.beginComputePass({ label: 'plife.force' });
+    const force = encoder.beginComputePass(this.timer.timed({ label: 'plife.force' }, 'force'));
     force.setPipeline(brute ? this.stepBrutePipeline : this.stepPipeline);
     force.setBindGroup(0, this.stepBinds[this.parity] as GPUBindGroup);
     force.dispatchWorkgroups(Math.ceil(this.totalParticles / PARTICLE_WORKGROUP));
@@ -2362,6 +2465,7 @@ export class PlifeSim implements Sim, ModTarget {
     frame: RenderFrame,
   ): void {
     if (!this.ready || !this.ctx) return;
+    const cpuR0 = performance.now();
 
     // Post surfaces follow the canvas, not the world: a resize re-allocates them
     // (and invalidates the fade pass's feedback binding) but never touches the
@@ -2396,26 +2500,36 @@ export class PlifeSim implements Sim, ModTarget {
     this.uploadSpecies();
     this.writeGlobals(this.lastPcgTick);
 
-    const fade = encoder.beginRenderPass({
-      label: 'plife.fade',
-      colorAttachments: [
+    const fade = encoder.beginRenderPass(
+      this.timer.timedRender(
         {
-          view: this.post.hdrTargetView,
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
+          label: 'plife.fade',
+          colorAttachments: [
+            {
+              view: this.post.hdrTargetView,
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              loadOp: 'clear',
+              storeOp: 'store',
+            },
+          ],
         },
-      ],
-    });
+        'fade',
+      ),
+    );
     fade.setPipeline(this.fadePipeline);
     fade.setBindGroup(0, this.fadeBinds[this.post.currentParity] as GPUBindGroup);
     fade.draw(3);
     fade.end();
 
-    const draw = encoder.beginRenderPass({
-      label: 'plife.particles',
-      colorAttachments: [{ view: this.post.hdrTargetView, loadOp: 'load', storeOp: 'store' }],
-    });
+    const draw = encoder.beginRenderPass(
+      this.timer.timedRender(
+        {
+          label: 'plife.particles',
+          colorAttachments: [{ view: this.post.hdrTargetView, loadOp: 'load', storeOp: 'store' }],
+        },
+        'sprites',
+      ),
+    );
     draw.setPipeline(this.particlePipeline);
     draw.setBindGroup(0, this.particleBinds[this.parity] as GPUBindGroup);
     // 4 vertices (one strip quad) × the whole pool. Dormant instances collapse to
@@ -2424,6 +2538,8 @@ export class PlifeSim implements Sim, ModTarget {
     draw.end();
 
     this.post.run(encoder, targetView, frame);
+    this.cpuRenderMs =
+      this.cpuRenderMs * (1 - CPU_METER_ALPHA) + (performance.now() - cpuR0) * CPU_METER_ALPHA;
   }
 
   /** Two bind groups, one per PostFx parity, differing only in the feedback source. */
@@ -2561,12 +2677,12 @@ export class PlifeSim implements Sim, ModTarget {
 
   /**
    * The wiggle's own upload: the first K² floats of the interaction buffer, 256
-   * bytes at K = 8, written per substep while the lane is doing anything.
+   * bytes at K = 8, written on every step while the lane is doing anything.
    *
-   * Per substep rather than per tick, even though the envelope only moves once
-   * per tick: it is one `writeBuffer` of a quarter of a kilobyte next to a pass
-   * that tests millions of pairs, and paying it unconditionally means there is
-   * no ordering rule to get wrong when something else rewrites θ mid-tick.
+   * Unconditionally rather than only when the envelope moves: it is one
+   * `writeBuffer` of a quarter of a kilobyte next to a pass that tests millions
+   * of pairs, and paying it every step means there is no ordering rule to get
+   * wrong when something else rewrites θ mid-frame.
    */
   private uploadAttraction(): void {
     const wasLive = this.wiggleLive;
@@ -2614,7 +2730,7 @@ export class PlifeSim implements Sim, ModTarget {
     u[9] = this.seed >>> 0;
     u[10] = pcgTick >>> 0;
     const macros = cfg.macros;
-    f[11] = PLIFE_SUBSTEP_DT;
+    f[11] = this.stepDt;
     // Macro `force`, outside θ: forceGain is modulated, this multiplies whatever
     // the modulator left there — same relationship stem-follow has to brightness.
     f[12] = Math.max(cfg.forceGain, 0) * Math.max(macros.force, 0);
@@ -2676,7 +2792,11 @@ export class PlifeSim implements Sim, ModTarget {
     f[27] = luma.anchor;
     f[28] = luma.white;
     f[29] = luma.jitterStops;
-    u[30] = 0;
+    // The wander field's own clock, in world seconds. It has to be a *time* and
+    // not a step count: the current would otherwise drift at whatever rate the
+    // display happens to run at, and the same preset would read as a lazy swirl
+    // on one machine and a gale on another.
+    f[30] = this.worldSeconds;
     u[31] = 0;
     ctx.device.queue.writeBuffer(this.globalsBuf, 0, this.globalsBytes);
   }

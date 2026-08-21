@@ -141,14 +141,6 @@ export const VIZFX_BLOCKS: BlockTable<VizFxConfig> = {
 };
 
 /**
- * Substeps one 60 Hz model tick may expand into. The warp is a per-*model-tick* operation
- * (not per rendered frame — see the note on `VizFxSim.tick`), so `speed` is
- * "how fast the world runs" and this is only the ceiling that stops a slider at
- * 4 from turning one dropped frame into a burst of warps.
- */
-export const MAX_SUBSTEPS = 4;
-
-/**
  * What `ModTargetConfig` needs from a species, and nothing more. `brightness` is
  * mirrored out of `params['layer<i>.brightness']` every tick — θ is the source
  * of truth and this is the workbench's readout of it (see `VizFxSim.syncSpecies`).
@@ -192,8 +184,9 @@ export function defaultVizFxColor(v: VizFxVisual, index: number): string {
 export function defaultVizFxConfig(v: VizFxVisual): VizFxConfig {
   const render = defaultRenderConfig();
   // The FIELD is this substrate's feedback. Post's render-domain echo would be a
-  // second, redundant one stacked on top — and a much less controllable one,
-  // since it runs per rendered frame while the field runs per tick. Off.
+  // second, redundant one stacked on top of a lane that already advances once
+  // per rendered frame, so it would double the memory without adding a control.
+  // Off.
   render.feedback = { amount: 0, zoom: 1 };
   // No soil field here, so the ember underlay has nothing to draw from.
   render.grade.soilTint = 0;

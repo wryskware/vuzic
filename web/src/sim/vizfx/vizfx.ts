@@ -66,18 +66,16 @@
 import type { GpuRuntimeContext } from '../../gpu/runtime-context.ts';
 import type { ModTarget, ThetaRegistry } from '../../mapping/target.ts';
 import type { FeaturesFrame } from '../../timeline/sampler.ts';
-import { LEGACY_SUBSTRATE_HZ, LEGACY_TICK_DIVISOR } from '../../timing.ts';
+import { LEGACY_SUBSTRATE_HZ } from '../../timing.ts';
 import { hash3, MAX_SPLASHES, pcg, type ImpulseState } from '../impulses.ts';
 import { paletteHuePhase, paletteLinear } from '../palette.ts';
 import { mergeRenderConfig } from '../render/config.ts';
 import { HDR_FORMAT, PostFx } from '../render/postfx.ts';
 import type { RenderFrame, Sim } from '../types.ts';
-import { advanceStepCadence } from '../step-cadence.ts';
 import {
   defaultVizFxColor,
   defaultVizFxConfig,
   MAX_EMITTERS_PER_LAYER,
-  MAX_SUBSTEPS,
   VIZFX_BLOCKS,
   type VizFxConfig,
 } from './config.ts';
@@ -110,17 +108,23 @@ const FLOATS_PER_EMITTER = 4;
 const STEM_DIMS = 4;
 
 /**
- * Seconds one model step advances the field. The app clock is 120 Hz, but this
- * substrate remains a 60-step-per-second per-step model: one model tick is
- * consumed for every two app ticks. `speed` still means steps per MODEL tick,
- * and — the part that matters here — every per-step
- * quantity in θ (`zoom`, `decay`, `rotate`) is a *per-step* factor whose meaning
- * would otherwise change with the refresh rate.
+ * The step length this substrate's θ table was *authored* against, in seconds.
  *
- * This is the one place vizfx differs structurally from the render-domain
- * feedback plife uses: plife's echo runs once per rendered frame and has to be
- * exponentiated by the frame length to look the same at 60 and 240 Hz. The field
- * here runs on the fixed clock, so no correction exists and none is needed.
+ * VizFx is the one substrate here whose model is irreducibly per-step: `zoom`,
+ * `fade` and `rotate` are compounding per-step factors held in a θ table that
+ * carries no rate/level metadata, so unlike physarum's species block there is
+ * nowhere to re-express them for a step of a different length. The field
+ * therefore takes **one step per rendered frame** and its per-step factors are
+ * per-*frame* factors — which is exactly how the milkdrop visuals this mode is
+ * named after have always worked, and how they still look on a faster display.
+ * At 60 fps, the rate everything was tuned at, nothing has changed.
+ *
+ * What does track real time is `g.time` and `g.dt`: the emitter orbits, the
+ * ripple and the spin are written as functions of *seconds*, so they are fed
+ * accumulated world time and stay right at any frame rate. Giving the same
+ * treatment to the compounding factors means marking the rate-like slots in the
+ * θ table (`slots.ts`) for all four visuals; it is worth doing and it is not
+ * this change.
  */
 const STEP_DT = 1 / LEGACY_SUBSTRATE_HZ;
 
@@ -162,7 +166,8 @@ interface VizFxSnapshot {
   parity: number;
   seed: number;
   steps: number;
-  stepAccumulator: number;
+  /** the world's own elapsed seconds — the shader's `g.time` rides this */
+  worldSeconds: number;
   /**
    * The energy lane's smoothed state. Same reasoning as plife's population
    * snapshot: without it a restore would reproduce the picture while the lane
@@ -179,7 +184,7 @@ export interface VizFxStats {
   fieldH: number;
   /** render passes in the post chain last frame; the composite is the +1 */
   renderPasses: number;
-  stepsThisTick: number;
+  stepsThisFrame: number;
   activeRings: number;
 }
 
@@ -266,11 +271,19 @@ export class VizFxSim implements Sim, ModTarget {
   /** max over layers of (depositMul - 1), 0 at rest. The warp's transient input. */
   private pulse = 0;
 
-  private stepAccumulator = 0;
   private pendingSingleStep = false;
-  private stepsThisTick = 0;
-  /** steps since the world was last cleared. The shader's clock, and the PCG key. */
+  private stepsThisFrame = 0;
+  /** steps since the world was last cleared. The PCG key, and `g.tick`. */
   private steps = 0;
+  /**
+   * Seconds of world time since the field was last cleared — `g.time`, and the
+   * argument the palette's hue cycle is a function of. Accumulated one frame's
+   * `dt` at a time rather than counted in steps, so the emitters orbit at the
+   * same rate on every display.
+   */
+  private worldSeconds = 0;
+  /** world seconds the last step covered; `g.dt`. Seeded at a 60 Hz frame. */
+  private stepDt = STEP_DT;
   private snap: VizFxSnapshot | null = null;
 
   /** θ registry and stem keying, both pure functions of the table — built once. */
@@ -518,7 +531,7 @@ export class VizFxSim implements Sim, ModTarget {
       fieldW: this.fieldW,
       fieldH: this.fieldH,
       renderPasses: this.post.passCount + 1,
-      stepsThisTick: this.stepsThisTick,
+      stepsThisFrame: this.stepsThisFrame,
       activeRings: this.splashCount,
     };
   }
@@ -764,7 +777,7 @@ export class VizFxSim implements Sim, ModTarget {
     if (!this.ready || !this.ctx) return;
     if (opts?.keepWorld === true) return;
     this.steps = 0;
-    this.stepAccumulator = 0;
+    this.worldSeconds = 0;
     this.energyPrimed = false;
     this.clearField();
     // A new world starts from black; letting the adapted gain carry over would
@@ -908,7 +921,7 @@ export class VizFxSim implements Sim, ModTarget {
         parity: this.parity,
         seed: this.seed,
         steps: this.steps,
-        stepAccumulator: this.stepAccumulator,
+        worldSeconds: this.worldSeconds,
         stemLevel: new Float32Array(this.stemLevel.length),
         energy: new Float32Array(this.energy.length),
         takenAt: performance.now(),
@@ -918,7 +931,7 @@ export class VizFxSim implements Sim, ModTarget {
     snap.parity = this.parity;
     snap.seed = this.seed;
     snap.steps = this.steps;
-    snap.stepAccumulator = this.stepAccumulator;
+    snap.worldSeconds = this.worldSeconds;
     snap.stemLevel.set(this.stemLevel);
     snap.energy.set(this.energy);
     snap.takenAt = performance.now();
@@ -953,7 +966,7 @@ export class VizFxSim implements Sim, ModTarget {
     this.steps = snap.steps;
     // The hue phase is a function of the clock that was just rewound.
     this.paletteDirty = true;
-    this.stepAccumulator = snap.stepAccumulator;
+    this.worldSeconds = snap.worldSeconds;
     // The energy posture comes back with the picture. Without this the lane would
     // immediately start pulling the restored field toward the *current* moment's
     // levels, and an A/B would be comparing two different arrangements as well as
@@ -973,71 +986,62 @@ export class VizFxSim implements Sim, ModTarget {
   // ── per-tick ───────────────────────────────────────────────────────────────
 
   /**
-   * One app tick: on every second tick, advance the energy lane and run `speed`
-   * warp+draw steps. Odd ticks deliberately leave this 60 Hz model untouched.
+   * One rendered frame: advance the energy lane, then take exactly one warp+draw
+   * step of the field.
    *
-   * The steps happen here rather than in `render` — which is where the other
-   * feedback in this project (plife's render-domain echo) lives — and that is the
-   * decision the whole substrate's determinism rests on. The field is the world,
-   * so it must advance on the fixed clock: at 240 Hz it would otherwise decay and
-   * zoom four times as fast as at 60, every per-step θ factor would mean a
-   * different thing per machine, and a pinned seed would not reproduce a run.
-   * plife can afford the other choice because its echo is decoration over a world
-   * that is already stepping on the clock.
+   * The step happens here rather than in `render` — which is where the other
+   * feedback in this project (plife's render-domain echo) lives — because the
+   * field IS the world, not a decoration over one.
    *
-   * One encoder and one submit per step, because `writeGlobals` moves between
-   * them: the step clock is in the uniform, and two passes recorded before a
-   * single submit would both read whichever value was written last.
+   * `dt` scaled by `speed` is the world time the step covers, and it reaches
+   * `g.time` and `g.dt`, i.e. everything the visuals write as a function of
+   * seconds. It does NOT reach the compounding per-step θ factors, which have no
+   * rate metadata to scale by and are therefore per-*frame* factors — see the
+   * note on `STEP_DT`. `speed` accordingly stretches the field's time-driven
+   * motion rather than multiplying its step count, which is what it used to do.
    */
-  tick(frame: FeaturesFrame, simTick: number): void {
+  tick(frame: FeaturesFrame, _stepIndex: number, dt: number): void {
     if (!this.ready || !this.ctx || this.binds.length !== 2) return;
+    void _stepIndex;
 
-    let steps = 0;
-    if (this.config.paused) {
-      if (this.pendingSingleStep) {
-        this.pendingSingleStep = false;
-        steps = 1;
-      }
-    } else {
-      const next = advanceStepCadence(
-        this.stepAccumulator,
-        this.config.speed,
-        MAX_SUBSTEPS,
-        simTick,
-        LEGACY_TICK_DIVISOR,
-      );
-      this.stepAccumulator = next.accumulator;
-      steps = next.steps;
-    }
-    this.stepsThisTick = steps;
-
-    // Normal odd app ticks intentionally do no model work at all. Keeping these
-    // CPU smoothers on the same even-tick 60 Hz schedule as the field preserves
-    // their sampled inputs and wall-clock response; a requested manual step is
-    // allowed through immediately even if it lands on an odd app tick.
-    const modelTick = simTick % LEGACY_TICK_DIVISOR === 0;
-    if (!modelTick && steps === 0) return;
-
-    // Ahead of the step loop and outside the paused branch: the energy lane is a
+    // Ahead of the step and outside the paused branch: the energy lane is a
     // *smoother*, and freezing its EMA while the transport runs would mean
-    // un-pausing snapped every layer to whatever the music had become.
-    this.updateEnergy(frame, STEP_DT, !this.energyPrimed);
+    // un-pausing snapped every layer to whatever the music had become. It gets
+    // the frame's own dt, not the world-scaled one — how fast the music moves is
+    // not something `speed` is entitled to change.
+    this.updateEnergy(frame, dt, !this.energyPrimed);
     this.energyPrimed = true;
     this.updatePulse();
-    if (steps === 0) return;
 
-    // Once per tick, not once per step: all three describe the state of this
-    // tick's music, and every step of this tick paints under the same one — which
-    // is what makes a splash a sustained ring for the length of its decay rather
-    // than a single step's flicker.
+    let stepDt = 0;
+    if (this.config.paused) {
+      // A manual single step is worth one 60 Hz frame of world, so the button
+      // means the same thing whatever the display is doing.
+      if (this.pendingSingleStep) {
+        this.pendingSingleStep = false;
+        stepDt = STEP_DT;
+      }
+    } else {
+      stepDt = dt * Math.max(this.config.speed, 0);
+    }
+
+    this.stepsThisFrame = stepDt > 0 ? 1 : 0;
+    if (stepDt <= 0) return;
+    this.stepDt = stepDt;
+    this.worldSeconds += stepDt;
+
+    // Ahead of the step: all three describe the state of this frame's music, and
+    // the step paints under the same one — which is what makes a splash a
+    // sustained ring for the length of its decay rather than a single frame's
+    // flicker.
     this.uploadTheta();
     this.uploadLayers();
     this.uploadSplashes();
 
-    for (let s = 0; s < steps; s++) this.runStep();
+    this.runStep();
     // Only when a cycle is actually running: a static palette must not be
-    // re-linearised every tick, which is what the dirty flag exists to avoid.
-    if (steps > 0 && this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
+    // re-linearised every frame, which is what the dirty flag exists to avoid.
+    if (this.config.palette.hueRateDegPerSec !== 0) this.paletteDirty = true;
   }
 
   private runStep(): void {
@@ -1138,13 +1142,9 @@ export class VizFxSim implements Sim, ModTarget {
 
   // ── uploads ────────────────────────────────────────────────────────────────
 
-  /**
-   * Sim time in seconds. This substrate already had the absolute step counter the
-   * other two had to grow — it is the same `this.steps` that feeds `f[4]` in the
-   * globals block — so the palette's hue cycle simply reads it.
-   */
+  /** Sim time in seconds — the same `f[4]` the shaders read as `g.time`. */
   get simSeconds(): number {
-    return this.steps * STEP_DT;
+    return this.worldSeconds;
   }
 
   private refreshPalette(): void {
@@ -1264,8 +1264,8 @@ export class VizFxSim implements Sim, ModTarget {
     // Sim time, not wall clock: the emitters' orbits are a function of the step
     // count, so a paused transport freezes them and a pinned seed reproduces
     // exactly where every cluster was at every step.
-    f[4] = this.steps * STEP_DT;
-    f[5] = STEP_DT;
+    f[4] = this.worldSeconds;
+    f[5] = this.stepDt;
     u[6] = this.steps >>> 0;
     u[7] = this.seed >>> 0;
     u[8] = this.config.speciesCount >>> 0;

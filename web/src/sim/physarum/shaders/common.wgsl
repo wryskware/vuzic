@@ -23,9 +23,12 @@ struct Globals {
   // makes the choice deterministic in (seed, segment index, agent index)
   respawnFraction: f32,
   respawnKey: u32,
-  // live radial splashes this tick; the splash pass is skipped entirely at 0
+  // live radial splashes this frame; the splash pass is skipped entirely at 0
   splashCount: u32,
-  pad0: u32,
+  // This step's length in units of the model's 1/60 s reference step. Every
+  // other per-step quantity arrives already scaled by it from the CPU side; the
+  // diffusion kernel cannot be pre-scaled that way, so it reads this directly.
+  stepScale: f32,
 
   // soil — track-scale memory. One shared layer at trail resolution.
   soilDecay: f32,
@@ -44,7 +47,7 @@ struct Globals {
   soilTint: f32,
   feedbackAmount: f32,
   feedbackZoom: f32,
-  // hard ceiling on one agent's deposit into one cell in one tick, after soil
+  // hard ceiling on one agent's deposit into one cell in one step, after soil
   // fertility. Mirrors MAX_DEPOSIT in config.ts; the i32 atomic headroom in
   // PhysarumConfig.depositScale is derived from it.
   maxDeposit: f32,

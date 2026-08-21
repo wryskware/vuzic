@@ -16,15 +16,22 @@ export interface RenderFrame {
  * The seam the simulation slots into. The main loop owns the audio clock, the sampler and
  * the frame pacing; a Sim only advances its own state and draws.
  *
- * `tick` is called once per fixed app-clock tick (possibly several times per rAF,
- * possibly zero) with the timeline sampled there. A substrate may deliberately
- * take zero model steps on that call; `render` is called at most once per rAF.
+ * `tick` is called **exactly once per rendered frame**, with the timeline sampled
+ * at the transport's current position and `dt` = the world seconds that frame
+ * advances (measured wall time, clamped by `MAX_FRAME_DT`, scaled by the
+ * substrate's own `speed`). A substrate may deliberately take zero model steps
+ * on that call — `dt` of 0, or a paused substrate. `render` is called at most
+ * once per frame, after `tick`.
+ *
+ * `stepIndex` is a monotonic advance counter, not a transport position: it never
+ * rewinds, so a seek backwards cannot re-issue hash keys the run has consumed.
+ *
  * `frame.values` is a reused buffer — read it, do not retain it.
  */
 export interface Sim {
   readonly name: string;
   init(ctx: GpuRuntimeContext): Promise<void>;
-  tick(frame: FeaturesFrame, simTick: number): void;
+  tick(frame: FeaturesFrame, stepIndex: number, dt: number): void;
   render(encoder: GPUCommandEncoder, targetView: GPUTextureView, frame: RenderFrame): void;
   /**
    * The sim-specific middle of the app's status line — grid, population, seed,
@@ -51,8 +58,9 @@ export class NullSim implements Sim {
     this.stemOffset = offset;
   }
 
-  tick(frame: FeaturesFrame, _simTick: number): void {
-    void _simTick;
+  tick(frame: FeaturesFrame, _stepIndex: number, _dt: number): void {
+    void _stepIndex;
+    void _dt;
     for (let i = 0; i < 4; i++) {
       this.stems[i] = frame.values[this.stemOffset + i] ?? 0;
     }

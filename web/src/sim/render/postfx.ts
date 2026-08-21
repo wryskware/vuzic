@@ -30,6 +30,7 @@
  *   storage buffer that the compositor reads one frame later; a readback would
  *   be a queue stall for a number that is allowed to be one frame stale.
  */
+import type { PassTimer } from '../../gpu/pass-timer';
 import type { GpuRuntimeContext } from '../../gpu/runtime-context';
 import type { RenderFrame } from '../types';
 import { MAX_BLOOM_LEVELS, tonemapIndex, type RenderConfig } from './config';
@@ -107,6 +108,16 @@ export class PostFx {
   private disposed = false;
   private autoGain = 1;
   private autoMean = 0;
+
+  /**
+   * Optional GPU pass meter. The owning sim assigns it after construction (the
+   * timer needs a device; this constructor deliberately takes none) and every
+   * pass `run()` encodes then reports under one 'post' label — the chain is a
+   * pipeline, and per-level bloom numbers would be below the browser's
+   * timestamp quantum anyway. Left unset (physarum, vizfx, tiles), nothing
+   * here changes.
+   */
+  timer: PassTimer | null = null;
 
   constructor(config: RenderConfig) {
     this.cfg = config;
@@ -355,8 +366,11 @@ export class PostFx {
 
     const cur = this.parity;
     let passes = 0;
+    const timer = this.timer;
 
-    const measure = encoder.beginComputePass({ label: 'postfx.measure' });
+    const measure = encoder.beginComputePass(
+      timer ? timer.timed({ label: 'postfx.measure' }, 'post') : { label: 'postfx.measure' },
+    );
     measure.setPipeline(this.measurePipeline);
     measure.setBindGroup(0, this.measureBind[cur] as GPUBindGroup);
     measure.dispatchWorkgroups(1);
@@ -376,7 +390,7 @@ export class PostFx {
         view: GPUTextureView,
         additive = false,
       ): void => {
-        const pass = encoder.beginRenderPass({
+        const desc: GPURenderPassDescriptor = {
           label,
           colorAttachments: [
             {
@@ -386,7 +400,8 @@ export class PostFx {
               storeOp: 'store',
             },
           ],
-        });
+        };
+        const pass = encoder.beginRenderPass(timer ? timer.timedRender(desc, 'post') : desc);
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, bind);
         pass.draw(3);
@@ -417,7 +432,7 @@ export class PostFx {
       }
     }
 
-    const grade = encoder.beginRenderPass({
+    const gradeDesc: GPURenderPassDescriptor = {
       label: 'postfx.grade',
       colorAttachments: [
         {
@@ -427,7 +442,8 @@ export class PostFx {
           storeOp: 'store',
         },
       ],
-    });
+    };
+    const grade = encoder.beginRenderPass(timer ? timer.timedRender(gradeDesc, 'post') : gradeDesc);
     grade.setPipeline(this.gradePipeline);
     grade.setBindGroup(0, this.gradeBind[cur] as GPUBindGroup);
     grade.draw(3);

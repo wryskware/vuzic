@@ -44,9 +44,6 @@ import { oneOf, range, type RuleTree } from '../../mapping/read-into.ts';
 import { persisted, persistedElsewhere, type BlockTable } from '../../mapping/blocks.ts';
 import { defaultPlifeLuma, lumaRules, type PlifeLumaConfig } from './luma.ts';
 
-/** Sim substeps one clock tick may expand into; folded into the PCG tick key. */
-export const MAX_SUBSTEPS = 4;
-
 /**
  * The neighbour grid's **cell size** — and only that, since the near stencil
  * landed. It used to be the interaction cap as well; the two have been split.
@@ -485,6 +482,12 @@ export interface PlifeFieldConfig {
    * The far lane's global strength. 0 turns the whole density pyramid off — no
    * splat, no blur, no sampling — so it is a real bypass, not a zero multiply.
    *
+   * **Grid mode only**, like `nearStencil`: the lane exists to hand the
+   * truncated cell search a long-range term, and brute's pair sum already
+   * reaches the half-torus cap. In brute mode the whole chain is bypassed
+   * regardless of this value (`farActive` in plife.ts), and the BRUTE pipeline
+   * compiles the sampling out.
+   *
    * Sized so 1.0 is a *current*, not a force: measured, it is a median terminal
    * drift around 0.06 world/s against a near-lane median speed of ~0.26, which
    * roughly doubles the coarse-grained density contrast without changing how
@@ -566,7 +569,9 @@ export function defaultPlifeField(): PlifeFieldConfig {
  * `effectiveBudget` is the governor's state, not a setting: it lives between a
  * hard floor (`BUDGET_MIN`) and `cap`, and it moves in response to the measured
  * frame rate — down fast when the frame rate falls under `floorFps`, up slowly
- * when it is meeting `idealFps`, and nowhere at all in between. It is deliberately
+ * when it is meeting what this machine's display can show (its measured refresh
+ * rate, capped by `idealFps` — see `governor.ts`), and nowhere at all in
+ * between. It is deliberately
  * **session-only**: what your machine could sustain last night, in another tab
  * configuration, at another window size, is not a fact about this run. Only the
  * four settings below are persisted.
@@ -626,9 +631,11 @@ export function defaultPlifeBudget(cap: number): PlifeBudgetConfig {
     adaptive: true,
     // 60 / 120 rather than, say, 30 / 60: this sim's whole legibility argument is
     // that a hit resolves *now*, and a 30 fps particle world reads as a slideshow
-    // of clusters rather than as motion. 120 as the ideal means a 120 Hz display
-    // (which is what the author runs) can grow back to its cap at all — see the
-    // grow tolerance in plife.ts for why "ideal" must be reachable, not exceeded.
+    // of clusters rather than as motion. `idealFps` is a CEILING on the grow
+    // target, not a demand: the governor targets min(idealFps, the display's
+    // measured refresh rate), so a 60 Hz panel grows toward 60 and a 240 Hz one
+    // stops asking past 120 — see `governor.ts` for the law and the tolerances
+    // that make both ends reachable on real panels.
     floorFps: 60,
     idealFps: 120,
   };

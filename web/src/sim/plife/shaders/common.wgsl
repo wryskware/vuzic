@@ -29,7 +29,7 @@ const TAU: f32 = 6.28318530718;
 //
 //  20 riseTau       21 fallTau        22 splashCount      23 nearStencil
 //  24 farOn         25 lumaStops      26 lumaExponent     27 lumaAnchor
-//  28 lumaWhite     29 lumaJitter     30 pad0             31 pad1
+//  28 lumaWhite     29 lumaJitter     30 wanderTime       31 pad0
 struct Globals {
   // World space is toroidal, h = 1 and w = aspect, fixed for the sim's life.
   worldW: f32,
@@ -108,8 +108,10 @@ struct Globals {
 
   lumaWhite: f32,
   lumaJitter: f32,
+  // World seconds since this world began — sim time, not wall clock. Only the
+  // wander field reads it; see the note on WANDER_DRIFT in step.wgsl.
+  wanderTime: f32,
   pad0: u32,
-  pad1: u32,
 }
 
 // One impulse hotspot disc, in WORLD units (physarum's equivalent struct is in

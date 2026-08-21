@@ -30,7 +30,17 @@ fn diffuseDecay(@builtin(global_invocation_id) id: vec3u) {
     }
   }
 
-  let v = sum * clamp(s.misc.y, 0.0, 1.0);
+  // Diffusion is a rate, and the kernel above is one 1/60 s step of it. A
+  // shorter step diffuses proportionally less, which for a single explicit pass
+  // is the blurred field mixed back toward the cell's own value. `stepScale` is
+  // exactly 1 on a 60 Hz display, where `mix(x, blurred, 1)` is `blurred` and
+  // this pass is bit-identical to the fixed-cadence one; it is clamped at 1
+  // because a single pass cannot diffuse further than its own kernel, so a long
+  // step blurs less than it strictly should rather than aliasing.
+  // (`self` is a WGSL reserved word; `here` is not.)
+  let here = trailTexel(trailSrc, c, gi, layer);
+  let spread = mix(here, sum, clamp(g.stepScale, 0.0, 1.0));
+  let v = spread * clamp(s.misc.y, 0.0, 1.0);
   textureStore(trailDst, c, layer, vec4f(v, 0.0, 0.0, 1.0));
 
   // Soil rides along in the layer-0 invocation: one cell, one writer, no extra

@@ -160,13 +160,6 @@ export interface ExplorerRigOptions {
    * the rig deliberately does not learn either.
    */
   createTile: () => Sim & ModTarget;
-  /**
-   * Fixed steps per tile tick. 1 ticks every tile on every step, like the live
-   * sim. Higher values are a *quality* fallback, not a frame-pacing trick: the
-   * tiles simply advance that many times more slowly, because a substep is what
-   * costs and skipping one is skipping the work.
-   */
-  tickEvery?: number;
   /** gap between tiles and outer margin, CSS px */
   gutterCss?: number;
 }
@@ -174,7 +167,6 @@ export interface ExplorerRigOptions {
 export class ExplorerRig {
   private readonly gpu: BrowserGpuContext;
   private readonly createTile: () => Sim & ModTarget;
-  private readonly tickEvery: number;
   private readonly gutterCss: number;
 
   private tiles: TileEntry[] = [];
@@ -206,7 +198,6 @@ export class ExplorerRig {
   constructor(opts: ExplorerRigOptions) {
     this.gpu = opts.gpu;
     this.createTile = opts.createTile;
-    this.tickEvery = Math.max(1, Math.floor(opts.tickEvery ?? 1));
     this.gutterCss = Math.max(0, opts.gutterCss ?? DEFAULT_GUTTER_CSS);
   }
 
@@ -305,11 +296,14 @@ export class ExplorerRig {
     this.writeUniform();
   }
 
-  /** Advance every tile. `frame.values` is shared and read-only here, as everywhere. */
-  tick(frame: FeaturesFrame, stepIndex: number): void {
+  /**
+   * Advance every tile by one step of `dt`, exactly like the live sim — same
+   * world time, same cadence, so what the grid shows is what adopting the θ
+   * would give you. `frame.values` is shared and read-only here, as everywhere.
+   */
+  tick(frame: FeaturesFrame, stepIndex: number, dt: number): void {
     if (!this.opened) return;
-    if (this.tickEvery > 1 && stepIndex % this.tickEvery !== 0) return;
-    for (const t of this.tiles) t.sim.tick(frame, stepIndex);
+    for (const t of this.tiles) t.sim.tick(frame, stepIndex, dt);
   }
 
   /** Nine sim renders into nine layers, then one composite pass onto the canvas. */

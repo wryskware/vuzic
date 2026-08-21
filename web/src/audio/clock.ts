@@ -7,10 +7,8 @@ export interface ClickTrackSource {
 }
 
 export interface AudioClockOptions {
-  /** fixed simulation timestep in seconds */
+  /** seconds per timeline sample — the rate the analysis was written at */
   secondsPerTick?: number;
-  /** cap on ticks run in one rAF, so a stalled tab does not spiral */
-  maxTicksPerFrame?: number;
   /**
    * Optional track audio, by convention `<timelineBaseUrl>/audio.wav`. If it is
    * missing or undecodable the click track built from the beat grid is used
@@ -29,13 +27,18 @@ export interface AudioClockOptions {
 export type AudioSourceKind = 'track' | 'click';
 
 /**
- * AudioContext.currentTime is the master clock. Sim ticks are derived from it by a
- * fixed-timestep accumulator; rAF only decides when to drain the accumulator.
+ * AudioContext.currentTime is the master clock for *where in the track we are*.
+ *
+ * It is no longer a simulation clock. The world advances once per rendered frame
+ * on measured wall time (see `main.ts`), and this class only answers "which
+ * timeline sample does the audio position correspond to right now" — a lookup,
+ * not an accumulator. There is nothing to drain and nothing to catch up: the
+ * position is read fresh from `ctx.currentTime` every frame, so a long frame
+ * lands on a later sample rather than owing a backlog of skipped ones.
  */
 export class AudioClock {
   readonly secondsPerTick: number;
   readonly duration: number;
-  private readonly maxTicksPerFrame: number;
   private readonly source: ClickTrackSource;
   private readonly audioUrl: string | null;
   private readonly fetcher: typeof fetch;
@@ -54,16 +57,14 @@ export class AudioClock {
   private originTime = 0;
   private pausedAt = 0;
   private playing = false;
-  private tick = 0;
 
   constructor(source: ClickTrackSource, opts: AudioClockOptions = {}) {
     this.source = source;
     this.duration = source.duration;
-    // The default is the app clock itself rather than a second local literal, so
-    // a caller that omits the option cannot silently fall back to the old rate.
+    // The default is the timeline's own sample rate rather than a second local
+    // literal, so a caller that omits the option cannot silently index the
+    // analysis at a rate it was not written at.
     this.secondsPerTick = opts.secondsPerTick ?? SECONDS_PER_TICK;
-    // 16 at 120 Hz preserves the old 8-at-60-Hz catch-up window (~133 ms).
-    this.maxTicksPerFrame = opts.maxTicksPerFrame ?? 16;
     this.audioUrl = opts.audioUrl ?? null;
     // Bound unconditionally — including a caller-supplied fetcher — because it
     // is stored on `this` and called as `this.fetcher(...)`: native `fetch`
@@ -84,8 +85,13 @@ export class AudioClock {
     return this.kind;
   }
 
+  /**
+   * The timeline sample the transport is on, derived from the audio position
+   * rather than counted. Frozen with the transport, so a paused workbench keeps
+   * reading the same features frame and no timeline event re-fires.
+   */
   get simTick(): number {
-    return this.tick;
+    return Math.floor(this.time / this.secondsPerTick);
   }
 
   /** Track time in seconds, straight off the audio clock. */
@@ -105,9 +111,9 @@ export class AudioClock {
     return ctx.baseLatency + (Number.isFinite(extra) ? (extra as number) : 0);
   }
 
-  /** Time the sim has actually caught up to; use this for rendering, not `time`. */
+  /** Track time quantised to the timeline grid — what the scrub strip reads. */
   get tickTime(): number {
-    return this.tick * this.secondsPerTick;
+    return this.simTick * this.secondsPerTick;
   }
 
   private ensureContext(): AudioContext {
@@ -190,7 +196,6 @@ export class AudioClock {
     node.start(0, this.pausedAt);
     this.originTime = ctx.currentTime + this.outputDelay(ctx) - this.pausedAt;
     this.node = node;
-    this.tick = Math.floor(this.pausedAt / this.secondsPerTick);
   }
 
   pause(): void {
@@ -213,7 +218,6 @@ export class AudioClock {
       this.playing = false;
     }
     this.pausedAt = t;
-    this.tick = Math.floor(t / this.secondsPerTick);
     if (wasPlaying) void this.play();
   }
 
@@ -229,29 +233,22 @@ export class AudioClock {
   }
 
   /**
-   * Drain the accumulator. Calls `run` once per whole sim tick that the audio clock has
-   * passed, in order. Returns the number of ticks run.
+   * The timeline sample this rendered frame should read, plus the end-of-track
+   * stop. Called exactly once per frame.
+   *
+   * This is what replaced `pump()`. The old contract handed the caller a *run*
+   * of ticks to simulate so the sim could stay glued to the audio grid; there is
+   * no grid to stay glued to any more, so a frame simply asks where the audio is
+   * and samples there. Skipping timeline samples between two frames is not a
+   * backlog — it is what playing a 120 Hz analysis on a 60 Hz display means, and
+   * it was always what the sampler's interpolation was for.
    */
-  pump(run: (simTick: number) => void): number {
-    if (!this.playing) return 0;
-
-    const now = this.time;
-    if (now >= this.duration) {
+  sampleTick(): number {
+    if (this.playing && this.time >= this.duration) {
       this.pause();
       this.pausedAt = this.duration;
-      return 0;
     }
-
-    const target = Math.floor(now / this.secondsPerTick);
-    let count = 0;
-    while (this.tick < target && count < this.maxTicksPerFrame) {
-      this.tick++;
-      run(this.tick);
-      count++;
-    }
-    // A long stall would otherwise leave the sim permanently behind the audio.
-    if (this.tick < target - this.maxTicksPerFrame) this.tick = target;
-    return count;
+    return this.simTick;
   }
 }
 

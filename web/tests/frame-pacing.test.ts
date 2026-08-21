@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DT_FRAMES_TAU_S, smoothDtFrames } from '../src/sim/step-cadence.ts';
+import { DT_FRAMES_TAU_S, smoothDtFrames } from '../src/sim/frame-timing.ts';
 
 /** The shipped plife feedback amount; the echo's steady-state gain at `a`. */
 const AMOUNT = 0.88;

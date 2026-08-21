@@ -33,10 +33,14 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<BrowserGpuCont
     );
   }
 
-  const wantFloat32Filterable = adapter.features.has('float32-filterable');
-  const device = await adapter.requestDevice({
-    requiredFeatures: wantFloat32Filterable ? (['float32-filterable'] as GPUFeatureName[]) : [],
-  });
+  const requiredFeatures: GPUFeatureName[] = [];
+  if (adapter.features.has('float32-filterable')) requiredFeatures.push('float32-filterable');
+  // For the workbench's GPU pass meters (gpu/pass-timer.ts). Requested whenever
+  // the adapter offers it: the query sets cost nothing until a pass asks to be
+  // timed, and browsers already quantize the timestamps, so there is no
+  // fingerprinting reason to gate it behind a flag of our own.
+  if (adapter.features.has('timestamp-query')) requiredFeatures.push('timestamp-query');
+  const device = await adapter.requestDevice({ requiredFeatures });
   const float32Filterable = device.features.has('float32-filterable');
 
   // Without this a WGSL compile error is completely silent: pipeline creation is

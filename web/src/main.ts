@@ -46,7 +46,7 @@ import {
 } from './timeline/catalog';
 import { loadTimeline } from './timeline/loader';
 import { TimelineSampler, type FeaturesFrame } from './timeline/sampler';
-import { SECONDS_PER_TICK, TICK_HZ } from './timing';
+import { clampFrameDt, MAX_FRAME_DT, SECONDS_PER_TICK, TICK_HZ } from './timing';
 import type { ExplorerPanelHost } from './ui/explore-panel';
 import { planKey, type TargetInfo } from './ui/keys';
 import { createPanel, type PanelHandle } from './ui/panel';
@@ -85,8 +85,6 @@ const SIMS: readonly string[] = ['physarum', 'plife', ...VIZFX_IDS];
  * second later is exactly the thrash this exists to prevent.
  */
 const AUTO_ADVANCE_DWELL_MS = 12_000;
-// Eight 120 Hz ticks preserves the old four-60-Hz-tick catch-up window.
-const MAX_FREE_TICKS_PER_FRAME = 8;
 const PANEL_REFRESH_FRAMES = 30;
 
 /**
@@ -96,27 +94,6 @@ const PANEL_REFRESH_FRAMES = 30;
  * neighbourhood you liked. 0.3 is a visible difference you can still attribute.
  */
 const EXPLORER_STEP_DEFAULT = 0.3;
-
-/**
- * App ticks per *plife* tile tick in explorer mode. 2, i.e. half the live sim's
- * new 120 Hz physics rate (the tiles remain a 60-state-per-second fallback).
- *
- * Particle life's world is normalised rather than measured in pixels, so a small
- * tile is not a cheap tile: nine tiles is nine full populations and nine full
- * force passes, on a sim whose own header already warns that one of them will
- * not hold 60 fps everywhere. Halving the substep count is the sanctioned
- * fallback and it is honest about what it costs — the tile worlds evolve at half
- * speed, all nine equally, so what you are comparing is unaffected even though
- * what you are watching is slower.
- *
- * The next lever, deliberately *not* pulled, is `maxParticles`: it is the
- * biggest one, but colony density is part of what a candidate looks like, and a
- * tile with a ninth of the particles would be judging a world that is not the
- * one adopting the θ would give you. Physarum has no such problem — its world
- * *is* the pixel grid, so a third-size tile is a ninth of the cells, and scaling
- * its agent pool to match keeps the density identical.
- */
-const PLIFE_TILE_TICK_EVERY = 2;
 
 /** Floor on a physarum tile's agent pool, so a tiny window cannot starve a tile. */
 const MIN_TILE_AGENTS = 4096;
@@ -368,7 +345,10 @@ async function main(): Promise<void> {
     timeline = await loadTimeline(entry.base, fetcherFor(entry));
   }
   const sampler = new TimelineSampler(timeline, SECONDS_PER_TICK);
-  console.info(`simulation clock: ${TICK_HZ} Hz fixed timestep`);
+  console.info(
+    `timeline sampled at ${TICK_HZ} Hz; simulation advances once per frame ` +
+      `on measured dt, capped at ${(MAX_FRAME_DT * 1000).toFixed(1)} ms`,
+  );
 
   const clock = new AudioClock(
     {
@@ -537,8 +517,9 @@ async function main(): Promise<void> {
   //
   // Everything stateful about the mode lives here rather than in the rig,
   // because the mode is a *transport* decision as much as a rendering one: while
-  // it is active the fixed-step pump stops feeding the live sim entirely (see
-  // `frame` below), and that is main's business, not the rig's.
+  // it is active the frame's advance is diverted to the rig and stops reaching
+  // the live sim entirely (see `advance` below), and that is main's business,
+  // not the rig's.
   //
   // Everything is built lazily, on the first enter. That is not just thrift: it
   // keeps a substrate that is never explored from paying for nine of itself, and
@@ -739,11 +720,7 @@ async function main(): Promise<void> {
       explorerSearch = new ExplorerSearch(sim.registry(), sim.currentSeed);
       explorerSearch.setStep(explorerStep);
       explorerSearch.setSubspace(explorerSubspace);
-      explorerRig ??= new ExplorerRig({
-        gpu: ctx,
-        createTile: createExplorerTile,
-        tickEvery: sim instanceof PlifeSim ? PLIFE_TILE_TICK_EVERY : 1,
-      });
+      explorerRig ??= new ExplorerRig({ gpu: ctx, createTile: createExplorerTile });
       await explorerRig.open();
       explorerRig.layout(ctx.width, ctx.height);
       explorerActive = true;
@@ -1382,23 +1359,29 @@ async function main(): Promise<void> {
 
   const gpuState = gpu ? 'webgpu ok' : 'webgpu unavailable';
 
-  // The transport only pumps ticks while audio plays. Phase 4 is driven by sliders,
-  // so when the transport is idle the sim free-runs on the same fixed timestep.
-  // Idle free-running is wall-clock paced, so how far the world drifts while paused
-  // is not reproducible; only an uninterrupted run from a pinned seed is.
+  // One advance per rendered frame, always — playing or idle. The transport
+  // decides WHERE in the timeline the frame's features come from; measured wall
+  // time decides HOW MUCH world the frame is worth. While idle the position is
+  // frozen (so no timeline event re-fires and the features stop moving) but dt
+  // keeps flowing, which is what makes envelopes decay and test-fire work with
+  // the transport stopped.
   //
-  // stepIndex is the PCG key and counts sim steps, not transport position: it never
-  // rewinds, so a seek backwards or a spell of free-running cannot re-issue hash keys
-  // the run has already consumed.
+  // Nothing here is reproducible frame-for-frame and nothing tries to be: a
+  // rendered frame is however long the machine made it, and pausing the music
+  // while the world keeps evolving already made "replay the same bars exactly" a
+  // fiction. Seeds still determine the world a run *starts* in.
+  //
+  // stepIndex is the PCG key and counts advances, not transport position: it
+  // never rewinds, so a seek backwards cannot re-issue hash keys the run has
+  // already consumed.
   let stepIndex = 0;
-  let freeAccum = 0;
   let lastNow = performance.now();
   let frameCount = 0;
 
   /**
    * The full stop, as distinct from `run ▸ paused` in the panel.
    *
-   * `paused` is a *substrate* control: it zeroes the substep count and leaves
+   * `paused` is a *substrate* control: it takes no integration step and leaves
    * the render chain running, which is what makes it useful for tuning the look
    * of a still field. It is not a way to stop spending anything — the fade pass,
    * the whole particle draw, the bloom pyramid and the grade all still run every
@@ -1459,10 +1442,10 @@ async function main(): Promise<void> {
   let fpsShownAt = 0;
 
   /**
-   * One fixed step. `stepIndex` has already been incremented by the caller — it
-   * is the PCG key and counts sim steps, not transport position.
+   * One frame's advance. `stepIndex` has already been incremented by the caller
+   * — it is the PCG key and counts advances, not transport position.
    *
-   * The modulation layer runs on the same fixed timestep as the sim, ahead of
+   * The modulation layer runs on the same timestep as the sim, ahead of
    * it: ẑ → projections → tanh → slew → config, then the sim reads that config
    * for its step. Impulses run after the modulator and before the sim: they are
    * a separate lane applied on top of whatever the slew limiter just wrote,
@@ -1584,18 +1567,18 @@ async function main(): Promise<void> {
     void switchSim(next);
   };
 
-  const advance = (tick: number, features: FeaturesFrame): void => {
+  const advance = (tick: number, features: FeaturesFrame, dt: number): void => {
     // Ahead of the explorer branch, because segment tracking is unconditional
     // even though the response is not — see the header. The mode's own gate is
     // inside.
     noteSectionBoundary(features);
     if (explorerActive) {
-      explorerRig?.tick(features, stepIndex);
+      explorerRig?.tick(features, stepIndex, dt);
       return;
     }
-    modulator.update(features, SECONDS_PER_TICK);
-    impulses.update(tick, SECONDS_PER_TICK);
-    sim.tick(features, stepIndex);
+    modulator.update(features, dt);
+    impulses.update(tick, dt);
+    sim.tick(features, stepIndex, dt);
   };
 
   /**
@@ -1630,9 +1613,45 @@ async function main(): Promise<void> {
     }
   };
 
+  // ── frame pacing ──────────────────────────────────────────────────────────
+  //
+  // None, on purpose: render on every rAF the browser delivers and let the
+  // presented rate land wherever this machine's display and workload put it
+  // (decided 2026-08-20). This replaced a fixed present-at-120 vsync divisor
+  // tuned on the author's 240 Hz panel, and the reason is the audience: pacing
+  // tuned on one machine is exactly what does not travel. 144 Hz panels fell
+  // through the divisor's gate into every-slot overrun, 60 Hz panels could
+  // never be told apart from struggling ones, and every non-author machine
+  // inherited a constant chosen for hardware it does not have. Playable on
+  // arbitrary machines outranks optimally scheduled on this one.
+  //
+  // What keeps an over-committed machine sane is the plife budget governor,
+  // fed below with the measured presented fps — the one number that means the
+  // same thing on every machine (see `sim/plife/governor.ts`): it sheds work
+  // until frames fit, and a machine that cannot hold the floor even at minimum
+  // population runs a slower world under the `MAX_FRAME_DT` clamp while the
+  // audio plays on.
+  //
+  // For the archaeologist, two profiled dead ends from the divisor era (240 Hz
+  // panel, 2026-08-20), kept because one of them may resurface as a symptom:
+  // an unpaced loop whose work straddles vsync buckets can be answered by
+  // Chrome with erratically withheld BeginFrames — bursty frame pairs and
+  // 20-30 ms holes. If that returns, it depresses measured fps, and the
+  // governor shedding work IS the intended response — not a resurrected
+  // divisor. And deferring the sim submit to a post-present task ("pipeline
+  // the gap") lands the burst in the compositor's flip window and makes
+  // everything worse; that one stays dead.
+
   const frame = (now: DOMHighResTimeStamp): void => {
     const wallDelta = Math.min((now - lastNow) / 1000, 0.25);
     lastNow = now;
+    // The sim domain's clock. Tighter than the render domain's 0.25 s clamp
+    // because it is integrating a world rather than exponentiating an echo: a
+    // frame may advance at most `MAX_FRAME_DT` of world no matter how long it
+    // really took, so a stall, a tab restore or a machine that simply cannot
+    // hold 30 fps makes the world run *slow* instead of taking one enormous
+    // step (or, as the fixed-tick pump did, a burst of small ones).
+    const simDt = clampFrameDt(wallDelta);
     // Render consumers share one host-owned clock sample. The first-frame value
     // preserves their historical 60 Hz seed; subsequent frames retain measured,
     // variable-rate rAF timing (including the existing 0.25 s background clamp).
@@ -1656,7 +1675,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    // The frame-rate lane. Same clamped `wallDelta` the free-run pump uses, so a
+    // The frame-rate lane, on the render domain's clamped `wallDelta`, so a
     // backgrounded tab's two-second gap is one 0.25 s sample rather than a
     // measurement that would read as 0.5 fps and floor the governor on the first
     // frame back.
@@ -1673,26 +1692,17 @@ async function main(): Promise<void> {
     // (`forceNoGovernor`), so the whole mode is governor-free by construction.
     if (sim instanceof PlifeSim && !explorerActive) sim.noteFrameRate(fps, now);
 
-    clock.pump((tick) => {
-      stepIndex++;
-      advance(tick, sampler.sampleAt(tick));
-    });
-
-    if (!clock.isPlaying) {
-      freeAccum += wallDelta;
-      let ran = 0;
-      while (freeAccum >= SECONDS_PER_TICK && ran < MAX_FREE_TICKS_PER_FRAME) {
-        freeAccum -= SECONDS_PER_TICK;
-        stepIndex++;
-        // clock.simTick does not move while idle, so no timeline event re-fires;
-        // envelopes still decay, which is what makes test-fire work while paused.
-        advance(clock.simTick, sampler.sampleAt(clock.simTick));
-        ran++;
-      }
-      if (freeAccum > SECONDS_PER_TICK * MAX_FREE_TICKS_PER_FRAME) freeAccum = 0;
-    } else {
-      freeAccum = 0;
-    }
+    // The world, once, then the frame that shows it — the serial order the
+    // profiles showed the compositor cooperates with: the GPU burst starts
+    // right after the rAF and is long finished by composite time. (See the
+    // pacing comment above for the reordering experiments that lost.)
+    //
+    // `sampleTick` reads the audio position (and stops the transport at the end
+    // of the track); it is frozen while idle, so an idle frame re-reads the
+    // same features and re-fires nothing while still handing the sim a real dt.
+    const tick = clock.sampleTick();
+    stepIndex++;
+    advance(tick, sampler.sampleAt(tick), simDt);
 
     draw(renderFrame);
 

@@ -1,3 +1,4 @@
+import { MAX_CONTINUOUS_TICK_GAP } from '../timing.ts';
 import type { ChannelSpec, Segment, Timeline, TimelineEvent } from './types';
 
 /** Largest i with arr[i] <= x, or -1. */
@@ -50,14 +51,15 @@ export interface EventRange {
 }
 
 /**
- * Playback advances the cursor one tick at a time, so any other movement is a
- * seek and relocates by binary search. The two paths are *not* equivalent: the
- * walk fires everything it steps over, so a forward jump that walked would dump
- * the whole gap's worth of events into one tick (two seconds of hats and kicks
- * firing together). The relocate path discards the skipped events instead, which
- * is what a seek should do — and it is what a backwards seek has always done.
+ * Playback advances the cursor by up to one rendered frame's worth of timeline,
+ * so any larger movement is a seek and relocates by binary search — see
+ * `MAX_CONTINUOUS_TICK_GAP`, which all three transport-continuity lanes share.
+ * The two paths are *not* equivalent: the walk fires everything it steps over,
+ * so a forward jump that walked would dump the whole gap's worth of events into
+ * one frame (two seconds of hats and kicks firing together). The relocate path
+ * discards the skipped events instead, which is what a seek should do — and it
+ * is what a backwards seek has always done.
  */
-const MAX_WALK_GAP_TICKS = 1;
 
 /**
  * Pointer walk over the sparse event stream, indexed by sim tick like everything
@@ -102,7 +104,7 @@ export class EventCursor {
    */
   advance(tick: number): EventRange {
     const gap = tick - this.lastTick;
-    if (this.lastTick < 0 || gap < 0 || gap > MAX_WALK_GAP_TICKS) {
+    if (this.lastTick < 0 || gap < 0 || gap > MAX_CONTINUOUS_TICK_GAP) {
       this.relocate(tick);
     }
     const start = this.ptr;

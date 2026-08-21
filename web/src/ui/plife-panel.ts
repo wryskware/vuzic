@@ -149,6 +149,22 @@ export function createPlifePanel(
     grid: '—',
   };
   const budgetState: BudgetState = { effective: '—', alive: '—' };
+  // GPU pass meters — session-only readouts fed from `sim.gpuTimings()` in
+  // `refresh()`. Strings rather than numbers so "unsupported" and "warming up"
+  // have somewhere honest to live.
+  const gpuState = {
+    force: '—',
+    grid: '—',
+    far: '—',
+    splash: '—',
+    sim: '—',
+    fade: '—',
+    sprites: '—',
+    post: '—',
+    total: '—',
+    cpuTick: '—',
+    cpuRender: '—',
+  };
   // Both session-only, both deliberately NOT in any persisted block: `headroom`
   // is which display the look is being tuned *for* (see the folder comment) and
   // `effective` / `span` are readouts of what is actually in force.
@@ -483,7 +499,10 @@ export function createPlifePanel(
     stencilBinding.label = stencilLabel();
     scaleBinding.label = farScaleLabel();
   });
-  reach.addBinding(config.field, 'farGain', { ...farGain, label: 'far gain  (0 = lane off)' });
+  reach.addBinding(config.field, 'farGain', {
+    ...farGain,
+    label: 'far gain  (0 = lane off · grid only)',
+  });
   scaleBinding.on('change', () => {
     scaleBinding.label = farScaleLabel();
   });
@@ -538,6 +557,25 @@ export function createPlifePanel(
   // shaping the population, and when alive is well below it something else is.
   budget.addBinding(budgetState, 'effective', { readonly: true, label: 'effective budget' });
   budget.addBinding(budgetState, 'alive', { readonly: true, label: '↳ alive (target)' });
+
+  // Measured GPU time, not counts: what each pass group of the sim lane costs
+  // per stepped tick, averaged over ~half a second (gpu/pass-timer.ts). This is
+  // the readout every "is it faster now" question should be pointed at — the
+  // fps number conflates the sim with render, vsync and the browser's own
+  // throttling. Values need `timestamp-query`; browsers quantize the clocks
+  // (~100 µs), so trust trends and totals more than any single small number.
+  const meters = tabs.sim.addFolder({ title: 'gpu meters  (ms per frame)', expanded: false });
+  meters.addBinding(gpuState, 'force', { readonly: true, label: 'force pass' });
+  meters.addBinding(gpuState, 'grid', { readonly: true, label: 'grid rebuild ×3' });
+  meters.addBinding(gpuState, 'far', { readonly: true, label: 'far splat + blur' });
+  meters.addBinding(gpuState, 'splash', { readonly: true, label: 'splash' });
+  meters.addBinding(gpuState, 'sim', { readonly: true, label: '↳ sim lane' });
+  meters.addBinding(gpuState, 'fade', { readonly: true, label: 'fade / feedback' });
+  meters.addBinding(gpuState, 'sprites', { readonly: true, label: 'sprite draw' });
+  meters.addBinding(gpuState, 'post', { readonly: true, label: 'post chain' });
+  meters.addBinding(gpuState, 'total', { readonly: true, label: '↳ gpu total' });
+  meters.addBinding(gpuState, 'cpuTick', { readonly: true, label: 'cpu · sim encode' });
+  meters.addBinding(gpuState, 'cpuRender', { readonly: true, label: 'cpu · render encode' });
 
   const speciesRoot = persisting(
     tabs.sim.addFolder({
@@ -806,13 +844,57 @@ export function createPlifePanel(
       // "governed" vs "cap" is the one thing the two numbers cannot say by
       // themselves: an effective budget equal to the cap means the governor has
       // not intervened, and one below it means the frame rate pulled it there.
+      // The suffix names the SENSOR the governor last acted on — "sim 7.2 ms"
+      // when it was reading the GPU meters, "45 fps" on the fallback — because
+      // "governed" without the basis was exactly how measured-GPU-time-vs-fps
+      // confusion stayed invisible.
       const governed = config.budget.adaptive && st.effectiveBudget < config.budget.cap;
+      const basis = sim.governorBasisNote || `${sim.governorFps.toFixed(0)} fps`;
       budgetState.effective =
-        `${st.effectiveBudget.toLocaleString()}` +
-        (governed ? ` (governed · ${sim.governorFps.toFixed(0)} fps)` : ' (cap)');
+        `${st.effectiveBudget.toLocaleString()}` + (governed ? ` (governed · ${basis})` : ' (cap)');
       budgetState.alive =
         `${st.aliveParticles.toLocaleString()}` +
         (st.aliveParticles >= st.effectiveBudget ? ' — budget binding' : '');
+
+      // A label that never recorded this window (far in brute mode, splash with
+      // no discs) stays '—' rather than 0.00: absent is not the same as free.
+      const gt = sim.gpuTimings();
+      if (gt === null) {
+        gpuState.force = 'no timestamp-query';
+        gpuState.grid = '—';
+        gpuState.far = '—';
+        gpuState.splash = '—';
+        gpuState.sim = '—';
+        gpuState.fade = '—';
+        gpuState.sprites = '—';
+        gpuState.post = '—';
+        gpuState.total = '—';
+        gpuState.cpuTick = '—';
+        gpuState.cpuRender = '—';
+      } else {
+        const fmt = (label: string): string => {
+          const v = gt.get(label);
+          return v === undefined ? '—' : `${v.toFixed(2)} ms`;
+        };
+        const sumOf = (labels: string[]): number =>
+          labels.reduce((s, label) => s + (gt.get(label) ?? 0), 0);
+        gpuState.force = fmt('force');
+        gpuState.grid = fmt('grid');
+        gpuState.far = fmt('far');
+        gpuState.splash = fmt('splash');
+        gpuState.fade = fmt('fade');
+        gpuState.sprites = fmt('sprites');
+        gpuState.post = fmt('post');
+        gpuState.cpuTick = fmt('cpu tick');
+        gpuState.cpuRender = fmt('cpu render');
+        // The two roll-ups are GPU-only sums: the cpu rows measure the same
+        // wall time from the other side and would double-count.
+        const simMs = sumOf(['force', 'grid', 'far', 'splash']);
+        const gpuMs = simMs + sumOf(['fade', 'sprites', 'post']);
+        const gpuRecorded = [...gt.keys()].some((k) => !k.startsWith('cpu'));
+        gpuState.sim = gpuRecorded ? `${simMs.toFixed(2)} ms` : '—';
+        gpuState.total = gpuRecorded ? `${gpuMs.toFixed(2)} ms` : '—';
+      }
 
       // What the grade and the luminance lane are budgeting against right now,
       // and the span that composes out of it. Read from the sim rather than

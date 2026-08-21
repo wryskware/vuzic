@@ -90,6 +90,7 @@
  * `rewire` still rebuild it from the seed outright — a reroll is how you throw
  * your edits away and get a new creature.
  */
+import { MAX_CONTINUOUS_TICK_GAP } from '../timing.ts';
 import { hash3 } from '../sim/impulses.ts';
 import { mergePalette } from '../sim/palette.ts';
 import { mergeRenderConfig } from '../sim/render/config.ts';
@@ -133,11 +134,10 @@ export const Z_CLAMP = 4;
 export const MAX_DRIVER_GAIN = 2;
 
 /**
- * Largest tick step that counts as continuous playback. 1 is a normal advance and
- * 0 is an idle transport re-ticking the same position; anything else is a seek.
- * Same threshold, and the same reasoning, as `EventCursor`'s walk gap.
+ * Re-exported so that `main.ts` and this file name one threshold rather than
+ * two; the reasoning and the derivation live in `timing.ts`.
  */
-export const MAX_CONTINUOUS_TICK_GAP = 1;
+export { MAX_CONTINUOUS_TICK_GAP } from '../timing.ts';
 
 /**
  * The named structure drivers, in bank order. These are 1-dim timeline channels
@@ -964,17 +964,17 @@ export class Modulator {
   }
 
   /**
-   * One tick. `dt` is the fixed sim timestep, so response behaviour does not
-   * depend on frame rate or on how many ticks a frame drains.
+   * One frame. `dt` is that frame's world time in seconds, and every response
+   * here is exponential in it, so behaviour does not depend on the frame rate.
    *
    * Order matters and is fixed in main: modulator → impulses → sim. Impulses
    * multiply on top of whatever this wrote and are never slewed through it.
    */
   update(frame: FeaturesFrame, dt: number): void {
-    // Transport discontinuity detection, same policy as `EventCursor`: playback
-    // advances one tick, an idle transport repeats the same tick (gap 0), and
-    // anything else — restart, arrow-key seek, A/B restore, overlay scrub — is a
-    // jump. The stem-follow EMA has to snap across one, because its state belongs
+    // Transport discontinuity detection, same policy and the same shared
+    // threshold as `EventCursor`: playback advances by up to one frame's worth of
+    // timeline, an idle transport repeats the same tick (gap 0), and anything
+    // else — restart, arrow-key seek, A/B restore, overlay scrub — is a jump. The stem-follow EMA has to snap across one, because its state belongs
     // to the position we just left; fading over ~300 ms into the new position is
     // precisely what makes an A/B restore fail to reproduce the snapshot moment's
     // brightness. Nothing calls a reset for this: every seek path in the app ends

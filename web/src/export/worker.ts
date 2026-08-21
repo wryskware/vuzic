@@ -551,12 +551,18 @@ async function runRequest(requestPath: string): Promise<void> {
     let stepIndex = 0;
     while (!clock.done) {
       const frame = clock.advanceThenRender(
+        // The offline path stays FIXED-STEP and is deliberately the one place
+        // that still does. `ExportClock` walks an exact integer cadence and hands
+        // every simulation tick to this callback in order, so the dt handed down
+        // is the constant `SECONDS_PER_TICK` rather than anything measured — the
+        // live loop's variable-dt contract is about a display nobody is watching
+        // here. Same recipe, same seed, same machine, same file.
         (tick) => {
           stepIndex++;
           const features = sampler.sampleAt(tick);
           bundle?.modulator.update(features, SECONDS_PER_TICK);
           bundle?.impulses.update(tick, SECONDS_PER_TICK);
-          bundle?.sim.tick(features, stepIndex);
+          bundle?.sim.tick(features, stepIndex, SECONDS_PER_TICK);
         },
         (renderFrame) => {
           const command = ctx?.device.createCommandEncoder({
